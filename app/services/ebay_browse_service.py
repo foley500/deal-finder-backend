@@ -22,7 +22,6 @@ _token_expiry = 0
 def get_ebay_access_token():
     global _cached_token, _token_expiry
 
-    # Use cached token if still valid
     if _cached_token and time.time() < _token_expiry:
         return _cached_token
 
@@ -57,6 +56,22 @@ def get_ebay_access_token():
 
 
 # ==========================================
+# 🖼 Force Full Resolution Image
+# ==========================================
+def upgrade_image_resolution(url):
+    if not url:
+        return None
+
+    # eBay image URLs follow predictable pattern
+    # Replace size (s-l225, s-l500 etc) with s-l1600
+    if "s-l" in url:
+        base = url.split("s-l")[0]
+        return base + "s-l1600.jpg"
+
+    return url
+
+
+# ==========================================
 # 🚗 Browse Search (Production)
 # ==========================================
 def search_ebay_browse(
@@ -79,7 +94,7 @@ def search_ebay_browse(
     params = {
         "q": keywords,
         "limit": limit,
-        "category_ids": "9801",  # Cars
+        "category_ids": "9801",
         "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}}"
     }
 
@@ -98,12 +113,15 @@ def search_ebay_browse(
         price_obj = item.get("price", {})
         image_obj = item.get("image", {})
 
+        raw_image = image_obj.get("imageUrl")
+        high_res_image = upgrade_image_resolution(raw_image)
+
         listings.append({
             "id": item.get("itemId"),
             "title": item.get("title"),
             "price": float(price_obj.get("value", 0)) if price_obj else 0,
             "view_url": item.get("itemWebUrl"),
-            "image_url": image_obj.get("imageUrl"),
+            "image_url": high_res_image,
             "source": "ebay",
             "aspects": item.get("localizedAspects", {})
         })
