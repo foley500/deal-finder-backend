@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "VehicleIntel",
+  "version": "1.0",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": [
+    "http://localhost:3000/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}

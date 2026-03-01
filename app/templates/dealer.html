@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<h1>{{ dealer.name }}</h1>
+
+<div class="card">
+    <h3>Scan Controls</h3>
+    <form method="post" action="/dealer/{{ dealer.id }}/scan">
+        <button type="submit">Run Scan</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>Filters</h3>
+    <form method="post" action="/dealer/{{ dealer.id }}/update-filters">
+
+        <label>Min Year</label>
+        <input name="min_year" value="{{ settings.min_year }}">
+
+        <label>Max Year</label>
+        <input name="max_year" value="{{ settings.max_year }}">
+
+        <label>Max Mileage</label>
+        <input name="max_mileage" value="{{ settings.max_mileage }}">
+
+        <label>Min Profit</label>
+        <input name="min_profit" value="{{ settings.min_profit }}">
+
+        <label>Min Score</label>
+        <input name="min_score" value="{{ settings.min_score }}">
+
+        <button type="submit">Save Filters</button>
+    </form>
+</div>
+
+{% endblock %}

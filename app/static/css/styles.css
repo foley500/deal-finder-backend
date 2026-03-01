@@ -1,0 +1,215 @@
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background-color: #0f172a;
+    color: #e2e8f0;
+}
+
+.sidebar {
+    width: 220px;
+    height: 100vh;
+    background: #111827;
+    position: fixed;
+    padding: 20px;
+}
+
+.logo {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 30px;
+}
+
+.sidebar a {
+    display: block;
+    padding: 10px 0;
+    color: #94a3b8;
+    text-decoration: none;
+}
+
+.sidebar a:hover {
+    color: white;
+}
+
+.main-content {
+    margin-left: 240px;
+    padding: 40px;
+}
+
+.card {
+    background: #1e293b;   /* dark slate */
+    padding: 20px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+    color: #ffffff;
+}
+
+.table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.table th {
+    text-align: left;
+    padding: 12px;
+    background: #1e293b;
+}
+
+.table td {
+    padding: 12px;
+    border-bottom: 1px solid #334155;
+}
+
+.badge {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.badge.high { background:#065f46; }
+.badge.medium { background:#92400e; }
+.badge.low { background:#7f1d1d; }
+
+button {
+    background: #2563eb;
+    border: none;
+    padding: 8px 14px;
+    border-radius: 6px;
+    color: white;
+    cursor: pointer;
+}
+
+button:hover {
+    background: #1d4ed8;
+}
+
+input {
+    padding: 6px;
+    margin-bottom: 10px;
+    width: 100%;
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: white;
+    border-radius: 4px;
+}
+
+/* Force all muted / secondary text to white */
+.text-secondary,
+.text-muted {
+    color: #ffffff !important;
+}
+
+/* Make all card text white */
+.card {
+    color: #ffffff;
+}
+
+/* Ensure headings stay white */
+h1, h2, h3, h4, h5, h6 {
+    color: #ffffff;
+}
+
+.table a {
+    color: #e2e8f0;
+    font-weight: 500;
+}
+
+.table a:hover {
+    color: #22c55e;
+}
+
+/* ---- FORCE DARK TABLE ---- */
+
+.table {
+    background-color: #111827 !important;
+    color: #f1f5f9 !important;
+}
+
+.table thead {
+    background-color: #0f172a !important;
+}
+
+.table th {
+    background-color: #0f172a !important;
+    color: #94a3b8 !important;
+}
+
+.table td {
+    background-color: #111827 !important;
+}
+
+.table-hover tbody tr:hover {
+    background-color: #1e293b !important;
+}
+
+/* ---------- PROFIT ---------- */
+
+.profit-positive {
+    color: #22c55e; /* green */
+    font-weight: 600;
+}
+
+.profit-negative {
+    color: #ef4444; /* red */
+    font-weight: 600;
+}
+
+/* ---------- SCORE ---------- */
+
+.score-high {
+    color: #22c55e;
+    font-weight: 600;
+}
+
+.score-medium {
+    color: #f59e0b;
+    font-weight: 600;
+}
+
+.score-low {
+    color: #ef4444;
+    font-weight: 600;
+}
+
+/* ---------- STATUS ---------- */
+
+.status-badge {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: capitalize;
+}
+
+.status-high {
+    background: rgba(34,197,94,0.15);
+    color: #22c55e;
+}
+
+.status-medium {
+    background: rgba(245,158,11,0.15);
+    color: #f59e0b;
+}
+
+.status-low {
+    background: rgba(239,68,68,0.15);
+    color: #ef4444;
+}
+
+/* ---------- DEAL HERO IMAGE ---------- */
+
+.deal-hero-image {
+    width: 100%;
+    max-height: 420px;
+    object-fit: cover;
+    border-radius: 16px;
+    transition: transform 0.4s ease;
+}
+
+.deal-hero-image:hover {
+    transform: scale(1.02);
+}
+
+.card.overflow-hidden {
+    border-radius: 18px;
+}

@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+celery
+redis
+psycopg2-binary
+requests
+python-dotenv
+beautifulsoup4
+sqlalchemy
+opencv-python-headless
+pytesseract
+reportlab
+jinja2
+python-multipart
+Pillow

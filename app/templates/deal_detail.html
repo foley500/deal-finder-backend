@@ -1,0 +1,256 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<h2 class="mb-4">{{ deal.title }}</h2>
+
+{% if report.image_url %}
+<div class="card p-0 mb-4 overflow-hidden">
+    <img src="{{ report.image_url }}"
+         alt="Listing Image"
+         class="img-fluid deal-hero-image">
+</div>
+{% endif %}
+
+<div class="row g-4">
+
+    <!-- LEFT COLUMN -->
+    <div class="col-lg-6">
+
+        <!-- FINANCIAL SUMMARY -->
+        <div class="card p-4 mb-4">
+            <h5 class="mb-3">Financial Summary</h5>
+
+            <div class="d-flex justify-content-between">
+                <span>Listing Price</span>
+                <strong>£{{ report.financials.listing_price }}</strong>
+            </div>
+
+            <div class="d-flex justify-content-between">
+                <span>Market Value</span>
+                <strong>£{{ report.financials.market_value }}</strong>
+            </div>
+
+            <div class="d-flex justify-content-between">
+                <span>Total Risk Penalty</span>
+                <strong>£{{ report.risk_breakdown.total_risk_penalty }}</strong>
+            </div>
+
+            <hr>
+
+            <div class="d-flex justify-content-between fs-4">
+    <span>True Profit</span>
+    <strong class="text-success">
+        £{{ report.financials.profit }}
+    </strong>
+</div>
+
+{% set margin = (report.financials.profit / report.financials.market_value * 100) 
+    if report.financials.market_value else 0 %}
+
+<div class="mt-3">
+    <div class="small text-secondary mb-1">Profit Margin</div>
+
+    <div class="progress bg-dark" style="height: 8px;">
+        <div class="progress-bar bg-success"
+             style="width: {{ margin }}%;">
+        </div>
+    </div>
+
+    <div class="small mt-1">
+        {{ "%.1f"|format(margin) }}%
+    </div>
+</div>
+
+            <div class="mt-3">
+                <div class="mt-3 d-flex gap-2 align-items-center">
+
+    <div class="badge bg-dark border border-light px-3 py-2">
+        Score: {{ report.scoring.score }}
+    </div>
+
+    {% if report.scoring.confidence_level == "very_high" %}
+        <div class="badge bg-success px-3 py-2">
+            VERY HIGH CONFIDENCE
+        </div>
+    {% elif report.scoring.confidence_level == "high" %}
+        <div class="badge bg-warning text-dark px-3 py-2">
+            HIGH CONFIDENCE
+        </div>
+    {% elif report.scoring.confidence_level == "medium" %}
+        <div class="badge bg-secondary px-3 py-2">
+            MEDIUM CONFIDENCE
+        </div>
+    {% else %}
+        <div class="badge bg-danger px-3 py-2">
+            LOW CONFIDENCE
+        </div>
+    {% endif %}
+
+</div>
+            </div>
+        </div>
+
+
+        <!-- CAP DATA -->
+        <div class="card p-4 mb-4">
+            <h5 class="mb-3">CAP Valuation</h5>
+
+            {% if report.cap_data.clean %}
+                <div class="d-flex justify-content-between">
+                    <span>Clean</span>
+                    <strong>£{{ report.cap_data.clean }}</strong>
+                </div>
+
+                <div class="d-flex justify-content-between">
+                    <span>Retail</span>
+                    <strong>£{{ report.cap_data.retail }}</strong>
+                </div>
+
+                <div class="d-flex justify-content-between">
+                    <span>Trade</span>
+                    <strong>£{{ report.cap_data.trade }}</strong>
+                </div>
+            {% else %}
+                <p class="text-secondary">No CAP data available</p>
+            {% endif %}
+        </div>
+
+
+        <!-- RISK BREAKDOWN -->
+        <div class="card p-4">
+            <h5 class="mb-3">Risk Analysis</h5>
+
+            <div class="d-flex justify-content-between">
+                <span>Description Risk</span>
+                <strong>£{{ report.risk_breakdown.description_penalty }}</strong>
+            </div>
+
+            <div class="d-flex justify-content-between">
+                <span>MOT Risk</span>
+                <strong>£{{ report.risk_breakdown.mot_penalty }}</strong>
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- RIGHT COLUMN -->
+    <div class="col-lg-6">
+
+        <!-- LISTING INFO -->
+       <!-- LISTING INFO -->
+<div class="card p-4 mb-4">
+    <h5 class="mb-3">Listing Information</h5>
+
+    <p><strong>Registration:</strong> {{ deal.reg or "Not detected" }}</p>
+    <p><strong>Mileage:</strong> {{ deal.mileage or "Not provided" }}</p>
+
+    <p><strong>Transmission:</strong>
+        {{ report.listing_details.transmission or "Not provided" }}
+    </p>
+
+    <p><strong>Fuel Type:</strong>
+        {{ report.listing_details.fuel_type or "Not provided" }}
+    </p>
+
+    <p><strong>Exterior Colour:</strong>
+        {{ report.listing_details.exterior_color or "Not provided" }}
+    </p>
+
+    <p><strong>Interior Colour:</strong>
+        {{ report.listing_details.interior_color or "Not provided" }}
+    </p>
+
+    <p><strong>Source:</strong> {{ deal.source }}</p>
+    <p><strong>Seller:</strong> {{ report.seller or "Unknown" }}</p>
+    <p><strong>Location:</strong> {{ report.location or "Unknown" }}</p>
+
+    {% if report.listing_url %}
+        <a href="{{ report.listing_url }}"
+           target="_blank"
+           class="btn btn-outline-light mt-2">
+            View Original Listing
+        </a>
+    {% endif %}
+</div>
+
+
+        <!-- MOT SUMMARY -->
+        <div class="card p-4 mb-4">
+            <h5 class="mb-3">MOT Summary</h5>
+
+            <div class="d-flex justify-content-between">
+                <span>Fails</span>
+                <strong>{{ report.mot_summary.fail_count }}</strong>
+            </div>
+
+            <div class="d-flex justify-content-between">
+                <span>Advisories</span>
+                <strong>{{ report.mot_summary.advisory_count }}</strong>
+            </div>
+
+            <div class="d-flex justify-content-between">
+                <span>MOT Penalty</span>
+                <strong>£{{ report.mot_summary.mot_penalty }}</strong>
+            </div>
+        </div>
+
+
+        <!-- COLLAPSIBLE MOT HISTORY -->
+        <div class="card p-4">
+            <h5 class="mb-3">Full MOT History</h5>
+
+            {% if report.mot_full_data %}
+            <div class="accordion" id="motAccordion">
+
+                {% for mot in report.mot_full_data %}
+                <div class="accordion-item bg-dark text-light border-secondary">
+
+                    <h2 class="accordion-header">
+                        <button class="accordion-button collapsed bg-dark text-light"
+                                type="button"
+                                data-bs-toggle="collapse"
+                                data-bs-target="#collapse{{ loop.index }}">
+                            {{ mot.testDate }} — {{ mot.testResult }}
+                        </button>
+                    </h2>
+
+                    <div id="collapse{{ loop.index }}"
+                         class="accordion-collapse collapse"
+                         data-bs-parent="#motAccordion">
+
+                        <div class="accordion-body">
+
+                            <p><strong>Expiry:</strong> {{ mot.expiryDate }}</p>
+                            <p><strong>Mileage:</strong> {{ mot.odometerValue }}</p>
+
+                            {% if mot.rfrAndComments %}
+                                <hr>
+                                {% for item in mot.rfrAndComments %}
+                                    <p>
+                                        <strong>{{ item.type }}:</strong>
+                                        {{ item.text }}
+                                    </p>
+                                {% endfor %}
+                            {% endif %}
+
+                        </div>
+
+                    </div>
+
+                </div>
+                {% endfor %}
+
+            </div>
+            {% else %}
+                <p class="text-secondary">No MOT history available</p>
+            {% endif %}
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}

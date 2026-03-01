@@ -1,0 +1,35 @@
+<div class="row g-4 mb-4">
+
+    <!-- Total Deals -->
+    <div class="col-md-3">
+        <div class="card shadow-sm p-3">
+            <h6 class="text-muted">Total Deals</h6>
+            <h3 class="fw-bold">{{ total_deals }}</h3>
+        </div>
+    </div>
+
+    <!-- Average Profit -->
+    <div class="col-md-3">
+        <div class="card shadow-sm p-3">
+            <h6 class="text-muted">Avg Profit</h6>
+            <h3 class="fw-bold text-success">£{{ average_profit | round(0) }}</h3>
+        </div>
+    </div>
+
+    <!-- Best Profit -->
+    <div class="col-md-3">
+        <div class="card shadow-sm p-3">
+            <h6 class="text-muted">Best Profit</h6>
+            <h3 class="fw-bold text-primary">£{{ best_profit | round(0) }}</h3>
+        </div>
+    </div>
+
+    <!-- High Confidence Deals -->
+    <div class="col-md-3">
+        <div class="card shadow-sm p-3">
+            <h6 class="text-muted">High Confidence</h6>
+            <h3 class="fw-bold text-danger">{{ high_confidence }}</h3>
+        </div>
+    </div>
+
+</div>
