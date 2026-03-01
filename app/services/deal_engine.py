@@ -76,8 +76,6 @@ def process_listing(
         max_mileage = filters.get("max_mileage")
         required_keywords = filters.get("required_keywords", [])
         excluded_keywords = filters.get("excluded_keywords", [])
-        min_profit = filters.get("min_profit")
-        min_score = filters.get("min_score")
         allowed_body_types = filters.get("allowed_body_types", [])
 
         external_id = raw_item.get("id") or raw_item.get("view_url")
@@ -100,15 +98,7 @@ def process_listing(
         seller = raw_item.get("seller")
         location = raw_item.get("location")
 
-        # ---------------------------------
-        # PRICE
-        # ---------------------------------
-
         price = float(raw_item.get("price", 0) or 0)
-
-        # ---------------------------------
-        # STRUCTURED EXTRACTION
-        # ---------------------------------
 
         structured_year = extract_structured_value(
             aspects,
@@ -161,24 +151,27 @@ def process_listing(
 
         reg = raw_item.get("registration")
 
-        # Try title extraction
+        # 1️⃣ Try title first (free)
         if not reg:
             reg = extract_registration(title)
 
-        # Try primary image
-        if not reg and image_url:
-            reg = extract_plate_from_image_url(image_url)
+        # 2️⃣ Only OCR if still no reg
+        if not reg:
 
-        # Try gallery images
-        if not reg and all_images:
-            for img in all_images:
-                if not img:
-                    continue
+            images_to_scan = []
 
+            if image_url:
+                images_to_scan.append(image_url)
+
+            # only 1 extra image
+            for img in all_images[:1]:
+                if img and img != image_url:
+                    images_to_scan.append(img)
+
+            for img in images_to_scan:
                 reg = extract_plate_from_image_url(img)
-
                 if reg:
-                    print(f"✅ Plate detected from gallery: {reg}")
+                    print(f"✅ Plate detected: {reg}")
                     break
 
         if not reg:
@@ -241,12 +234,6 @@ def process_listing(
             risk_penalty,
             mileage
         )
-
-        if min_profit and profit < min_profit:
-            return None
-
-        if min_score and score < min_score:
-            return None
 
         confidence = assign_confidence(score)
 
