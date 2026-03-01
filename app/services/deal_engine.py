@@ -96,47 +96,15 @@ def process_listing(
 
         listing_url = raw_item.get("view_url")
         image_url = raw_item.get("image_url")
+        all_images = raw_item.get("all_images", [])
         seller = raw_item.get("seller")
         location = raw_item.get("location")
 
         # ---------------------------------
-        # PRICE EXTRACTION (TITLE BASED)
+        # PRICE
         # ---------------------------------
 
-        price = 0
-
-        # Format: "Car name / £5,000 / Location"
-        if "/" in title:
-            parts = [p.strip() for p in title.split("/")]
-
-            if len(parts) >= 2:
-                price_part = parts[1]
-
-                price_clean = (
-                    price_part
-                    .replace("£", "")
-                    .replace(",", "")
-                    .strip()
-                )
-
-                if price_clean.isdigit():
-                    price = float(price_clean)
-
-        # Fallback if title parsing fails
-        if not price:
-            price = float(raw_item.get("price", 0) or 0)
-
-        # ---------------------------------
-        # FACEBOOK DIRECT FIELDS
-        # ---------------------------------
-
-        fb_mileage = raw_item.get("mileage")
-        fb_transmission = raw_item.get("transmission")
-        fb_fuel = raw_item.get("fuelType")
-        fb_exterior = raw_item.get("exteriorColor")
-        fb_interior = raw_item.get("interiorColor")
-
-        title_lower = title.lower()
+        price = float(raw_item.get("price", 0) or 0)
 
         # ---------------------------------
         # STRUCTURED EXTRACTION
@@ -157,37 +125,10 @@ def process_listing(
             ["Body Type", "BodyStyle"]
         )
 
-        structured_transmission = extract_structured_value(
-            aspects,
-            ["Transmission"]
-        )
-
-        structured_fuel = extract_structured_value(
-            aspects,
-            ["Fuel Type", "Fuel"]
-        )
-
-        structured_exterior = extract_structured_value(
-            aspects,
-            ["Exterior Colour", "Colour"]
-        )
-
-        # ---------------------------------
-        # PRIORITY MERGING
-        # ---------------------------------
-
         year = safe_int(structured_year) or extract_year_from_text(title)
+        mileage = safe_int(structured_mileage) or extract_mileage_from_text(title)
 
-        mileage = (
-            safe_int(fb_mileage)
-            or safe_int(structured_mileage)
-            or extract_mileage_from_text(title)
-        )
-
-        transmission = fb_transmission or structured_transmission
-        fuel_type = fb_fuel or structured_fuel
-        exterior_color = fb_exterior or structured_exterior
-        interior_color = fb_interior
+        title_lower = title.lower()
 
         # ---------------------------------
         # EARLY FILTERING
@@ -210,26 +151,38 @@ def process_listing(
             if word.lower() in title_lower:
                 return None
 
-        if allowed_body_types:
-            body_value = (structured_body or "").lower()
-            if structured_body:
-                if not any(bt.lower() in body_value for bt in allowed_body_types):
-                    return None
-            else:
-                if not any(bt.lower() in title_lower for bt in allowed_body_types):
-                    return None
+        if allowed_body_types and structured_body:
+            if not any(bt.lower() in structured_body.lower() for bt in allowed_body_types):
+                return None
 
         # ---------------------------------
-        # REGISTRATION PRIORITY
+        # REGISTRATION DETECTION
         # ---------------------------------
 
         reg = raw_item.get("registration")
 
+        # Try title extraction
         if not reg:
             reg = extract_registration(title)
 
+        # Try primary image
         if not reg and image_url:
             reg = extract_plate_from_image_url(image_url)
+
+        # Try gallery images
+        if not reg and all_images:
+            for img in all_images:
+                if not img:
+                    continue
+
+                reg = extract_plate_from_image_url(img)
+
+                if reg:
+                    print(f"✅ Plate detected from gallery: {reg}")
+                    break
+
+        if not reg:
+            print("ℹ️ No plate detected for listing.")
 
         # ---------------------------------
         # VALUATION
@@ -239,10 +192,9 @@ def process_listing(
         market_value = valuation_data.get("clean", 0)
 
         # ---------------------------------
-        # MOT ANALYSIS
+        # MOT
         # ---------------------------------
 
-        mot_raw = None
         mot_tests = []
         mot_penalty = 0
         fail_count = 0
@@ -251,25 +203,24 @@ def process_listing(
         if reg:
             try:
                 mot_raw = get_mot_data(reg)
+                if mot_raw and isinstance(mot_raw, list):
+                    mot_tests = mot_raw[0].get("motTests", [])
+
+                    for test in mot_tests:
+                        if test.get("testResult") == "FAIL":
+                            fail_count += 1
+                            mot_penalty += 500
+
+                        comments = test.get("rfrAndComments", [])
+                        advisory_count += len(comments)
+
+                        if comments:
+                            mot_penalty += 200
             except Exception:
-                mot_raw = None
-
-        if mot_raw and isinstance(mot_raw, list):
-            mot_tests = mot_raw[0].get("motTests", [])
-
-            for test in mot_tests:
-                if test.get("testResult") == "FAIL":
-                    fail_count += 1
-                    mot_penalty += 500
-
-                comments = test.get("rfrAndComments", [])
-                advisory_count += len(comments)
-
-                if comments:
-                    mot_penalty += 200
+                pass
 
         # ---------------------------------
-        # RISK MODEL
+        # RISK
         # ---------------------------------
 
         description_penalty = description_risk(description)
@@ -300,7 +251,7 @@ def process_listing(
         confidence = assign_confidence(score)
 
         # ---------------------------------
-        # STRUCTURED REPORT
+        # REPORT
         # ---------------------------------
 
         report_data = {
@@ -310,41 +261,23 @@ def process_listing(
             "image_url": image_url,
             "seller": seller,
             "location": location,
-
-            "listing_details": {
-                "transmission": transmission,
-                "fuel_type": fuel_type,
-                "exterior_color": exterior_color,
-                "interior_color": interior_color,
-            },
-
-            "cap_data": {
-                "clean": valuation_data.get("clean"),
-                "retail": valuation_data.get("retail"),
-                "trade": valuation_data.get("trade"),
-                "source": valuation_data.get("source"),
-            },
-
+            "cap_data": valuation_data,
             "mot_summary": {
                 "fail_count": fail_count,
                 "advisory_count": advisory_count,
                 "mot_penalty": mot_penalty,
             },
-
             "mot_full_data": mot_tests,
-
             "risk_breakdown": {
                 "description_penalty": description_penalty,
                 "mot_penalty": mot_penalty,
                 "total_risk_penalty": risk_penalty,
             },
-
             "financials": {
                 "listing_price": price,
                 "market_value": market_value,
                 "profit": profit,
             },
-
             "scoring": {
                 "score": score,
                 "confidence_level": confidence,
@@ -352,7 +285,7 @@ def process_listing(
         }
 
         # ---------------------------------
-        # SAVE DEAL
+        # SAVE
         # ---------------------------------
 
         deal = Deal(

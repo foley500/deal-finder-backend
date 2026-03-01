@@ -11,6 +11,7 @@ EBAY_CLIENT_SECRET = os.getenv("EBAY_CLIENT_SECRET")
 
 TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+ITEM_URL = "https://api.ebay.com/buy/browse/v1/item/"
 
 _cached_token = None
 _token_expiry = 0
@@ -56,14 +57,12 @@ def get_ebay_access_token():
 
 
 # ==========================================
-# 🖼 Force Full Resolution Image
+# 🖼 Upgrade Image Resolution
 # ==========================================
 def upgrade_image_resolution(url):
     if not url:
         return None
 
-    # eBay image URLs follow predictable pattern
-    # Replace size (s-l225, s-l500 etc) with s-l1600
     if "s-l" in url:
         base = url.split("s-l")[0]
         return base + "s-l1600.jpg"
@@ -72,11 +71,53 @@ def upgrade_image_resolution(url):
 
 
 # ==========================================
+# 🖼 Get Full Gallery Images
+# ==========================================
+def get_ebay_item_images(item_id: str, token: str):
+
+    url = f"{ITEM_URL}{item_id}"
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
+        "Content-Type": "application/json"
+    }
+
+    response = requests.get(url, headers=headers)
+
+    if response.status_code != 200:
+        print("❌ Failed to fetch item details:", response.text)
+        return []
+
+    data = response.json()
+
+    images = []
+
+    # Primary image
+    if data.get("image"):
+        images.append(
+            upgrade_image_resolution(
+                data["image"].get("imageUrl")
+            )
+        )
+
+    # Additional images
+    for img in data.get("additionalImages", []):
+        images.append(
+            upgrade_image_resolution(
+                img.get("imageUrl")
+            )
+        )
+
+    return images
+
+
+# ==========================================
 # 🚗 Browse Search (Production)
 # ==========================================
 def search_ebay_browse(
     keywords="used car",
-    limit=50,
+    limit=5,  # 🔥 Reduced for testing
     min_price=1000,
     max_price=50000,
 ):
@@ -110,18 +151,20 @@ def search_ebay_browse(
     listings = []
 
     for item in items:
-        price_obj = item.get("price", {})
-        image_obj = item.get("image", {})
 
-        raw_image = image_obj.get("imageUrl")
-        high_res_image = upgrade_image_resolution(raw_image)
+        price_obj = item.get("price", {})
+        item_id = item.get("itemId")
+
+        # 🔥 Fetch full gallery
+        all_images = get_ebay_item_images(item_id, token)
 
         listings.append({
-            "id": item.get("itemId"),
+            "id": item_id,
             "title": item.get("title"),
             "price": float(price_obj.get("value", 0)) if price_obj else 0,
             "view_url": item.get("itemWebUrl"),
-            "image_url": high_res_image,
+            "image_url": all_images[0] if all_images else None,
+            "all_images": all_images,  # 🔥 NEW
             "source": "ebay",
             "aspects": item.get("localizedAspects", {})
         })
