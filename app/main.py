@@ -404,3 +404,10 @@ def create_test_dealer():
 
     finally:
         db.close()
+
+
+@app.get("/wipe-ebay")
+def wipe_ebay(db: Session = Depends(get_db)):
+    db.query(Deal).filter(Deal.source == "ebay_browse").delete()
+    db.commit()
+    return {"status": "eBay deals deleted"}
