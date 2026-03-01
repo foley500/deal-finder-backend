@@ -116,7 +116,7 @@ def scan_market_for_deals(dealer_id: int):
 
             items = source.search(
                 keywords="cars",
-                entries=50,
+                entries=5,
                 min_price=None,
                 max_price=None,
             )
