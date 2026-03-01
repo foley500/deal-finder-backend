@@ -117,7 +117,7 @@ def get_ebay_item_images(item_id: str, token: str):
 # ==========================================
 def search_ebay_browse(
     keywords="used car",
-    limit=5,  # 🔥 Reduced for testing
+    limit=5,
     min_price=1000,
     max_price=50000,
 ):
@@ -146,29 +146,74 @@ def search_ebay_browse(
         return []
 
     data = response.json()
-    items = data.get("itemSummaries", [])
+    summaries = data.get("itemSummaries", [])
 
     listings = []
 
-    for item in items:
+    for summary in summaries:
 
-        price_obj = item.get("price", {})
-        item_id = item.get("itemId")
+        item_id = summary.get("itemId")
 
-        # 🔥 Fetch full gallery
-        all_images = get_ebay_item_images(item_id, token)
+        # 🔥 FULL ITEM DETAIL CALL
+        detail_response = requests.get(
+            f"{ITEM_URL}{item_id}",
+            headers=headers
+        )
+
+        if detail_response.status_code != 200:
+            print("❌ Item detail fetch failed:", detail_response.text)
+            continue
+
+        item = detail_response.json()
+
+        # ----------------------------------
+        # BUILD ASPECT DICT
+        # ----------------------------------
+        aspect_dict = {}
+
+        for aspect in item.get("localizedAspects", []):
+            name = aspect.get("name")
+            value = aspect.get("value")
+            if name and value:
+                aspect_dict[name] = value
+
+        # ----------------------------------
+        # IMAGE GALLERY
+        # ----------------------------------
+        all_images = []
+
+        if item.get("image"):
+            all_images.append(
+                upgrade_image_resolution(
+                    item["image"].get("imageUrl")
+                )
+            )
+
+        for img in item.get("additionalImages", []):
+            all_images.append(
+                upgrade_image_resolution(
+                    img.get("imageUrl")
+                )
+            )
+
+        # ----------------------------------
+        # BUILD LISTING
+        # ----------------------------------
 
         listings.append({
             "id": item_id,
             "title": item.get("title"),
-            "price": float(price_obj.get("value", 0)) if price_obj else 0,
+            "description": item.get("description"),
+            "price": float(item.get("price", {}).get("value", 0)),
             "view_url": item.get("itemWebUrl"),
             "image_url": all_images[0] if all_images else None,
-            "all_images": all_images,  # 🔥 NEW
+            "all_images": all_images,
+            "seller": item.get("seller", {}).get("username"),
+            "location": item.get("itemLocation", {}).get("postalCode"),
+            "aspects": aspect_dict,
             "source": "ebay",
-            "aspects": item.get("localizedAspects", {})
         })
 
-    print(f"✅ eBay returned {len(listings)} listings")
+    print(f"✅ eBay returned {len(listings)} listings with full details")
 
     return listings
