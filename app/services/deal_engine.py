@@ -64,8 +64,6 @@ def process_listing(raw_item: dict, dealer_id: int, source: str = "ebay", filter
     db = SessionLocal()
 
     try:
-        filters = filters or {}
-
         external_id = raw_item.get("id") or raw_item.get("view_url")
 
         existing = db.query(Deal).filter(
@@ -76,8 +74,8 @@ def process_listing(raw_item: dict, dealer_id: int, source: str = "ebay", filter
         if existing:
             return existing
 
-        title = raw_item.get("title", "")
-        description = raw_item.get("description", "")
+        title = raw_item.get("title", "") or ""
+        description = raw_item.get("description", "") or ""
         aspects = raw_item.get("aspects", {}) or {}
 
         listing_url = raw_item.get("view_url")
@@ -108,39 +106,20 @@ def process_listing(raw_item: dict, dealer_id: int, source: str = "ebay", filter
 
         reg = raw_item.get("registration")
 
-        # 1️⃣ Try title first (FREE)
+        # 1️⃣ Try title first (free)
         if not reg:
             reg = extract_registration(title)
 
-        # 2️⃣ Smart OCR if still no reg
+        # 2️⃣ OCR fallback (scan first 5 images in order)
         if not reg:
 
             images_to_scan = []
-            gallery = all_images
 
-            # FRONT (first image)
-            if image_url:
-                images_to_scan.append(image_url)
-
-            # REAR (middle)
-            if len(gallery) >= 4:
-                mid = len(gallery) // 2
-                if gallery[mid] not in images_to_scan:
-                    images_to_scan.append(gallery[mid])
-
-            # CLOSE UP (last image)
-            if len(gallery) >= 2:
-                if gallery[-1] not in images_to_scan:
-                    images_to_scan.append(gallery[-1])
-
-            # Fill remaining up to 5 max
-            for img in gallery:
-                if img not in images_to_scan:
+            for img in all_images:
+                if img:
                     images_to_scan.append(img)
                 if len(images_to_scan) >= 5:
                     break
-
-            images_to_scan = images_to_scan[:5]
 
             for img in images_to_scan:
                 reg = extract_plate_from_image_url(img)
