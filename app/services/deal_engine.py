@@ -124,26 +124,6 @@ def process_listing(
         # EARLY FILTERING
         # ---------------------------------
 
-        if min_year and year and year < min_year:
-            return None
-
-        if max_year and year and year > max_year:
-            return None
-
-        if max_mileage and mileage and mileage > max_mileage:
-            return None
-
-        for word in required_keywords:
-            if word.lower() not in title_lower:
-                return None
-
-        for word in excluded_keywords:
-            if word.lower() in title_lower:
-                return None
-
-        if allowed_body_types and structured_body:
-            if not any(bt.lower() in structured_body.lower() for bt in allowed_body_types):
-                return None
 
         # ---------------------------------
         # REGISTRATION DETECTION
