@@ -59,24 +59,12 @@ def assign_confidence(score: float) -> str:
 # MAIN ENGINE
 # ---------------------------------
 
-def process_listing(
-    raw_item: dict,
-    dealer_id: int,
-    source: str = "ebay",
-    filters: dict | None = None,
-):
+def process_listing(raw_item: dict, dealer_id: int, source: str = "ebay", filters: dict | None = None):
 
     db = SessionLocal()
 
     try:
         filters = filters or {}
-
-        min_year = filters.get("min_year")
-        max_year = filters.get("max_year")
-        max_mileage = filters.get("max_mileage")
-        required_keywords = filters.get("required_keywords", [])
-        excluded_keywords = filters.get("excluded_keywords", [])
-        allowed_body_types = filters.get("allowed_body_types", [])
 
         external_id = raw_item.get("id") or raw_item.get("view_url")
 
@@ -94,36 +82,25 @@ def process_listing(
 
         listing_url = raw_item.get("view_url")
         image_url = raw_item.get("image_url")
-        all_images = raw_item.get("all_images", [])
+        all_images = raw_item.get("all_images", []) or []
         seller = raw_item.get("seller")
         location = raw_item.get("location")
 
         price = float(raw_item.get("price", 0) or 0)
 
-        structured_year = extract_structured_value(
-            aspects,
-            ["Year", "Model Year", "Registration Year"]
-        )
+        # ---------------------------------
+        # STRUCTURED EXTRACTION
+        # ---------------------------------
 
-        structured_mileage = extract_structured_value(
-            aspects,
-            ["Mileage", "Miles"]
-        )
-
-        structured_body = extract_structured_value(
-            aspects,
-            ["Body Type", "BodyStyle"]
-        )
+        structured_year = extract_structured_value(aspects, ["Year", "Model Year", "Registration Year"])
+        structured_mileage = extract_structured_value(aspects, ["Mileage", "Miles"])
+        structured_body = extract_structured_value(aspects, ["Body Type", "BodyStyle"])
+        structured_transmission = extract_structured_value(aspects, ["Transmission"])
+        structured_fuel = extract_structured_value(aspects, ["Fuel Type", "Fuel"])
+        structured_exterior = extract_structured_value(aspects, ["Exterior Colour", "Colour"])
 
         year = safe_int(structured_year) or extract_year_from_text(title)
         mileage = safe_int(structured_mileage) or extract_mileage_from_text(title)
-
-        title_lower = title.lower()
-
-        # ---------------------------------
-        # EARLY FILTERING
-        # ---------------------------------
-
 
         # ---------------------------------
         # REGISTRATION DETECTION
@@ -131,22 +108,39 @@ def process_listing(
 
         reg = raw_item.get("registration")
 
-        # 1️⃣ Try title first (free)
+        # 1️⃣ Try title first (FREE)
         if not reg:
             reg = extract_registration(title)
 
-        # 2️⃣ Only OCR if still no reg
+        # 2️⃣ Smart OCR if still no reg
         if not reg:
 
             images_to_scan = []
+            gallery = all_images
 
+            # FRONT (first image)
             if image_url:
                 images_to_scan.append(image_url)
 
-            # only 1 extra image
-            for img in all_images[:1]:
-                if img and img != image_url:
+            # REAR (middle)
+            if len(gallery) >= 4:
+                mid = len(gallery) // 2
+                if gallery[mid] not in images_to_scan:
+                    images_to_scan.append(gallery[mid])
+
+            # CLOSE UP (last image)
+            if len(gallery) >= 2:
+                if gallery[-1] not in images_to_scan:
+                    images_to_scan.append(gallery[-1])
+
+            # Fill remaining up to 5 max
+            for img in gallery:
+                if img not in images_to_scan:
                     images_to_scan.append(img)
+                if len(images_to_scan) >= 5:
+                    break
+
+            images_to_scan = images_to_scan[:5]
 
             for img in images_to_scan:
                 reg = extract_plate_from_image_url(img)
@@ -193,15 +187,11 @@ def process_listing(
                 pass
 
         # ---------------------------------
-        # RISK
+        # RISK + SCORING
         # ---------------------------------
 
         description_penalty = description_risk(description)
         risk_penalty = description_penalty + mot_penalty
-
-        # ---------------------------------
-        # PROFIT & SCORE
-        # ---------------------------------
 
         profit = calculate_true_profit(
             market_value,
@@ -228,6 +218,11 @@ def process_listing(
             "image_url": image_url,
             "seller": seller,
             "location": location,
+            "listing_details": {
+                "transmission": structured_transmission,
+                "fuel_type": structured_fuel,
+                "exterior_color": structured_exterior,
+            },
             "cap_data": valuation_data,
             "mot_summary": {
                 "fail_count": fail_count,
@@ -250,10 +245,6 @@ def process_listing(
                 "confidence_level": confidence,
             }
         }
-
-        # ---------------------------------
-        # SAVE
-        # ---------------------------------
 
         deal = Deal(
             dealer_id=dealer_id,

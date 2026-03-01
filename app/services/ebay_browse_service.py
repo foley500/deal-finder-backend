@@ -3,9 +3,6 @@ import requests
 import base64
 import time
 
-# ==========================================
-# 🔐 Environment Credentials
-# ==========================================
 EBAY_CLIENT_ID = os.getenv("EBAY_CLIENT_ID")
 EBAY_CLIENT_SECRET = os.getenv("EBAY_CLIENT_SECRET")
 
@@ -17,24 +14,17 @@ _cached_token = None
 _token_expiry = 0
 
 
-# ==========================================
-# 🔐 OAuth Token Handling
-# ==========================================
 def get_ebay_access_token():
     global _cached_token, _token_expiry
 
     if _cached_token and time.time() < _token_expiry:
         return _cached_token
 
-    if not EBAY_CLIENT_ID or not EBAY_CLIENT_SECRET:
-        print("❌ eBay credentials missing")
-        return None
-
     credentials = f"{EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}"
-    encoded_credentials = base64.b64encode(credentials.encode()).decode()
+    encoded = base64.b64encode(credentials.encode()).decode()
 
     headers = {
-        "Authorization": f"Basic {encoded_credentials}",
+        "Authorization": f"Basic {encoded}",
         "Content-Type": "application/x-www-form-urlencoded"
     }
 
@@ -56,71 +46,15 @@ def get_ebay_access_token():
     return _cached_token
 
 
-# ==========================================
-# 🖼 Upgrade Image Resolution
-# ==========================================
 def upgrade_image_resolution(url):
     if not url:
         return None
-
     if "s-l" in url:
-        base = url.split("s-l")[0]
-        return base + "s-l1600.jpg"
-
+        return url.split("s-l")[0] + "s-l1600.jpg"
     return url
 
 
-# ==========================================
-# 🖼 Get Full Gallery Images
-# ==========================================
-def get_ebay_item_images(item_id: str, token: str):
-
-    url = f"{ITEM_URL}{item_id}"
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
-        "Content-Type": "application/json"
-    }
-
-    response = requests.get(url, headers=headers)
-
-    if response.status_code != 200:
-        print("❌ Failed to fetch item details:", response.text)
-        return []
-
-    data = response.json()
-
-    images = []
-
-    # Primary image
-    if data.get("image"):
-        images.append(
-            upgrade_image_resolution(
-                data["image"].get("imageUrl")
-            )
-        )
-
-    # Additional images
-    for img in data.get("additionalImages", []):
-        images.append(
-            upgrade_image_resolution(
-                img.get("imageUrl")
-            )
-        )
-
-    return images
-
-
-# ==========================================
-# 🚗 Browse Search (Production)
-# ==========================================
-def search_ebay_browse(
-    keywords="used car",
-    limit=5,
-    min_price=1000,
-    max_price=50000,
-):
+def search_ebay_browse(keywords="used car", limit=5, min_price=1000, max_price=50000):
 
     token = get_ebay_access_token()
     if not token:
@@ -145,60 +79,39 @@ def search_ebay_browse(
         print("❌ Browse API error:", response.text)
         return []
 
-    data = response.json()
-    summaries = data.get("itemSummaries", [])
-
+    summaries = response.json().get("itemSummaries", [])
     listings = []
 
     for summary in summaries:
 
         item_id = summary.get("itemId")
 
-        # 🔥 FULL ITEM DETAIL CALL
-        detail_response = requests.get(
-            f"{ITEM_URL}{item_id}",
-            headers=headers
-        )
-
-        if detail_response.status_code != 200:
-            print("❌ Item detail fetch failed:", detail_response.text)
+        detail = requests.get(f"{ITEM_URL}{item_id}", headers=headers)
+        if detail.status_code != 200:
             continue
 
-        item = detail_response.json()
+        item = detail.json()
 
-        # ----------------------------------
-        # BUILD ASPECT DICT
-        # ----------------------------------
+        # BUILD ASPECT DICT CORRECTLY
         aspect_dict = {}
-
         for aspect in item.get("localizedAspects", []):
             name = aspect.get("name")
-            value = aspect.get("value")
-            if name and value:
-                aspect_dict[name] = value
+            values = aspect.get("value")
 
-        # ----------------------------------
+            if name and values:
+                if isinstance(values, list):
+                    aspect_dict[name] = values[0]
+                else:
+                    aspect_dict[name] = values
+
         # IMAGE GALLERY
-        # ----------------------------------
         all_images = []
 
         if item.get("image"):
-            all_images.append(
-                upgrade_image_resolution(
-                    item["image"].get("imageUrl")
-                )
-            )
+            all_images.append(upgrade_image_resolution(item["image"].get("imageUrl")))
 
         for img in item.get("additionalImages", []):
-            all_images.append(
-                upgrade_image_resolution(
-                    img.get("imageUrl")
-                )
-            )
-
-        # ----------------------------------
-        # BUILD LISTING
-        # ----------------------------------
+            all_images.append(upgrade_image_resolution(img.get("imageUrl")))
 
         listings.append({
             "id": item_id,
@@ -215,5 +128,4 @@ def search_ebay_browse(
         })
 
     print(f"✅ eBay returned {len(listings)} listings with full details")
-
     return listings
