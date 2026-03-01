@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.database import engine, SessionLocal
-from app.models import Base, Dealer, DealerSettings, Deal
+from app.models import Base, Dealer, DealerSettings, Deal, ScanRun
 from app.tasks import notify_deal, scan_market_for_deals
 from app.services.deal_engine import process_listing
 from app.services.ebay_browse_service import search_ebay_browse
@@ -81,6 +81,12 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         Deal.status.in_(["high", "very_high"])
     ).count()
 
+    last_scan = db.query(ScanRun).order_by(
+        ScanRun.created_at.desc()
+    ).first()
+
+    last_scan_time = last_scan.created_at if last_scan else None
+
     deals = db.query(Deal).order_by(
         Deal.created_at.desc()
     ).limit(20).all()
@@ -97,6 +103,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
             "average_profit": average_profit,
             "best_profit": best_profit,
             "high_confidence": high_confidence,
+            "last_scan_time": last_scan_time,
         }
     )
 
@@ -355,6 +362,13 @@ def ingest_ebay(db: Session = Depends(get_db)):
 def test_ebay_scan():
     scan_market_for_deals.delay(1)  # dealer_id = 1
     return {"status": "eBay scan triggered"}
+
+@app.post("/dealer/{dealer_id}/scan")
+def run_market_scan(dealer_id: int):
+
+    scan_market_for_deals.delay(dealer_id)
+
+    return RedirectResponse(url="/", status_code=303)
 
 @app.get("/create-test-dealer")
 def create_test_dealer():
