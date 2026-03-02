@@ -45,31 +45,29 @@ def extract_plate_from_image_url(image_url: str):
             time.sleep(1)
             return None
 
-        if response.status_code != 200:
+        if response.status_code not in [200, 201]:
             print("❌ API Error Response:", response.text)
             return None
 
         data = response.json()
-        print("📄 API Response:", data)
 
-       if "results" in data and len(data["results"]) > 0:
+        if "results" in data and len(data["results"]) > 0:
 
-    raw_plate = data["results"][0]["plate"]
+            raw_plate = data["results"][0].get("plate")
 
-    if not raw_plate:
-        return None
+            if not raw_plate:
+                print("⚠️ Plate missing in response")
+                return None
 
-    # Normalise
-    plate = raw_plate.upper().replace(" ", "")
+            plate = raw_plate.upper().replace(" ", "")
+            plate = re.sub(r"[^A-Z0-9]", "", plate)
 
-    # Clean non-alphanumeric characters
-    plate = re.sub(r"[^A-Z0-9]", "", plate)
+            print("✅ Detected plate:", plate)
 
-    # Basic sanity check (length 6–8)
-    if 6 <= len(plate) <= 8:
-        return plate
+            if 6 <= len(plate) <= 8:
+                return plate
             else:
-                print("⚠️ Plate format invalid:", plate)
+                print("⚠️ Plate length invalid:", plate)
 
         else:
             print("⚠️ No results returned from API")
