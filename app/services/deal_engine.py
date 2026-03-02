@@ -41,7 +41,7 @@ def extract_structured_value(aspects: dict, possible_keys: list[str]):
 def safe_int(value):
     try:
         return int(str(value).replace(",", "").strip())
-    except:
+    except Exception:
         return None
 
 
@@ -59,7 +59,12 @@ def assign_confidence(score: float) -> str:
 # MAIN ENGINE
 # ---------------------------------
 
-def process_listing(raw_item: dict, dealer_id: int, source: str = "ebay", filters: dict | None = None):
+def process_listing(
+    raw_item: dict,
+    dealer_id: int,
+    source: str = "ebay",
+    filters: dict | None = None
+):
 
     db = SessionLocal()
 
@@ -90,12 +95,35 @@ def process_listing(raw_item: dict, dealer_id: int, source: str = "ebay", filter
         # STRUCTURED EXTRACTION
         # ---------------------------------
 
-        structured_year = extract_structured_value(aspects, ["Year", "Model Year", "Registration Year"])
-        structured_mileage = extract_structured_value(aspects, ["Mileage", "Miles"])
-        structured_body = extract_structured_value(aspects, ["Body Type", "BodyStyle"])
-        structured_transmission = extract_structured_value(aspects, ["Transmission"])
-        structured_fuel = extract_structured_value(aspects, ["Fuel Type", "Fuel"])
-        structured_exterior = extract_structured_value(aspects, ["Exterior Colour", "Colour"])
+        structured_year = extract_structured_value(
+            aspects,
+            ["Year", "Model Year", "Registration Year"]
+        )
+
+        structured_mileage = extract_structured_value(
+            aspects,
+            ["Mileage", "Miles"]
+        )
+
+        structured_body = extract_structured_value(
+            aspects,
+            ["Body Type", "BodyStyle"]
+        )
+
+        structured_transmission = extract_structured_value(
+            aspects,
+            ["Transmission"]
+        )
+
+        structured_fuel = extract_structured_value(
+            aspects,
+            ["Fuel Type", "Fuel"]
+        )
+
+        structured_exterior = extract_structured_value(
+            aspects,
+            ["Exterior Colour", "Colour"]
+        )
 
         year = safe_int(structured_year) or extract_year_from_text(title)
         mileage = safe_int(structured_mileage) or extract_mileage_from_text(title)
@@ -104,24 +132,47 @@ def process_listing(raw_item: dict, dealer_id: int, source: str = "ebay", filter
         # REGISTRATION DETECTION
         # ---------------------------------
 
-        reg = raw_item.get("registration")
+        reg = None
 
-        # 1️⃣ Try title first (free)
-        if not reg:
-            reg = extract_registration(title)
+        # 1️⃣ Try extracting from title first (FREE)
+        reg = extract_registration(title)
 
-        # 2️⃣ OCR fallback (scan first 5 images in order)
+        # 2️⃣ OCR fallback — PRIORITY ORDER (original working style)
         if not reg:
 
             images_to_scan = []
+            gallery = all_images or []
 
-            for img in all_images:
-                if img:
+            # PRIMARY IMAGE
+            if image_url:
+                images_to_scan.append(image_url)
+
+            # MIDDLE IMAGE (often rear plate)
+            if len(gallery) >= 3:
+                mid_index = len(gallery) // 2
+                mid_image = gallery[mid_index]
+                if mid_image not in images_to_scan:
+                    images_to_scan.append(mid_image)
+
+            # LAST IMAGE
+            if len(gallery) >= 2:
+                last_image = gallery[-1]
+                if last_image not in images_to_scan:
+                    images_to_scan.append(last_image)
+
+            # Fill remaining up to 5 max
+            for img in gallery:
+                if img not in images_to_scan:
                     images_to_scan.append(img)
                 if len(images_to_scan) >= 5:
                     break
 
+            images_to_scan = images_to_scan[:5]
+
+            print("Images being scanned:", images_to_scan)
+
             for img in images_to_scan:
+                print("Scanning:", img)
                 reg = extract_plate_from_image_url(img)
                 if reg:
                     print(f"✅ Plate detected: {reg}")
@@ -138,7 +189,7 @@ def process_listing(raw_item: dict, dealer_id: int, source: str = "ebay", filter
         market_value = valuation_data.get("clean", 0)
 
         # ---------------------------------
-        # MOT
+        # MOT ANALYSIS
         # ---------------------------------
 
         mot_tests = []
@@ -149,6 +200,7 @@ def process_listing(raw_item: dict, dealer_id: int, source: str = "ebay", filter
         if reg:
             try:
                 mot_raw = get_mot_data(reg)
+
                 if mot_raw and isinstance(mot_raw, list):
                     mot_tests = mot_raw[0].get("motTests", [])
 
@@ -162,6 +214,7 @@ def process_listing(raw_item: dict, dealer_id: int, source: str = "ebay", filter
 
                         if comments:
                             mot_penalty += 200
+
             except Exception:
                 pass
 
@@ -187,7 +240,7 @@ def process_listing(raw_item: dict, dealer_id: int, source: str = "ebay", filter
         confidence = assign_confidence(score)
 
         # ---------------------------------
-        # REPORT
+        # REPORT STRUCTURE
         # ---------------------------------
 
         report_data = {
