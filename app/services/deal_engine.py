@@ -76,8 +76,7 @@ def process_listing(
             Deal.source == source
         ).first()
 
-        if existing:
-            return existing
+        
 
         title = raw_item.get("title", "") or ""
         description = raw_item.get("description", "") or ""
