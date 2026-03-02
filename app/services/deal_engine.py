@@ -139,6 +139,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
     db = SessionLocal()
 
     try:
+        # ---------------------------------
+        # Prevent duplicates
+        # ---------------------------------
         external_id = raw_item.get("id") or raw_item.get("view_url")
         if not external_id:
             return None
@@ -151,6 +154,19 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if existing:
             return None
 
+        # ---------------------------------
+        # Load dealer settings (DYNAMIC)
+        # ---------------------------------
+        settings = db.query(DealerSettings).filter(
+            DealerSettings.dealer_id == dealer_id
+        ).first()
+
+        if not settings:
+            return None
+
+        # ---------------------------------
+        # Extract raw data
+        # ---------------------------------
         title = raw_item.get("title", "") or ""
         description = raw_item.get("description", "") or ""
         aspects = raw_item.get("aspects", {}) or {}
@@ -174,16 +190,25 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         year = safe_int(structured_year) or extract_year_from_text(title)
         mileage = safe_int(structured_mileage) or extract_mileage_from_text(title)
 
-        if not year or year < 2014:
+        # ---------------------------------
+        # Apply DASHBOARD FILTERS
+        # ---------------------------------
+        if year:
+            if settings.min_year and year < settings.min_year:
+                return None
+            if settings.max_year and year > settings.max_year:
+                return None
+
+        if mileage:
+            if settings.max_mileage and mileage > settings.max_mileage:
+                return None
+
+        if not price:
             return None
 
-        if not mileage or mileage > 100000:
-            return None
-
-        if not price or price > 4000:
-            return None
-
-        # Distance filter
+        # ---------------------------------
+        # Distance filter (still hardcoded radius)
+        # ---------------------------------
         if location and TARGET_LAT:
             listing_lat, listing_lon = get_lat_long(location)
             if listing_lat:
@@ -194,9 +219,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 if distance > MAX_DISTANCE_MILES:
                     return None
 
-        # -------------------------
+        # ---------------------------------
         # Registration detection
-        # -------------------------
+        # ---------------------------------
         reg = extract_registration(title)
 
         if not reg:
@@ -215,9 +240,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 if reg:
                     break
 
-        # -------------------------
+        # ---------------------------------
         # Valuation
-        # -------------------------
+        # ---------------------------------
         valuation_data = get_market_value(reg)
 
         if not valuation_data or not valuation_data.get("clean"):
@@ -225,9 +250,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
 
         market_value = valuation_data.get("trade", 0)
 
-        # ===============================
-        # MOT + DVLA DATA (NEW STRUCTURE)
-        # ===============================
+        # ---------------------------------
+        # MOT + DVLA DATA
+        # ---------------------------------
         mot_penalty = 0
         mot_summary = {}
         mot_full_data = []
@@ -246,9 +271,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             except Exception as e:
                 print("MOT processing error:", e)
 
-        # -------------------------
+        # ---------------------------------
         # Risk + Profit
-        # -------------------------
+        # ---------------------------------
         description_penalty = description_risk(description, price)
         risk_penalty = description_penalty + mot_penalty
 
@@ -261,9 +286,20 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         score = calculate_score(profit, risk_penalty, mileage)
         confidence = assign_confidence(score)
 
-        # -------------------------
+        # ---------------------------------
+        # Apply PROFIT + SCORE Filters
+        # ---------------------------------
+        if settings.min_profit is not None:
+            if profit < settings.min_profit:
+                return None
+
+        if settings.min_score is not None:
+            if score < settings.min_score:
+                return None
+
+        # ---------------------------------
         # Save Deal
-        # -------------------------
+        # ---------------------------------
         deal = Deal(
             dealer_id=dealer_id,
             external_id=external_id,
