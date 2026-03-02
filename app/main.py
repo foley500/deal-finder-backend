@@ -93,6 +93,17 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
 
     dealers = db.query(Dealer).all()
 
+    # 🔥 LOAD OR CREATE SETTINGS
+    settings = db.query(DealerSettings).filter(
+        DealerSettings.dealer_id == 1
+    ).first()
+
+    if not settings:
+        settings = DealerSettings(dealer_id=1)
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+
     return templates.TemplateResponse(
         "dashboard.html",
         {
@@ -104,6 +115,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
             "best_profit": best_profit,
             "high_confidence": high_confidence,
             "last_scan_time": last_scan_time,
+            "settings": settings,   # 🔥 THIS IS CRITICAL
         }
     )
 

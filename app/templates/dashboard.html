@@ -21,6 +21,58 @@
         <button class="btn btn-success">
             Run Market Scan
         </button>
+        <hr class="my-5">
+
+<h4 class="mb-4">Scan Filters</h4>
+
+<form method="post" action="/dealer/1/settings">
+
+    <div class="row g-3">
+
+        <div class="col-md-2">
+            <label class="form-label">Min Year</label>
+            <input type="number" name="min_year"
+                   class="form-control"
+                   value="{{ settings.min_year }}">
+        </div>
+
+        <div class="col-md-2">
+            <label class="form-label">Max Year</label>
+            <input type="number" name="max_year"
+                   class="form-control"
+                   value="{{ settings.max_year }}">
+        </div>
+
+        <div class="col-md-2">
+            <label class="form-label">Max Mileage</label>
+            <input type="number" name="max_mileage"
+                   class="form-control"
+                   value="{{ settings.max_mileage }}">
+        </div>
+
+        <div class="col-md-2">
+            <label class="form-label">Min Profit</label>
+            <input type="number" name="min_profit"
+                   class="form-control"
+                   value="{{ settings.min_profit }}">
+        </div>
+
+        <div class="col-md-2">
+            <label class="form-label">Min Score</label>
+            <input type="number" name="min_score"
+                   class="form-control"
+                   value="{{ settings.min_score }}">
+        </div>
+
+        <div class="col-md-2 d-flex align-items-end">
+            <button class="btn btn-primary w-100">
+                Save Filters
+            </button>
+        </div>
+
+    </div>
+
+</form>
     </form>
 </div>
 

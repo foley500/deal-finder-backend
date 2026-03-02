@@ -1,0 +1,44 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<h2 class="mb-4">Dealer Settings</h2>
+
+<form method="post">
+
+    <div class="mb-3">
+        <label>Minimum Year</label>
+        <input type="number" name="min_year" class="form-control"
+               value="{{ settings.min_year }}">
+    </div>
+
+    <div class="mb-3">
+        <label>Maximum Year</label>
+        <input type="number" name="max_year" class="form-control"
+               value="{{ settings.max_year }}">
+    </div>
+
+    <div class="mb-3">
+        <label>Maximum Mileage</label>
+        <input type="number" name="max_mileage" class="form-control"
+               value="{{ settings.max_mileage }}">
+    </div>
+
+    <div class="mb-3">
+        <label>Minimum Profit</label>
+        <input type="number" step="0.01" name="min_profit" class="form-control"
+               value="{{ settings.min_profit }}">
+    </div>
+
+    <div class="mb-3">
+        <label>Minimum Score</label>
+        <input type="number" step="0.1" name="min_score" class="form-control"
+               value="{{ settings.min_score }}">
+    </div>
+
+    <button type="submit" class="btn btn-success">
+        Save Settings
+    </button>
+
+</form>
+
+{% endblock %}

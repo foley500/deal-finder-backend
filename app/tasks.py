@@ -86,9 +86,25 @@ def scan_market_for_deals(dealer_id: int):
         if not dealer:
             return {"error": "Dealer not found"}
 
+        settings = db.query(DealerSettings).filter(
+            DealerSettings.dealer_id == dealer.id
+        ).first()
+
+        if not settings:
+            return {"error": "Dealer settings missing"}
+
+        # 🔥 Build dynamic filters from database
+        filters = {
+            "min_year": settings.min_year,
+            "max_year": settings.max_year,
+            "max_mileage": settings.max_mileage,
+            "max_price": 4000,
+            "min_profit": settings.min_profit,
+            "min_score": settings.min_score,
+        }
+
         total_listings = 0
         total_deals = 0
-
         LISTINGS_TO_PULL = 30
 
         for source_name in SOURCES:
@@ -99,7 +115,9 @@ def scan_market_for_deals(dealer_id: int):
                 keywords="cars",
                 entries=LISTINGS_TO_PULL,
                 min_price=None,
-                max_price=4000,
+                max_price=filters["max_price"],
+                min_year=filters["min_year"],
+                max_year=filters["max_year"],
             )
 
             total_listings += len(items)
@@ -110,7 +128,7 @@ def scan_market_for_deals(dealer_id: int):
                     item,
                     dealer.id,
                     source=source_name,
-                    filters=None
+                    filters=filters
                 )
 
                 if not deal:
@@ -118,7 +136,6 @@ def scan_market_for_deals(dealer_id: int):
 
                 total_deals += 1
 
-                # 🔥 ALWAYS SEND
                 notify_deal.delay(deal.id)
 
         scan = ScanRun(
@@ -135,94 +152,6 @@ def scan_market_for_deals(dealer_id: int):
             "listings_found": total_listings,
             "deals_saved": total_deals
         }
-
-    finally:
-        db.close()
-
-
-# ==========================================
-# FACEBOOK EMAIL INGESTION TASK
-# ==========================================
-@celery.task
-def scan_facebook_email(dealer_id: int):
-
-    db = SessionLocal()
-
-    try:
-        dealer = db.query(Dealer).filter(Dealer.id == dealer_id).first()
-        if not dealer:
-            return
-
-        settings = db.query(DealerSettings).filter(
-            DealerSettings.dealer_id == dealer.id
-        ).first()
-
-        if not settings:
-            return
-
-        filters = {
-            "min_year": settings.min_year,
-            "max_year": settings.max_year,
-            "max_mileage": settings.max_mileage,
-            "min_profit": settings.min_profit,
-            "min_score": settings.min_score,
-            "required_keywords": settings.required_keywords or [],
-            "excluded_keywords": settings.excluded_keywords or [],
-            "allowed_body_types": settings.allowed_body_types or [],
-        }
-
-        # 🔐 Load credentials safely from environment
-        host = os.getenv("FACEBOOK_EMAIL_HOST")
-        username = os.getenv("FACEBOOK_EMAIL_USER")
-        password = os.getenv("FACEBOOK_EMAIL_PASS")
-
-        if not all([host, username, password]):
-            print("❌ Facebook email credentials missing")
-            return
-
-        ingestion = FacebookEmailIngestion(
-            host=host,
-            username=username,
-            password=password,
-        )
-
-        urls = ingestion.fetch_listing_urls()
-
-        total_deals = 0
-
-        for url in urls:
-
-            raw_item = parse_facebook_listing(url)
-
-            deal = process_listing(
-                raw_item,
-                dealer.id,
-                source="facebook_email",
-                filters=filters
-            )
-
-            if not deal:
-                continue
-
-            if (
-                deal.status in ["high", "very_high"]
-                and deal.profit >= settings.min_profit
-                and deal.score >= settings.min_score
-            ):
-                total_deals += 1
-                notify_deal.delay(deal.id)
-
-        scan = ScanRun(
-            dealer_id=dealer.id,
-            source="facebook_email",
-            listings_found=len(urls),
-            deals_saved=total_deals
-        )
-
-        db.add(scan)
-        db.commit()
-
-        return {"facebook_email_deals": total_deals}
 
     finally:
         db.close()
