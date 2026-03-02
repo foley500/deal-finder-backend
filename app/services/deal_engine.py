@@ -17,6 +17,7 @@ import re
 
 TARGET_POSTCODE = "S43 4TW"
 MAX_DISTANCE_MILES = 50
+MIN_PROFIT = 1500
 
 
 # ---------------------------------
@@ -85,6 +86,10 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     return R * c
 
 
+# Cache target location ONCE
+TARGET_LAT, TARGET_LON = get_lat_long(TARGET_POSTCODE)
+
+
 # ---------------------------------
 # MAIN ENGINE
 # ---------------------------------
@@ -96,7 +101,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
     try:
         external_id = raw_item.get("id") or raw_item.get("view_url")
 
-        # ✅ Prevent duplicates
+        if not external_id:
+            return None
+
+        # Prevent duplicates
         existing = db.query(Deal).filter(
             Deal.external_id == external_id,
             Deal.source == source
@@ -150,13 +158,12 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         # DISTANCE FILTER
         # ---------------------------------
 
-        if location:
-            target_lat, target_lon = get_lat_long(TARGET_POSTCODE)
+        if location and TARGET_LAT:
             listing_lat, listing_lon = get_lat_long(location)
 
-            if target_lat and listing_lat:
+            if listing_lat:
                 distance = calculate_distance(
-                    target_lat, target_lon,
+                    TARGET_LAT, TARGET_LON,
                     listing_lat, listing_lon
                 )
 
@@ -227,6 +234,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             price,
             risk_penalty=risk_penalty
         )
+
+        # Minimum profit filter
+        if profit < MIN_PROFIT:
+            return None
 
         score = calculate_score(profit, risk_penalty, mileage)
 

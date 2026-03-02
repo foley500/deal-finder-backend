@@ -91,34 +91,24 @@ def scan_market_for_deals(dealer_id: int):
         ).first()
 
         if not settings:
-            settings = DealerSettings(dealer_id=dealer.id)
-            db.add(settings)
-            db.commit()
-            db.refresh(settings)
-
-        filters = {
-            "min_year": settings.min_year,
-            "max_year": settings.max_year,
-            "max_mileage": settings.max_mileage,
-            "min_profit": settings.min_profit,
-            "min_score": settings.min_score,
-            "required_keywords": settings.required_keywords or [],
-            "excluded_keywords": settings.excluded_keywords or [],
-            "allowed_body_types": settings.allowed_body_types or [],
-        }
+            return {"error": "Dealer settings missing"}
 
         total_listings = 0
         total_deals = 0
+
+        MAX_DEALS_PER_SCAN = 3     # 🔥 prevents spam
+        LISTINGS_TO_PULL = 30      # 🔥 catch-up buffer
 
         for source_name in SOURCES:
 
             source = get_listing_source(source_name)
 
+            # 🔥 Pull more listings so we don't miss any
             items = source.search(
                 keywords="cars",
-                entries=5,
+                entries=LISTINGS_TO_PULL,
                 min_price=None,
-                max_price=None,
+                max_price=4000,   # hard cap
             )
 
             total_listings += len(items)
@@ -129,24 +119,23 @@ def scan_market_for_deals(dealer_id: int):
                     item,
                     dealer.id,
                     source=source_name,
-                    filters=filters
+                    filters=None
                 )
 
                 if not deal:
                     continue
 
-                if TEST_MODE:
-                    total_deals += 1
-                    notify_deal.delay(deal.id)
-                    continue
-
+                # 🔥 Only notify strong deals
                 if (
                     deal.status in ["high", "very_high"]
-                    and deal.profit >= settings.min_profit
                     and deal.score >= settings.min_score
                 ):
                     total_deals += 1
                     notify_deal.delay(deal.id)
+
+                # 🔥 Stop after enough deals per scan
+                if total_deals >= MAX_DEALS_PER_SCAN:
+                    break
 
         scan = ScanRun(
             dealer_id=dealer.id,
