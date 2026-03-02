@@ -96,6 +96,15 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
     try:
         external_id = raw_item.get("id") or raw_item.get("view_url")
 
+        # ✅ Prevent duplicates
+        existing = db.query(Deal).filter(
+            Deal.external_id == external_id,
+            Deal.source == source
+        ).first()
+
+        if existing:
+            return None
+
         title = raw_item.get("title", "") or ""
         description = raw_item.get("description", "") or ""
         aspects = raw_item.get("aspects", {}) or {}
@@ -161,7 +170,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         reg = extract_registration(title)
 
         if not reg:
-
             images_to_scan = []
 
             if image_url:
@@ -274,6 +282,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 "location": location,
                 "listing_date": listing_date,
                 "freshness_bonus": freshness_bonus,
+                "listing_price": price,
+                "market_value": market_value,
+                "profit": profit,
+                "risk_penalty": risk_penalty,
             }
         )
 
