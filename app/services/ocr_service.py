@@ -52,17 +52,22 @@ def extract_plate_from_image_url(image_url: str):
         data = response.json()
         print("📄 API Response:", data)
 
-        if "results" in data and len(data["results"]) > 0:
+       if "results" in data and len(data["results"]) > 0:
 
-            plate = data["results"][0]["plate"].upper()
-            print("🔤 Raw plate from API:", plate)
+    raw_plate = data["results"][0]["plate"]
 
-            # Normalize spaces
-            plate = plate.replace(" ", "")
+    if not raw_plate:
+        return None
 
-            if re.match(r"^[A-Z]{2}[0-9]{2}[A-Z]{3}$", plate):
-                print("✅ Valid UK plate detected:", plate)
-                return plate
+    # Normalise
+    plate = raw_plate.upper().replace(" ", "")
+
+    # Clean non-alphanumeric characters
+    plate = re.sub(r"[^A-Z0-9]", "", plate)
+
+    # Basic sanity check (length 6–8)
+    if 6 <= len(plate) <= 8:
+        return plate
             else:
                 print("⚠️ Plate format invalid:", plate)
 
