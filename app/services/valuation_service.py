@@ -38,7 +38,6 @@ def get_market_value(registration: str) -> dict:
     db = SessionLocal()
 
     try:
-        # 1️⃣ Check Cache
         existing = db.query(Valuation).filter(
             Valuation.registration == registration
         ).first()
@@ -47,16 +46,14 @@ def get_market_value(registration: str) -> dict:
             if existing.created_at > datetime.utcnow() - timedelta(days=CACHE_DAYS):
                 return {
                     "clean": existing.market_value,
-                    "retail": None,
+                    "retail": existing.market_value * 1.15,
                     "trade": existing.market_value,
                     "source": existing.source
                 }
 
-        # 2️⃣ If CAP unavailable → fallback
         if not cap_credentials_available():
             return mock_valuation(registration)
 
-        # 3️⃣ Call CAP
         cap_data = get_cap_valuation(registration)
 
         if cap_data and cap_data.get("clean"):
@@ -80,7 +77,6 @@ def get_market_value(registration: str) -> dict:
             cap_data["source"] = "CAP"
             return cap_data
 
-        # 4️⃣ CAP failed → fallback
         return mock_valuation(registration)
 
     except Exception as e:

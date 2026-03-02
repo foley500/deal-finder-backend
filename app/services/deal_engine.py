@@ -237,7 +237,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             except:
                 pass
 
-        description_penalty = description_risk(description)
+        description_penalty = description_risk(description, price)
         risk_penalty = description_penalty + mot_penalty
 
         profit = calculate_true_profit(
