@@ -19,7 +19,7 @@ from sqlalchemy import func
 
 from app.database import engine, SessionLocal
 from app.models import Base, Dealer, DealerSettings, Deal, ScanRun
-from app.tasks import notify_deal, scan_market_for_deals
+from app.tasks import notify_deal, scan_sniper, scan_value_sweep
 from app.services.deal_engine import process_listing
 from app.services.ebay_browse_service import search_ebay_browse
 
@@ -372,13 +372,15 @@ def ingest_ebay(db: Session = Depends(get_db)):
 
 @app.get("/test-ebay-scan")
 def test_ebay_scan():
-    scan_market_for_deals.delay(1)  # dealer_id = 1
-    return {"status": "eBay scan triggered"}
+    scan_sniper.delay(1)
+    scan_value_sweep.delay(1)
+    return {"status": "Both scans triggered"}
 
 @app.post("/dealer/{dealer_id}/scan")
 def run_market_scan(dealer_id: int):
 
-    scan_market_for_deals.delay(dealer_id)
+    scan_sniper.delay(dealer_id)
+    scan_value_sweep.delay(dealer_id)
 
     return RedirectResponse(url="/", status_code=303)
 
