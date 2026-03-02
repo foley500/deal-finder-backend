@@ -7,7 +7,7 @@ import hashlib
 import time
 
 from PIL import Image
-
+from app.routes import settings
 from fastapi import FastAPI, Depends, Request, Query, Body, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,7 +30,7 @@ from app.services.ebay_browse_service import search_ebay_browse
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
-
+app.include_router(settings.router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

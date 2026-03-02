@@ -7,7 +7,7 @@ from app.models import DealerSettings
 from fastapi.templating import Jinja2Templates
 
 router = APIRouter()
-templates = Jinja2Templates(directory="templates")
+templates = Jinja2Templates(directory="app/templates")
 
 
 def get_db():
