@@ -140,7 +140,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
 
     try:
         external_id = raw_item.get("id") or raw_item.get("view_url")
-
         if not external_id:
             return None
 
@@ -161,8 +160,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         all_images = raw_item.get("all_images", []) or []
         seller = raw_item.get("seller")
         location = raw_item.get("location")
-        listing_date = raw_item.get("listing_date")
-        end_date = raw_item.get("end_date")
 
         price = float(raw_item.get("price", 0) or 0)
 
@@ -186,6 +183,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if not price or price > 4000:
             return None
 
+        # Distance filter
         if location and TARGET_LAT:
             listing_lat, listing_lon = get_lat_long(location)
             if listing_lat:
@@ -196,6 +194,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 if distance > MAX_DISTANCE_MILES:
                     return None
 
+        # -------------------------
+        # Registration detection
+        # -------------------------
         reg = extract_registration(title)
 
         if not reg:
@@ -214,6 +215,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 if reg:
                     break
 
+        # -------------------------
+        # Valuation
+        # -------------------------
         valuation_data = get_market_value(reg)
 
         if not valuation_data or not valuation_data.get("clean"):
@@ -221,22 +225,30 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
 
         market_value = valuation_data.get("trade", 0)
 
+        # ===============================
+        # MOT + DVLA DATA (NEW STRUCTURE)
+        # ===============================
         mot_penalty = 0
-        mot_raw = None
+        mot_summary = {}
+        mot_full_data = []
+        vehicle_data = {}
 
         if reg:
             try:
-                mot_raw = get_mot_data(reg)
-                if mot_raw and isinstance(mot_raw, list):
-                    mot_tests = mot_raw[0].get("motTests", [])
-                    for test in mot_tests:
-                        if test.get("testResult") == "FAIL":
-                            mot_penalty += 500
-                        if test.get("rfrAndComments"):
-                            mot_penalty += 200
-            except:
-                pass
+                mot_response = get_mot_data(reg)
 
+                if mot_response:
+                    mot_summary = mot_response.get("mot_summary", {})
+                    mot_full_data = mot_response.get("mot_full_data", [])
+                    vehicle_data = mot_response.get("vehicle_data", {})
+                    mot_penalty = mot_summary.get("mot_penalty", 0)
+
+            except Exception as e:
+                print("MOT processing error:", e)
+
+        # -------------------------
+        # Risk + Profit
+        # -------------------------
         description_penalty = description_risk(description, price)
         risk_penalty = description_penalty + mot_penalty
 
@@ -249,6 +261,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         score = calculate_score(profit, risk_penalty, mileage)
         confidence = assign_confidence(score)
 
+        # -------------------------
+        # Save Deal
+        # -------------------------
         deal = Deal(
             dealer_id=dealer_id,
             external_id=external_id,
@@ -282,18 +297,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                     "score": score,
                     "confidence_level": confidence,
                 },
-                "mot_summary": {
-                    "fail_count": sum(
-                        1 for test in mot_raw[0].get("motTests", [])
-                        if test.get("testResult") == "FAIL"
-                    ) if mot_raw else 0,
-                    "advisory_count": sum(
-                        len(test.get("rfrAndComments", []))
-                        for test in mot_raw[0].get("motTests", [])
-                    ) if mot_raw else 0,
-                    "mot_penalty": mot_penalty,
-                },
-                "mot_full_data": mot_raw[0].get("motTests", []) if mot_raw else None,
+                "mot_summary": mot_summary,
+                "mot_full_data": mot_full_data,
+                "vehicle_data": vehicle_data,
                 "listing_details": {
                     "transmission": aspects.get("Transmission"),
                     "fuel_type": aspects.get("Fuel Type"),
