@@ -7,14 +7,16 @@ class EbayBrowseSource(ListingSource):
     def search(
         self,
         keywords: str,
-        entries: int = 50,
+        entries: int = 20,
         min_price=None,
         max_price=None,
+        sort="newlyListed",
         **kwargs
     ):
         return search_ebay_browse(
             keywords=keywords,
             limit=entries,
-            min_price=min_price,
-            max_price=max_price,
+            min_price=min_price or 0,
+            max_price=max_price or 50000,
+            sort=sort
         )

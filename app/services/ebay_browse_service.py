@@ -14,10 +14,6 @@ _cached_token = None
 _token_expiry = 0
 
 
-# ==============================
-# TOKEN
-# ==============================
-
 def get_ebay_access_token():
     global _cached_token, _token_expiry
 
@@ -50,14 +46,14 @@ def get_ebay_access_token():
     return _cached_token
 
 
-# ==============================
-# SEARCH (LIGHTWEIGHT)
-# ==============================
+# ==========================================
+# SEARCH — SUMMARY ONLY (LIGHTWEIGHT)
+# ==========================================
 
 def search_ebay_browse(
-    keywords="used car",
-    limit=50,
-    min_price=1000,
+    keywords="cars",
+    limit=20,
+    min_price=0,
     max_price=50000,
     sort="newlyListed"
 ):
@@ -89,28 +85,28 @@ def search_ebay_browse(
 
     listings = []
 
-    for item in summaries:
+    for summary in summaries:
         listings.append({
-            "id": item.get("itemId"),
-            "title": item.get("title"),
-            "price": float(item.get("price", {}).get("value", 0)),
-            "view_url": item.get("itemWebUrl"),
-            "image_url": item.get("image", {}).get("imageUrl"),
-            "location": item.get("itemLocation", {}).get("postalCode"),
-            "listing_date": item.get("itemCreationDate"),
-            "source": "ebay",
-            "summary_only": True  # 🔥 important
+            "id": summary.get("itemId"),
+            "title": summary.get("title"),
+            "price": float(summary.get("price", {}).get("value", 0)),
+            "view_url": summary.get("itemWebUrl"),
+            "image_url": summary.get("image", {}).get("imageUrl"),
+            "location": summary.get("itemLocation", {}).get("postalCode"),
+            "listing_date": summary.get("itemCreationDate"),
+            "source": "ebay_browse",
+            "summary_only": True
         })
 
-    print(f"✅ eBay summary returned {len(listings)} items")
+    print(f"✅ eBay returned {len(listings)} summaries")
     return listings
 
 
-# ==============================
-# FETCH FULL DETAILS (ON DEMAND)
-# ==============================
+# ==========================================
+# DETAIL FETCH (EXPENSIVE)
+# ==========================================
 
-def fetch_ebay_item_details(item_id):
+def get_item_detail(item_id):
 
     token = get_ebay_access_token()
     if not token:
@@ -127,20 +123,4 @@ def fetch_ebay_item_details(item_id):
         print("❌ Item detail error:", response.text)
         return None
 
-    item = response.json()
-
-    aspect_dict = {}
-    for aspect in item.get("localizedAspects", []):
-        name = aspect.get("name")
-        values = aspect.get("value")
-        if name and values:
-            aspect_dict[name] = values[0] if isinstance(values, list) else values
-
-    return {
-        "description": item.get("description"),
-        "aspects": aspect_dict,
-        "all_images": [
-            img.get("imageUrl")
-            for img in item.get("additionalImages", [])
-        ]
-    }
+    return response.json()

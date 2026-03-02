@@ -10,6 +10,8 @@ from app.services.mot_service import get_mot_data
 
 from math import radians, sin, cos, sqrt, atan2
 from datetime import datetime, timezone
+from app.services.ebay_browse_service import get_item_detail
+from app.models import DealerSettings
 
 import requests
 import re
@@ -155,7 +157,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             return None
 
         # ---------------------------------
-        # Load dealer settings (DYNAMIC)
+        # Load dealer settings
         # ---------------------------------
         settings = db.query(DealerSettings).filter(
             DealerSettings.dealer_id == dealer_id
@@ -165,9 +167,59 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             return None
 
         # ---------------------------------
-        # Extract raw data
+        # Basic fields from summary
         # ---------------------------------
         title = raw_item.get("title", "") or ""
+        price = float(raw_item.get("price", 0) or 0)
+
+        if not price:
+            return None
+
+        # ---------------------------------
+        # Early price filter (BEFORE detail call)
+        # ---------------------------------
+        max_price = filters.get("max_price") if filters else None
+        if max_price and price > max_price:
+            return None
+
+        # ---------------------------------
+        # If summary-only → fetch detail
+        # ---------------------------------
+        if raw_item.get("summary_only"):
+            detail = get_item_detail(raw_item.get("id"))
+            if not detail:
+                return None
+
+            # Description
+            raw_item["description"] = detail.get("description", "")
+
+            # Build aspects dictionary
+            aspect_dict = {}
+            for aspect in detail.get("localizedAspects", []):
+                name = aspect.get("name")
+                value = aspect.get("value")
+                if name and value:
+                    aspect_dict[name] = value[0] if isinstance(value, list) else value
+
+            raw_item["aspects"] = aspect_dict
+
+            # Seller
+            raw_item["seller"] = detail.get("seller", {}).get("username")
+
+            # Images
+            images = []
+            if detail.get("image"):
+                images.append(detail["image"].get("imageUrl"))
+
+            for img in detail.get("additionalImages", []):
+                images.append(img.get("imageUrl"))
+
+            raw_item["all_images"] = images
+            raw_item["image_url"] = images[0] if images else None
+
+        # ---------------------------------
+        # Now extract full data
+        # ---------------------------------
         description = raw_item.get("description", "") or ""
         aspects = raw_item.get("aspects", {}) or {}
 
@@ -177,8 +229,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         seller = raw_item.get("seller")
         location = raw_item.get("location")
 
-        price = float(raw_item.get("price", 0) or 0)
-
+        # ---------------------------------
+        # Extract year + mileage
+        # ---------------------------------
         structured_year = extract_structured_value(
             aspects, ["Year", "Model Year", "Registration Year"]
         )
@@ -191,7 +244,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         mileage = safe_int(structured_mileage) or extract_mileage_from_text(title)
 
         # ---------------------------------
-        # Apply DASHBOARD FILTERS
+        # Apply dashboard filters
         # ---------------------------------
         if year:
             if settings.min_year and year < settings.min_year:
@@ -203,11 +256,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             if settings.max_mileage and mileage > settings.max_mileage:
                 return None
 
-        if not price:
-            return None
-
         # ---------------------------------
-        # Distance filter (still hardcoded radius)
+        # Distance filter
         # ---------------------------------
         if location and TARGET_LAT:
             listing_lat, listing_lon = get_lat_long(location)
@@ -251,7 +301,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         market_value = valuation_data.get("trade", 0)
 
         # ---------------------------------
-        # MOT + DVLA DATA
+        # MOT + DVLA
         # ---------------------------------
         mot_penalty = 0
         mot_summary = {}
@@ -287,15 +337,13 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         confidence = assign_confidence(score)
 
         # ---------------------------------
-        # Apply PROFIT + SCORE Filters
+        # Profit / Score filters
         # ---------------------------------
-        if settings.min_profit is not None:
-            if profit < settings.min_profit:
-                return None
+        if settings.min_profit is not None and profit < settings.min_profit:
+            return None
 
-        if settings.min_score is not None:
-            if score < settings.min_score:
-                return None
+        if settings.min_score is not None and score < settings.min_score:
+            return None
 
         # ---------------------------------
         # Save Deal
