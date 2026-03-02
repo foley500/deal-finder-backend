@@ -1,5 +1,4 @@
 import os
-import random
 from datetime import datetime, timedelta
 
 from app.database import SessionLocal
@@ -12,16 +11,14 @@ CACHE_DAYS = 7
 
 def mock_valuation(registration: str) -> dict:
     """
-    Intelligent fallback valuation.
-    Returns structured format for consistency.
+    Safe fallback valuation.
+    Returns neutral values (no artificial profit inflation).
     """
-    value = float(random.randint(4000, 15000))
-
     return {
-        "clean": value,
-        "retail": value + 1500,
-        "trade": value - 1000,
-        "source": "mock"
+        "clean": 0,
+        "retail": 0,
+        "trade": 0,
+        "source": "fallback_none"
     }
 
 
@@ -41,7 +38,7 @@ def get_market_value(registration: str) -> dict:
     db = SessionLocal()
 
     try:
-        # 🔥 1️⃣ Check Cache
+        # 1️⃣ Check Cache
         existing = db.query(Valuation).filter(
             Valuation.registration == registration
         ).first()
@@ -51,15 +48,15 @@ def get_market_value(registration: str) -> dict:
                 return {
                     "clean": existing.market_value,
                     "retail": None,
-                    "trade": None,
+                    "trade": existing.market_value,
                     "source": existing.source
                 }
 
-        # 🔥 2️⃣ If CAP unavailable → mock
+        # 2️⃣ If CAP unavailable → fallback
         if not cap_credentials_available():
             return mock_valuation(registration)
 
-        # 🔥 3️⃣ Call CAP
+        # 3️⃣ Call CAP
         cap_data = get_cap_valuation(registration)
 
         if cap_data and cap_data.get("clean"):
@@ -83,7 +80,7 @@ def get_market_value(registration: str) -> dict:
             cap_data["source"] = "CAP"
             return cap_data
 
-        # 🔥 4️⃣ CAP failed → fallback
+        # 4️⃣ CAP failed → fallback
         return mock_valuation(registration)
 
     except Exception as e:

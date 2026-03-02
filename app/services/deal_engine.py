@@ -88,44 +88,46 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 TARGET_LAT, TARGET_LON = get_lat_long(TARGET_POSTCODE)
 
 
-def calculate_listing_metrics(listing_date: str):
-    if not listing_date:
-        return None, None
+# ---------------------------------
+# TEMP VALUATION MODEL (Until CAP Live)
+# ---------------------------------
 
-    try:
-        created = datetime.fromisoformat(
-            listing_date.replace("Z", "+00:00")
-        )
-        now = datetime.now(timezone.utc)
+def smart_temp_valuation(price, year, mileage):
 
-        hours_old = round(
-            (now - created).total_seconds() / 3600, 2
-        )
+    current_year = datetime.now().year
+    vehicle_age = current_year - year if year else 5
 
-        return created.isoformat(), hours_old
+    average_mileage = vehicle_age * 10000
 
-    except:
-        return None, None
+    mileage_factor = 1.0
 
+    if mileage and average_mileage:
+        ratio = mileage / average_mileage
+        if ratio < 0.8:
+            mileage_factor = 1.05
+        elif ratio > 1.2:
+            mileage_factor = 0.92
 
-def calculate_remaining_time(end_date: str):
-    if not end_date:
-        return None
+    base_retail = price * 1.18
 
-    try:
-        end = datetime.fromisoformat(
-            end_date.replace("Z", "+00:00")
-        )
-        now = datetime.now(timezone.utc)
+    if vehicle_age <= 3:
+        age_factor = 1.08
+    elif vehicle_age <= 6:
+        age_factor = 1.0
+    else:
+        age_factor = 0.95
 
-        remaining = round(
-            (end - now).total_seconds() / 3600, 2
-        )
+    estimated_retail = base_retail * mileage_factor * age_factor
+    estimated_trade = estimated_retail * 0.78
+    estimated_part_ex = estimated_retail * 0.88
 
-        return max(remaining, 0)
-
-    except:
-        return None
+    return {
+        "clean": round(estimated_trade, 2),
+        "retail": round(estimated_retail, 2),
+        "trade": round(estimated_trade, 2),
+        "part_ex": round(estimated_part_ex, 2),
+        "source": "temporary_model"
+    }
 
 
 # ---------------------------------
@@ -142,7 +144,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if not external_id:
             return None
 
-        # 🔥 Prevent duplicates
         existing = db.query(Deal).filter(
             Deal.external_id == external_id,
             Deal.source == source
@@ -213,10 +214,16 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 if reg:
                     break
 
-        valuation_data = get_market_value(reg) or {}
-        market_value = valuation_data.get("clean", 0)
+        valuation_data = get_market_value(reg)
+
+        if not valuation_data or not valuation_data.get("clean"):
+            valuation_data = smart_temp_valuation(price, year, mileage)
+
+        market_value = valuation_data.get("trade", 0)
 
         mot_penalty = 0
+        mot_raw = None
+
         if reg:
             try:
                 mot_raw = get_mot_data(reg)
@@ -242,9 +249,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         score = calculate_score(profit, risk_penalty, mileage)
         confidence = assign_confidence(score)
 
-        listed_at, hours_old = calculate_listing_metrics(listing_date)
-        remaining_hours = calculate_remaining_time(end_date)
-
         deal = Deal(
             dealer_id=dealer_id,
             external_id=external_id,
@@ -259,18 +263,46 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             source=source,
             status=confidence,
             report={
-                "year": year,
-                "listing_url": listing_url,
+                "financials": {
+                    "listing_price": price,
+                    "market_value": market_value,
+                    "profit": profit,
+                },
+                "cap_data": {
+                    "clean": valuation_data.get("clean"),
+                    "retail": valuation_data.get("retail"),
+                    "trade": valuation_data.get("trade"),
+                },
+                "risk_breakdown": {
+                    "description_penalty": description_penalty,
+                    "mot_penalty": mot_penalty,
+                    "total_risk_penalty": risk_penalty,
+                },
+                "scoring": {
+                    "score": score,
+                    "confidence_level": confidence,
+                },
+                "mot_summary": {
+                    "fail_count": sum(
+                        1 for test in mot_raw[0].get("motTests", [])
+                        if test.get("testResult") == "FAIL"
+                    ) if mot_raw else 0,
+                    "advisory_count": sum(
+                        len(test.get("rfrAndComments", []))
+                        for test in mot_raw[0].get("motTests", [])
+                    ) if mot_raw else 0,
+                    "mot_penalty": mot_penalty,
+                },
+                "mot_full_data": mot_raw[0].get("motTests", []) if mot_raw else None,
+                "listing_details": {
+                    "transmission": aspects.get("Transmission"),
+                    "fuel_type": aspects.get("Fuel Type"),
+                    "exterior_color": aspects.get("Exterior Colour"),
+                    "interior_color": aspects.get("Interior Colour"),
+                },
                 "seller": seller,
                 "location": location,
-                "listing_date_raw": listing_date,
-                "listed_at": listed_at,
-                "hours_since_listed": hours_old,
-                "remaining_hours": remaining_hours,
-                "listing_price": price,
-                "market_value": market_value,
-                "profit": profit,
-                "risk_penalty": risk_penalty,
+                "listing_url": listing_url,
             }
         )
 
