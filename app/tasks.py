@@ -93,120 +93,88 @@ def scan_market_for_deals(dealer_id: int):
         if not settings:
             return {"error": "Dealer settings missing"}
 
-        # 🔥 Dynamic filters from dashboard
+        # ------------------------------------------
+        # Build filters from dashboard settings
+        # ------------------------------------------
         filters = {
             "min_year": settings.min_year,
             "max_year": settings.max_year,
             "max_mileage": settings.max_mileage,
-            "max_price": settings.max_price or 4000,
+            "max_price": 4000,  # hardcoded for now (no DB column yet)
             "min_profit": settings.min_profit,
             "min_score": settings.min_score,
         }
 
         total_listings = 0
         total_deals = 0
-
-        # --------------------------------------
-        # SCAN CONFIG
-        # --------------------------------------
-        SNIPER_PAGES = 2          # newest first
-        VALUE_SWEEP_PAGES = 5     # deeper sweep
-        LISTINGS_PER_PAGE = 40
-
-        KEYWORDS = [
-            "cars",
-            "hatchback",
-            "manual",
-            "automatic",
-            "petrol",
-            "diesel",
-            "salvage",
-            "spares or repair",
-            "non runner",
-        ]
+        LISTINGS_TO_PULL = 150  # increase scan depth
+        processed_ids = set()
 
         for source_name in SOURCES:
 
             source = get_listing_source(source_name)
 
-            # ==================================================
-            # 🟢 PASS 1 — SNIPER MODE (NEWEST LISTINGS FIRST)
-            # ==================================================
-            print("🚀 SNIPER MODE — Newly Listed")
+            # =====================================
+            # MODE 1 — SNIPER (Newest First)
+            # =====================================
+            sniper_items = source.search(
+                keywords="cars",
+                entries=LISTINGS_TO_PULL,
+                min_price=None,
+                max_price=filters["max_price"],
+                min_year=filters["min_year"],
+                max_year=filters["max_year"],
+                sort="newly_listed"
+            )
 
-            for keyword in KEYWORDS:
-                for page in range(1, SNIPER_PAGES + 1):
+            # =====================================
+            # MODE 2 — VALUE SWEEP (Broad)
+            # =====================================
+            value_items = source.search(
+                keywords="cars",
+                entries=LISTINGS_TO_PULL,
+                min_price=None,
+                max_price=filters["max_price"],
+                min_year=filters["min_year"],
+                max_year=filters["max_year"],
+                sort="price_lowest"
+            )
 
-                    items = source.search(
-                        keywords=keyword,
-                        entries=LISTINGS_PER_PAGE,
-                        page=page,
-                        sort="newlyListed",
-                        min_price=None,
-                        max_price=filters["max_price"],
-                        min_year=filters["min_year"],
-                        max_year=filters["max_year"],
-                    )
+            items = sniper_items + value_items
+            total_listings += len(items)
 
-                    total_listings += len(items)
+            for item in items:
 
-                    for item in items:
+                external_id = item.get("id") or item.get("view_url")
+                if not external_id:
+                    continue
 
-                        deal = process_listing(
-                            item,
-                            dealer.id,
-                            source=source_name,
-                            filters=filters
-                        )
+                # Prevent duplicate processing in same run
+                if external_id in processed_ids:
+                    continue
 
-                        if not deal:
-                            continue
+                processed_ids.add(external_id)
 
-                        total_deals += 1
-                        notify_deal.delay(deal.id)
+                deal = process_listing(
+                    item,
+                    dealer.id,
+                    source=source_name,
+                    filters=filters
+                )
 
-            # ==================================================
-            # 🔵 PASS 2 — VALUE SWEEP MODE (PRICE SORTED)
-            # ==================================================
-            print("🔎 VALUE SWEEP MODE — Price Sorted")
+                if not deal:
+                    continue
 
-            for keyword in KEYWORDS:
-                for page in range(1, VALUE_SWEEP_PAGES + 1):
+                total_deals += 1
 
-                    items = source.search(
-                        keywords=keyword,
-                        entries=LISTINGS_PER_PAGE,
-                        page=page,
-                        sort="price",
-                        min_price=None,
-                        max_price=filters["max_price"],
-                        min_year=filters["min_year"],
-                        max_year=filters["max_year"],
-                    )
+                notify_deal.delay(deal.id)
 
-                    total_listings += len(items)
-
-                    for item in items:
-
-                        deal = process_listing(
-                            item,
-                            dealer.id,
-                            source=source_name,
-                            filters=filters
-                        )
-
-                        if not deal:
-                            continue
-
-                        total_deals += 1
-                        notify_deal.delay(deal.id)
-
-        # --------------------------------------
-        # SAVE SCAN LOG
-        # --------------------------------------
+        # ------------------------------------------
+        # Log scan run
+        # ------------------------------------------
         scan = ScanRun(
             dealer_id=dealer.id,
-            source="multi_source_api",
+            source="multi_mode_scan",
             listings_found=total_listings,
             deals_saved=total_deals
         )
