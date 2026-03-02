@@ -16,7 +16,7 @@ from app.services.facebook_listing_parser import parse_facebook_listing
 # ==========================================
 # 🔧 SOURCES TO SCAN (API / structured sources)
 # ==========================================
-SOURCES = ["ebay_browse"]
+SOURCES = ["search_ebay_browse"]
 
 TEST_MODE = True
 
