@@ -86,29 +86,20 @@ def scan_market_for_deals(dealer_id: int):
         if not dealer:
             return {"error": "Dealer not found"}
 
-        settings = db.query(DealerSettings).filter(
-            DealerSettings.dealer_id == dealer.id
-        ).first()
-
-        if not settings:
-            return {"error": "Dealer settings missing"}
-
         total_listings = 0
         total_deals = 0
 
-        MAX_DEALS_PER_SCAN = 3     # 🔥 prevents spam
-        LISTINGS_TO_PULL = 30      # 🔥 catch-up buffer
+        LISTINGS_TO_PULL = 30
 
         for source_name in SOURCES:
 
             source = get_listing_source(source_name)
 
-            # 🔥 Pull more listings so we don't miss any
             items = source.search(
                 keywords="cars",
                 entries=LISTINGS_TO_PULL,
                 min_price=None,
-                max_price=4000,   # hard cap
+                max_price=4000,
             )
 
             total_listings += len(items)
@@ -125,17 +116,10 @@ def scan_market_for_deals(dealer_id: int):
                 if not deal:
                     continue
 
-                # 🔥 Only notify strong deals
-                if (
-                    deal.status in ["high", "very_high"]
-                    and deal.score >= settings.min_score
-                ):
-                    total_deals += 1
-                    notify_deal.delay(deal.id)
+                total_deals += 1
 
-                # 🔥 Stop after enough deals per scan
-                if total_deals >= MAX_DEALS_PER_SCAN:
-                    break
+                # 🔥 ALWAYS SEND
+                notify_deal.delay(deal.id)
 
         scan = ScanRun(
             dealer_id=dealer.id,

@@ -126,22 +126,23 @@ def search_ebay_browse(keywords="used car", limit=5, min_price=1000, max_price=5
             )
 
         listings.append({
-            "id": item_id,
-            "title": item.get("title"),
-            "description": item.get("description"),
-            "price": float(item.get("price", {}).get("value", 0)),
-            "view_url": item.get("itemWebUrl"),
-            "image_url": all_images[0] if all_images else None,
-            "all_images": all_images,
-            "seller": item.get("seller", {}).get("username"),
-            "location": item.get("itemLocation", {}).get("postalCode"),
-            "listing_date": (
-                item.get("itemCreationDate")
-                or summary.get("itemCreationDate")
-            ),
-            "aspects": aspect_dict,
-            "source": "ebay",
-        })
+    "id": item_id,
+    "title": item.get("title"),
+    "description": item.get("description"),
+    "price": float(item.get("price", {}).get("value", 0)),
+    "view_url": item.get("itemWebUrl"),
+    "image_url": all_images[0] if all_images else None,
+    "all_images": all_images,
+    "seller": item.get("seller", {}).get("username"),
+    "location": item.get("itemLocation", {}).get("postalCode"),
+
+    # 🔥 NEW
+    "listing_date": item.get("itemCreationDate") or summary.get("itemCreationDate"),
+    "end_date": item.get("itemEndDate"),
+
+    "aspects": aspect_dict,
+    "source": "ebay",
+})
 
     print(f"✅ eBay returned {len(listings)} listings with full details")
     return listings
