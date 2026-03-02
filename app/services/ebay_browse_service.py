@@ -70,6 +70,7 @@ def search_ebay_browse(keywords="used car", limit=5, min_price=1000, max_price=5
         "q": keywords,
         "limit": limit,
         "category_ids": "9801",
+        "sort": "newlyListed",  # 🔥 CRITICAL
         "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}}"
     }
 
@@ -87,12 +88,19 @@ def search_ebay_browse(keywords="used car", limit=5, min_price=1000, max_price=5
         item_id = summary.get("itemId")
 
         detail = requests.get(f"{ITEM_URL}{item_id}", headers=headers)
+
+        if detail.status_code == 429:
+            print("⚠️ eBay rate limited")
+            time.sleep(1)
+            continue
+
         if detail.status_code != 200:
+            print("❌ Item detail error:", detail.text)
             continue
 
         item = detail.json()
 
-        # BUILD ASPECT DICT CORRECTLY
+        # BUILD ASPECT DICT
         aspect_dict = {}
         for aspect in item.get("localizedAspects", []):
             name = aspect.get("name")
@@ -108,10 +116,14 @@ def search_ebay_browse(keywords="used car", limit=5, min_price=1000, max_price=5
         all_images = []
 
         if item.get("image"):
-            all_images.append(upgrade_image_resolution(item["image"].get("imageUrl")))
+            all_images.append(
+                upgrade_image_resolution(item["image"].get("imageUrl"))
+            )
 
         for img in item.get("additionalImages", []):
-            all_images.append(upgrade_image_resolution(img.get("imageUrl")))
+            all_images.append(
+                upgrade_image_resolution(img.get("imageUrl"))
+            )
 
         listings.append({
             "id": item_id,
@@ -123,6 +135,10 @@ def search_ebay_browse(keywords="used car", limit=5, min_price=1000, max_price=5
             "all_images": all_images,
             "seller": item.get("seller", {}).get("username"),
             "location": item.get("itemLocation", {}).get("postalCode"),
+            "listing_date": (
+                item.get("itemCreationDate")
+                or summary.get("itemCreationDate")
+            ),
             "aspects": aspect_dict,
             "source": "ebay",
         })

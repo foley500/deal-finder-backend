@@ -8,7 +8,15 @@ from app.database import SessionLocal
 from app.services.ocr_service import extract_plate_from_image_url
 from app.services.mot_service import get_mot_data
 
+from math import radians, sin, cos, sqrt, atan2
+from datetime import datetime, timezone
+
+import requests
 import re
+
+
+TARGET_POSTCODE = "S43 4TW"
+MAX_DISTANCE_MILES = 50
 
 
 # ---------------------------------
@@ -55,28 +63,38 @@ def assign_confidence(score: float) -> str:
     return "low"
 
 
+def get_lat_long(postcode: str):
+    try:
+        response = requests.get(f"https://api.postcodes.io/postcodes/{postcode}")
+        if response.status_code != 200:
+            return None, None
+        data = response.json().get("result", {})
+        return data.get("latitude"), data.get("longitude")
+    except:
+        return None, None
+
+
+def calculate_distance(lat1, lon1, lat2, lon2):
+    R = 3958.8
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+
+    a = sin(dlat / 2)*2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2)*2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+
+    return R * c
+
+
 # ---------------------------------
 # MAIN ENGINE
 # ---------------------------------
 
-def process_listing(
-    raw_item: dict,
-    dealer_id: int,
-    source: str = "ebay",
-    filters: dict | None = None
-):
+def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None):
 
     db = SessionLocal()
 
     try:
         external_id = raw_item.get("id") or raw_item.get("view_url")
-
-        existing = db.query(Deal).filter(
-            Deal.external_id == external_id,
-            Deal.source == source
-        ).first()
-
-        
 
         title = raw_item.get("title", "") or ""
         description = raw_item.get("description", "") or ""
@@ -87,6 +105,7 @@ def process_listing(
         all_images = raw_item.get("all_images", []) or []
         seller = raw_item.get("seller")
         location = raw_item.get("location")
+        listing_date = raw_item.get("listing_date")
 
         price = float(raw_item.get("price", 0) or 0)
 
@@ -95,90 +114,69 @@ def process_listing(
         # ---------------------------------
 
         structured_year = extract_structured_value(
-            aspects,
-            ["Year", "Model Year", "Registration Year"]
+            aspects, ["Year", "Model Year", "Registration Year"]
         )
 
         structured_mileage = extract_structured_value(
-            aspects,
-            ["Mileage", "Miles"]
-        )
-
-        structured_body = extract_structured_value(
-            aspects,
-            ["Body Type", "BodyStyle"]
-        )
-
-        structured_transmission = extract_structured_value(
-            aspects,
-            ["Transmission"]
-        )
-
-        structured_fuel = extract_structured_value(
-            aspects,
-            ["Fuel Type", "Fuel"]
-        )
-
-        structured_exterior = extract_structured_value(
-            aspects,
-            ["Exterior Colour", "Colour"]
+            aspects, ["Mileage", "Miles"]
         )
 
         year = safe_int(structured_year) or extract_year_from_text(title)
         mileage = safe_int(structured_mileage) or extract_mileage_from_text(title)
 
         # ---------------------------------
+        # HARD FILTERS
+        # ---------------------------------
+
+        if not year or year < 2014:
+            return None
+
+        if not mileage or mileage > 100000:
+            return None
+
+        if not price or price > 4000:
+            return None
+
+        # ---------------------------------
+        # DISTANCE FILTER
+        # ---------------------------------
+
+        if location:
+            target_lat, target_lon = get_lat_long(TARGET_POSTCODE)
+            listing_lat, listing_lon = get_lat_long(location)
+
+            if target_lat and listing_lat:
+                distance = calculate_distance(
+                    target_lat, target_lon,
+                    listing_lat, listing_lon
+                )
+
+                if distance > MAX_DISTANCE_MILES:
+                    return None
+
+        # ---------------------------------
         # REGISTRATION DETECTION
         # ---------------------------------
 
-        reg = None
-
-        # 1️⃣ Try extracting from title first (FREE)
         reg = extract_registration(title)
 
-        # 2️⃣ OCR fallback — PRIORITY ORDER (original working style)
         if not reg:
 
             images_to_scan = []
-            gallery = all_images or []
 
-            # PRIMARY IMAGE
             if image_url:
                 images_to_scan.append(image_url)
 
-            # MIDDLE IMAGE (often rear plate)
-            if len(gallery) >= 3:
-                mid_index = len(gallery) // 2
-                mid_image = gallery[mid_index]
-                if mid_image not in images_to_scan:
-                    images_to_scan.append(mid_image)
-
-            # LAST IMAGE
-            if len(gallery) >= 2:
-                last_image = gallery[-1]
-                if last_image not in images_to_scan:
-                    images_to_scan.append(last_image)
-
-            # Fill remaining up to 5 max
-            for img in gallery:
+            for img in all_images:
                 if img not in images_to_scan:
                     images_to_scan.append(img)
                 if len(images_to_scan) >= 5:
                     break
 
-            images_to_scan = images_to_scan[:5]
-
-            print("Images being scanned:", images_to_scan)
-
             for img in images_to_scan:
-                print("Scanning:", img)
                 reg = extract_plate_from_image_url(img)
                 if reg:
-                    print(f"✅ Plate detected: {reg}")
                     break
-
-        if not reg:
-            print("ℹ️ No plate detected for listing.")
 
         # ---------------------------------
         # VALUATION
@@ -188,33 +186,25 @@ def process_listing(
         market_value = valuation_data.get("clean", 0)
 
         # ---------------------------------
-        # MOT ANALYSIS
+        # MOT
         # ---------------------------------
 
-        mot_tests = []
         mot_penalty = 0
-        fail_count = 0
-        advisory_count = 0
+        mot_tests = []
 
         if reg:
             try:
                 mot_raw = get_mot_data(reg)
-
                 if mot_raw and isinstance(mot_raw, list):
                     mot_tests = mot_raw[0].get("motTests", [])
 
                     for test in mot_tests:
                         if test.get("testResult") == "FAIL":
-                            fail_count += 1
                             mot_penalty += 500
 
-                        comments = test.get("rfrAndComments", [])
-                        advisory_count += len(comments)
-
-                        if comments:
+                        if test.get("rfrAndComments"):
                             mot_penalty += 200
-
-            except Exception:
+            except:
                 pass
 
         # ---------------------------------
@@ -230,52 +220,39 @@ def process_listing(
             risk_penalty=risk_penalty
         )
 
-        score = calculate_score(
-            profit,
-            risk_penalty,
-            mileage
-        )
+        score = calculate_score(profit, risk_penalty, mileage)
+
+        # ---------------------------------
+        # FRESHNESS BONUS
+        # ---------------------------------
+
+        freshness_bonus = 0
+
+        if listing_date:
+            try:
+                created = datetime.fromisoformat(
+                    listing_date.replace("Z", "+00:00")
+                )
+                hours_old = (
+                    datetime.now(timezone.utc) - created
+                ).total_seconds() / 3600
+
+                if hours_old <= 2:
+                    freshness_bonus = 15
+                elif hours_old <= 6:
+                    freshness_bonus = 10
+                elif hours_old <= 12:
+                    freshness_bonus = 5
+            except:
+                pass
+
+        score += freshness_bonus
 
         confidence = assign_confidence(score)
 
         # ---------------------------------
-        # REPORT STRUCTURE
+        # SAVE DEAL
         # ---------------------------------
-
-        report_data = {
-            "year": year,
-            "body_type": structured_body,
-            "listing_url": listing_url,
-            "image_url": image_url,
-            "seller": seller,
-            "location": location,
-            "listing_details": {
-                "transmission": structured_transmission,
-                "fuel_type": structured_fuel,
-                "exterior_color": structured_exterior,
-            },
-            "cap_data": valuation_data,
-            "mot_summary": {
-                "fail_count": fail_count,
-                "advisory_count": advisory_count,
-                "mot_penalty": mot_penalty,
-            },
-            "mot_full_data": mot_tests,
-            "risk_breakdown": {
-                "description_penalty": description_penalty,
-                "mot_penalty": mot_penalty,
-                "total_risk_penalty": risk_penalty,
-            },
-            "financials": {
-                "listing_price": price,
-                "market_value": market_value,
-                "profit": profit,
-            },
-            "scoring": {
-                "score": score,
-                "confidence_level": confidence,
-            }
-        }
 
         deal = Deal(
             dealer_id=dealer_id,
@@ -290,7 +267,14 @@ def process_listing(
             score=score,
             source=source,
             status=confidence,
-            report=report_data
+            report={
+                "year": year,
+                "listing_url": listing_url,
+                "seller": seller,
+                "location": location,
+                "listing_date": listing_date,
+                "freshness_bonus": freshness_bonus,
+            }
         )
 
         db.add(deal)

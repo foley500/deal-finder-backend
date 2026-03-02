@@ -17,4 +17,12 @@ celery.conf.update(
     timezone="UTC",
 )
 
+celery.conf.beat_schedule = {
+    "scan-every-2-minutes": {
+        "task": "app.tasks.scan_market_for_deals",
+        "schedule": 120.0,
+        "args": (1,)  # dealer_id
+    },
+}
+
 import app.tasks
