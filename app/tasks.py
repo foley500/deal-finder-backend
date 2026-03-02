@@ -8,13 +8,9 @@ from app.services.listing_sources.factory import get_listing_source
 from app.services.pdf_service import generate_deal_pdf
 from app.services.telegram_service import send_telegram_document
 
-# Facebook Email Ingestion
-from app.services.facebook_email_ingestion import FacebookEmailIngestion
-from app.services.facebook_listing_parser import parse_facebook_listing
-
 
 # ==========================================
-# 🔧 SOURCES TO SCAN (API / structured sources)
+# 🔧 SOURCES
 # ==========================================
 SOURCES = ["ebay_browse"]
 
@@ -74,10 +70,39 @@ def notify_deal(deal_id: int):
 
 
 # ==========================================
-# MASTER SCAN TASK (API SOURCES)
+# SNIPER MODE (Fast / Frequent)
+# Prioritises newly listed
 # ==========================================
 @celery.task
-def scan_market_for_deals(dealer_id: int):
+def scan_sniper(dealer_id: int):
+
+    return run_scan(
+        dealer_id=dealer_id,
+        sort="newlyListed",
+        listings_to_pull=50,
+        mode_name="sniper"
+    )
+
+
+# ==========================================
+# VALUE SWEEP (Deeper / Slower)
+# Finds older underpriced vehicles
+# ==========================================
+@celery.task
+def scan_value_sweep(dealer_id: int):
+
+    return run_scan(
+        dealer_id=dealer_id,
+        sort="price",
+        listings_to_pull=100,
+        mode_name="value_sweep"
+    )
+
+
+# ==========================================
+# SHARED SCAN ENGINE
+# ==========================================
+def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str):
 
     db = SessionLocal()
 
@@ -93,54 +118,33 @@ def scan_market_for_deals(dealer_id: int):
         if not settings:
             return {"error": "Dealer settings missing"}
 
-        # ------------------------------------------
-        # Build filters from dashboard settings
-        # ------------------------------------------
         filters = {
             "min_year": settings.min_year,
             "max_year": settings.max_year,
             "max_mileage": settings.max_mileage,
-            "max_price": 4000,  # hardcoded for now (no DB column yet)
+            "max_price": 4000,  # still hardcoded until DB column added
             "min_profit": settings.min_profit,
             "min_score": settings.min_score,
         }
 
         total_listings = 0
         total_deals = 0
-        LISTINGS_TO_PULL = 150  # increase scan depth
         processed_ids = set()
 
         for source_name in SOURCES:
 
             source = get_listing_source(source_name)
 
-            # =====================================
-            # MODE 1 — SNIPER (Newest First)
-            # =====================================
-            sniper_items = source.search(
+            items = source.search(
                 keywords="cars",
-                entries=LISTINGS_TO_PULL,
+                entries=listings_to_pull,
                 min_price=None,
                 max_price=filters["max_price"],
                 min_year=filters["min_year"],
                 max_year=filters["max_year"],
-                sort="newly_listed"
+                sort=sort
             )
 
-            # =====================================
-            # MODE 2 — VALUE SWEEP (Broad)
-            # =====================================
-            value_items = source.search(
-                keywords="cars",
-                entries=LISTINGS_TO_PULL,
-                min_price=None,
-                max_price=filters["max_price"],
-                min_year=filters["min_year"],
-                max_year=filters["max_year"],
-                sort="price_lowest"
-            )
-
-            items = sniper_items + value_items
             total_listings += len(items)
 
             for item in items:
@@ -149,7 +153,6 @@ def scan_market_for_deals(dealer_id: int):
                 if not external_id:
                     continue
 
-                # Prevent duplicate processing in same run
                 if external_id in processed_ids:
                     continue
 
@@ -166,15 +169,11 @@ def scan_market_for_deals(dealer_id: int):
                     continue
 
                 total_deals += 1
-
                 notify_deal.delay(deal.id)
 
-        # ------------------------------------------
-        # Log scan run
-        # ------------------------------------------
         scan = ScanRun(
             dealer_id=dealer.id,
-            source="multi_mode_scan",
+            source=f"mode_{mode_name}",
             listings_found=total_listings,
             deals_saved=total_deals
         )
@@ -183,6 +182,7 @@ def scan_market_for_deals(dealer_id: int):
         db.commit()
 
         return {
+            "mode": mode_name,
             "listings_found": total_listings,
             "deals_saved": total_deals
         }

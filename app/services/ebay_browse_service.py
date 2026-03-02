@@ -14,6 +14,10 @@ _cached_token = None
 _token_expiry = 0
 
 
+# ==============================
+# TOKEN
+# ==============================
+
 def get_ebay_access_token():
     global _cached_token, _token_expiry
 
@@ -46,15 +50,17 @@ def get_ebay_access_token():
     return _cached_token
 
 
-def upgrade_image_resolution(url):
-    if not url:
-        return None
-    if "s-l" in url:
-        return url.split("s-l")[0] + "s-l1600.jpg"
-    return url
+# ==============================
+# SEARCH (LIGHTWEIGHT)
+# ==============================
 
-
-def search_ebay_browse(keywords="used car", limit=5, min_price=1000, max_price=50000):
+def search_ebay_browse(
+    keywords="used car",
+    limit=50,
+    min_price=1000,
+    max_price=50000,
+    sort="newlyListed"
+):
 
     token = get_ebay_access_token()
     if not token:
@@ -63,14 +69,13 @@ def search_ebay_browse(keywords="used car", limit=5, min_price=1000, max_price=5
     headers = {
         "Authorization": f"Bearer {token}",
         "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
-        "Content-Type": "application/json"
     }
 
     params = {
         "q": keywords,
         "limit": limit,
         "category_ids": "9801",
-        "sort": "newlyListed",  # 🔥 CRITICAL
+        "sort": sort,
         "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}}"
     }
 
@@ -81,68 +86,61 @@ def search_ebay_browse(keywords="used car", limit=5, min_price=1000, max_price=5
         return []
 
     summaries = response.json().get("itemSummaries", [])
+
     listings = []
 
-    for summary in summaries:
-
-        item_id = summary.get("itemId")
-
-        detail = requests.get(f"{ITEM_URL}{item_id}", headers=headers)
-
-        if detail.status_code == 429:
-            print("⚠️ eBay rate limited")
-            time.sleep(1)
-            continue
-
-        if detail.status_code != 200:
-            print("❌ Item detail error:", detail.text)
-            continue
-
-        item = detail.json()
-
-        # BUILD ASPECT DICT
-        aspect_dict = {}
-        for aspect in item.get("localizedAspects", []):
-            name = aspect.get("name")
-            values = aspect.get("value")
-
-            if name and values:
-                if isinstance(values, list):
-                    aspect_dict[name] = values[0]
-                else:
-                    aspect_dict[name] = values
-
-        # IMAGE GALLERY
-        all_images = []
-
-        if item.get("image"):
-            all_images.append(
-                upgrade_image_resolution(item["image"].get("imageUrl"))
-            )
-
-        for img in item.get("additionalImages", []):
-            all_images.append(
-                upgrade_image_resolution(img.get("imageUrl"))
-            )
-
+    for item in summaries:
         listings.append({
-    "id": item_id,
-    "title": item.get("title"),
-    "description": item.get("description"),
-    "price": float(item.get("price", {}).get("value", 0)),
-    "view_url": item.get("itemWebUrl"),
-    "image_url": all_images[0] if all_images else None,
-    "all_images": all_images,
-    "seller": item.get("seller", {}).get("username"),
-    "location": item.get("itemLocation", {}).get("postalCode"),
+            "id": item.get("itemId"),
+            "title": item.get("title"),
+            "price": float(item.get("price", {}).get("value", 0)),
+            "view_url": item.get("itemWebUrl"),
+            "image_url": item.get("image", {}).get("imageUrl"),
+            "location": item.get("itemLocation", {}).get("postalCode"),
+            "listing_date": item.get("itemCreationDate"),
+            "source": "ebay",
+            "summary_only": True  # 🔥 important
+        })
 
-    # 🔥 NEW
-    "listing_date": item.get("itemCreationDate") or summary.get("itemCreationDate"),
-    "end_date": item.get("itemEndDate"),
-
-    "aspects": aspect_dict,
-    "source": "ebay",
-})
-
-    print(f"✅ eBay returned {len(listings)} listings with full details")
+    print(f"✅ eBay summary returned {len(listings)} items")
     return listings
+
+
+# ==============================
+# FETCH FULL DETAILS (ON DEMAND)
+# ==============================
+
+def fetch_ebay_item_details(item_id):
+
+    token = get_ebay_access_token()
+    if not token:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
+    }
+
+    response = requests.get(f"{ITEM_URL}{item_id}", headers=headers)
+
+    if response.status_code != 200:
+        print("❌ Item detail error:", response.text)
+        return None
+
+    item = response.json()
+
+    aspect_dict = {}
+    for aspect in item.get("localizedAspects", []):
+        name = aspect.get("name")
+        values = aspect.get("value")
+        if name and values:
+            aspect_dict[name] = values[0] if isinstance(values, list) else values
+
+    return {
+        "description": item.get("description"),
+        "aspects": aspect_dict,
+        "all_images": [
+            img.get("imageUrl")
+            for img in item.get("additionalImages", [])
+        ]
+    }
