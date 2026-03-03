@@ -1,6 +1,7 @@
 import os
 import requests
 import time
+import re
 
 DVSA_CLIENT_ID = os.getenv("DVSA_CLIENT_ID")
 DVSA_CLIENT_SECRET = os.getenv("DVSA_CLIENT_SECRET")
@@ -8,6 +9,7 @@ DVSA_API_KEY = os.getenv("DVSA_API_KEY")
 DVSA_TOKEN_URL = os.getenv("DVSA_TOKEN_URL")
 DVSA_SCOPE_URL = os.getenv("DVSA_SCOPE_URL")
 
+# ✅ Correct endpoint for registration lookup
 MOT_TRADE_URL = "https://history.mot.api.gov.uk/v1/trade/vehicles/registration"
 
 _cached_token = None
@@ -21,7 +23,6 @@ _token_expiry = 0
 def get_dvsa_token():
     global _cached_token, _token_expiry
 
-    # Use cached token if valid
     if _cached_token and time.time() < _token_expiry:
         return _cached_token
 
@@ -71,11 +72,14 @@ def get_mot_data(registration: str):
     if not registration:
         return build_empty_response()
 
+    # 🔥 Clean registration properly
+    clean_reg = re.sub(r"[^A-Z0-9]", "", registration.upper())
+
     token = get_dvsa_token()
     if not token:
         return build_empty_response()
 
-    url = f"{MOT_TRADE_URL}/{registration.upper().strip()}"
+    url = f"{MOT_TRADE_URL}/{clean_reg}"
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -91,10 +95,11 @@ def get_mot_data(registration: str):
         )
 
         print("🚗 DVSA MOT Status:", response.status_code)
-        print("🚗 DVSA MOT Response:", response.text)
 
         if response.status_code == 200:
             return parse_mot_trade_response(response.json())
+        else:
+            print("❌ DVSA MOT error body:", response.text)
 
     except Exception as e:
         print("DVSA MOT exception:", e)
@@ -103,16 +108,16 @@ def get_mot_data(registration: str):
 
 
 # ==========================================
-# PARSE RESPONSE
+# PARSE RESPONSE (FIXED)
 # ==========================================
 
 def parse_mot_trade_response(data):
 
-    if not data or not isinstance(data, list):
+    # 🔥 This endpoint returns a dict, NOT a list
+    if not data or not isinstance(data, dict):
         return build_empty_response()
 
-    vehicle = data[0]
-    mot_tests = vehicle.get("motTests", [])
+    mot_tests = data.get("motTests", [])
 
     fail_count = 0
     advisory_count = 0
@@ -121,8 +126,9 @@ def parse_mot_trade_response(data):
         if test.get("testResult") == "FAILED":
             fail_count += 1
 
-        for item in test.get("rfrAndComments", []):
-            if item.get("type") == "ADVISORY":
+        # NEW API uses "defects" not rfrAndComments
+        for defect in test.get("defects", []):
+            if defect.get("type") == "ADVISORY":
                 advisory_count += 1
 
     return {
@@ -133,9 +139,12 @@ def parse_mot_trade_response(data):
         },
         "mot_full_data": mot_tests,
         "vehicle_data": {
-            "make": vehicle.get("make"),
-            "model": vehicle.get("model"),
-            "first_used_date": vehicle.get("firstUsedDate")
+            "make": data.get("make"),
+            "model": data.get("model"),
+            "first_used_date": data.get("firstUsedDate"),
+            "fuel_type": data.get("fuelType"),
+            "engine_size": data.get("engineSize"),
+            "colour": data.get("primaryColour")
         }
     }
 
