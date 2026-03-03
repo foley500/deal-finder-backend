@@ -35,7 +35,14 @@ def get_dvsa_token():
         "grant_type": "client_credentials"
     }
 
-    response = requests.post(DVSA_TOKEN_URL, data=payload)
+    response = requests.post(
+        DVSA_TOKEN_URL,
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=10
+    )
+
+    print("DVSA TOKEN STATUS:", response.status_code)
 
     if response.status_code != 200:
         print("DVSA token error:", response.text)
@@ -66,7 +73,8 @@ def get_mot_data(registration: str):
     headers = {
         "Authorization": f"Bearer {token}",
         "x-api-key": DVSA_API_KEY,
-        "Accept": "application/json"
+        "Accept": "application/json",
+        "Content-Type": "application/json"
     }
 
     params = {
@@ -85,9 +93,11 @@ def get_mot_data(registration: str):
 
         if response.status_code == 200:
             return parse_mot_trade_response(response.json())
+        else:
+            print("DVSA MOT error body:", response.text)
 
     except Exception as e:
-        print("DVSA MOT error:", e)
+        print("DVSA MOT exception:", e)
 
     return build_empty_response()
 
