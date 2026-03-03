@@ -1,5 +1,5 @@
 import os
-
+import redis
 from app.celery_app import celery
 from app.database import SessionLocal
 from app.models import Dealer, DealerSettings, ScanRun
@@ -15,6 +15,11 @@ from app.services.telegram_service import send_telegram_document
 SOURCES = ["ebay_browse"]
 
 TEST_MODE = True
+
+REDIS_URL = os.getenv("CELERY_BROKER_URL")
+redis_client = redis.from_url(REDIS_URL)
+
+MAX_DETAIL_EXPANSIONS = 8  # HARD LIMIT
 
 
 # ==========================================
@@ -79,7 +84,7 @@ def scan_sniper(dealer_id: int):
     return run_scan(
         dealer_id=dealer_id,
         sort="newlyListed",
-        listings_to_pull=50,
+        listings_to_pull=20,
         mode_name="sniper"
     )
 
@@ -94,7 +99,7 @@ def scan_value_sweep(dealer_id: int):
     return run_scan(
         dealer_id=dealer_id,
         sort="price",
-        listings_to_pull=100,
+        listings_to_pull=40,
         mode_name="value_sweep"
     )
 
@@ -103,6 +108,15 @@ def scan_value_sweep(dealer_id: int):
 # SHARED SCAN ENGINE
 # ==========================================
 def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str):
+
+    lock_key = f"scan_lock_{dealer_id}"
+
+    # Prevent overlapping scans
+    if redis_client.get(lock_key):
+        print("⚠️ Scan already running — skipping")
+        return {"skipped": True}
+
+    redis_client.set(lock_key, "1", ex=540)  # auto-expire in 9 minutes
 
     db = SessionLocal()
 
@@ -122,7 +136,7 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str):
             "min_year": settings.min_year,
             "max_year": settings.max_year,
             "max_mileage": settings.max_mileage,
-            "max_price": 4000,  # still hardcoded until DB column added
+            "max_price": 4000,
             "min_profit": settings.min_profit,
             "min_score": settings.min_score,
         }
@@ -130,6 +144,7 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str):
         total_listings = 0
         total_deals = 0
         processed_ids = set()
+        detail_expansions = 0
 
         for source_name in SOURCES:
 
@@ -149,14 +164,26 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str):
 
             for item in items:
 
-                external_id = item.get("id") or item.get("view_url")
-                if not external_id:
-                    continue
+                if detail_expansions >= MAX_DETAIL_EXPANSIONS:
+                    print("🛑 Expansion cap reached")
+                    break
 
-                if external_id in processed_ids:
+                external_id = item.get("id") or item.get("view_url")
+                if not external_id or external_id in processed_ids:
                     continue
 
                 processed_ids.add(external_id)
+
+                # Cheap pre-filter before detail expansion
+                rough_price = float(item.get("price", 0))
+                if not rough_price:
+                    continue
+
+                rough_estimated_value = rough_price * 0.9
+                rough_profit = rough_estimated_value - rough_price
+
+                if settings.min_profit and rough_profit < (settings.min_profit * 0.5):
+                    continue
 
                 deal = process_listing(
                     item,
@@ -164,6 +191,8 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str):
                     source=source_name,
                     filters=filters
                 )
+
+                detail_expansions += 1
 
                 if not deal:
                     continue
@@ -188,4 +217,5 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str):
         }
 
     finally:
+        redis_client.delete(lock_key)
         db.close()

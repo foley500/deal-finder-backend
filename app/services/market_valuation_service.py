@@ -1,10 +1,14 @@
 import statistics
-import re
+import re, os, redis
 from app.services.ebay_browse_service import get_ebay_access_token
 import requests
 
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 MIN_SAMPLE_SIZE = 5
+
+REDIS_URL = os.getenv("CELERY_BROKER_URL")
+redis_client = redis.from_url(REDIS_URL)
+CACHE_TTL = 1800  # 30 minutes
 
 
 def build_search_query(make: str, model: str, year: int | None):
@@ -74,6 +78,13 @@ def adjust_for_mileage(base_price, target_mileage, sample_avg):
 def get_market_price_from_sold(make, model, year, mileage):
 
     query = build_search_query(make, model, year)
+
+    cache_key = f"sold_cache:{query}"
+    cached = redis_client.get(cache_key)
+
+    if cached:
+        return eval(cached)
+
     sold_listings = get_sold_listings(query)
 
     if not sold_listings:
@@ -101,11 +112,14 @@ def get_market_price_from_sold(make, model, year, mileage):
             mileages.append(m)
 
     sample_avg = int(statistics.mean(mileages)) if mileages else None
-
     adjusted = adjust_for_mileage(median_price, mileage, sample_avg)
 
-    return {
+    result = {
         "market_price": round(adjusted, 2),
         "sample_size": len(prices),
         "source": "ebay_sold_market_model"
     }
+
+    redis_client.set(cache_key, str(result), ex=CACHE_TTL)
+
+    return result

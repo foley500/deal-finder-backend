@@ -166,7 +166,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         # ---------------------------------
         # Expand summary listing
         # ---------------------------------
-        if raw_item.get("summary_only"):
+        if raw_item.get("summary_only") and not raw_item.get("skip_detail"):
             detail = get_item_detail(raw_item.get("id"))
             if not detail:
                 return None
