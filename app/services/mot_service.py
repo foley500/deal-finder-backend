@@ -8,7 +8,7 @@ DVSA_API_KEY = os.getenv("DVSA_API_KEY")
 DVSA_TOKEN_URL = os.getenv("DVSA_TOKEN_URL")
 DVSA_SCOPE_URL = os.getenv("DVSA_SCOPE_URL")
 
-MOT_TRADE_URL = "https://history.mot.api.gov.uk/v1/trade/vehicles/mot-tests"
+MOT_TRADE_URL = "https://history.mot.api.gov.uk/v1/trade/vehicles/registration"
 
 _cached_token = None
 _token_expiry = 0
@@ -72,26 +72,21 @@ def get_mot_data(registration: str):
         return build_empty_response()
 
     token = get_dvsa_token()
-
     if not token:
         return build_empty_response()
+
+    url = f"{MOT_TRADE_URL}/{registration.upper().strip()}"
 
     headers = {
         "Authorization": f"Bearer {token}",
         "x-api-key": DVSA_API_KEY,
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "registration": registration.upper().strip()
+        "Accept": "application/json"
     }
 
     try:
-        response = requests.post(
-            MOT_TRADE_URL,
+        response = requests.get(
+            url,
             headers=headers,
-            json=payload,   # 🔥 IMPORTANT
             timeout=10
         )
 
