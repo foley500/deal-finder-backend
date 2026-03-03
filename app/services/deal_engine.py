@@ -2,16 +2,14 @@ from app.margin import calculate_true_profit
 from app.risk import description_risk
 from app.scoring import calculate_score
 from app.registration import extract_registration
-from app.services.valuation_service import get_market_value
 from app.models import Deal, DealerSettings
 from app.database import SessionLocal
 from app.services.ocr_service import extract_plate_from_image_url
 from app.services.mot_service import get_mot_data
-from app.valuation import get_market_value_from_reg
 from app.services.ebay_browse_service import get_item_detail
+from app.services.market_valuation_service import get_market_price_from_sold
 
 from math import radians, sin, cos, sqrt, atan2
-from datetime import datetime
 import requests
 import re
 
@@ -29,6 +27,7 @@ def extract_mileage_from_text(text: str) -> int:
     if match:
         return int(match.group(1).replace(",", ""))
     return 0
+
 
 def is_valid_vehicle(title: str, price: float) -> bool:
     title = title.lower()
@@ -48,7 +47,7 @@ def is_valid_vehicle(title: str, price: float) -> bool:
     return True
 
 
-def extract_year_from_text(text: str) -> int | None:
+def extract_year_from_text(text: str):
     match = re.search(r"\b(20\d{2}|19\d{2})\b", text)
     if match:
         return int(match.group(1))
@@ -107,35 +106,15 @@ TARGET_LAT, TARGET_LON = get_lat_long(TARGET_POSTCODE)
 
 
 # ---------------------------------
-# TEMP VALUATION (Conservative)
+# FALLBACK VALUATION
 # ---------------------------------
 
 def smart_temp_valuation(price, year, mileage):
-    """
-    Conservative fallback model until CAP API is live.
-    Prevents fake inflated profits.
-    """
-
     if not price:
-        return {
-            "clean": 0,
-            "retail": 0,
-            "trade": 0,
-            "part_ex": 0,
-            "source": "temporary_model"
-        }
+        return 0
 
-    estimated_trade = price * 0.85
-    estimated_part_ex = price * 0.90
-    estimated_retail = price * 1.05
-
-    return {
-        "clean": round(estimated_trade, 2),
-        "retail": round(estimated_retail, 2),
-        "trade": round(estimated_trade, 2),
-        "part_ex": round(estimated_part_ex, 2),
-        "source": "temporary_model"
-    }
+    # Conservative baseline
+    return round(price * 0.85, 2)
 
 
 # ---------------------------------
@@ -250,7 +229,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             reg = extract_plate_from_image_url(image_url)
 
         # ---------------------------------
-        # MOT (needed before valuation)
+        # MOT (required before valuation)
         # ---------------------------------
         mot_penalty = 0
         mot_summary = {}
@@ -289,11 +268,12 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if valuation_result:
             market_value = valuation_result["market_price"]
         else:
-            market_value = smart_temp_valuation(price, year, mileage)["trade"]
+            market_value = smart_temp_valuation(price, year, mileage)
 
         valuation_data = {
             "market_price": market_value,
-            "source": valuation_result["source"] if valuation_result else "fallback_model"
+            "source": valuation_result["source"] if valuation_result else "fallback_model",
+            "sample_size": valuation_result.get("sample_size") if valuation_result else None
         }
 
         # ---------------------------------
