@@ -84,7 +84,7 @@ def get_mot_data(registration: str):
     }
 
     body = {
-        "registration": registration.upper().strip()
+        "registrationNumber": registration.upper().strip()
     }
 
     try:
@@ -98,8 +98,7 @@ def get_mot_data(registration: str):
         print("🚗 DVSA MOT Status:", response.status_code)
 
         if response.status_code == 200:
-            data = response.json()
-            return parse_mot_trade_response(data)
+            return parse_mot_trade_response(response.json())
         else:
             print("❌ DVSA MOT error body:", response.text)
 
