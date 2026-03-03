@@ -30,6 +30,23 @@ def extract_mileage_from_text(text: str) -> int:
         return int(match.group(1).replace(",", ""))
     return 0
 
+def is_valid_vehicle(title: str, price: float) -> bool:
+    title = title.lower()
+
+    banned_words = [
+        "breaking", "spares", "repair", "parts", "engine",
+        "gearbox", "bumper", "door", "mirror", "alloy",
+        "wheel", "tyre", "tire"
+    ]
+
+    if any(word in title for word in banned_words):
+        return False
+
+    if price < 500:
+        return False
+
+    return True
+
 
 def extract_year_from_text(text: str) -> int | None:
     match = re.search(r"\b(20\d{2}|19\d{2})\b", text)
@@ -164,8 +181,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if not price:
             return None
 
-        max_price = filters.get("max_price") if filters else None
-        if max_price and price > max_price:
+        # HARD vehicle validation
+        if not is_valid_vehicle(title, price):
             return None
 
         # ---------------------------------
@@ -219,10 +236,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         # Apply filters
         # ---------------------------------
         if year:
-           # if settings.min_year and year < settings.min_year:
-           #     return None
-           #  if settings.max_year and year > settings.max_year:
-           #    return None
+            if settings.min_year and year < settings.min_year:
+                return None
+            if settings.max_year and year > settings.max_year:
+                return None
 
         if mileage:
             if settings.max_mileage and mileage > settings.max_mileage:
@@ -242,7 +259,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                     return None
 
         # ---------------------------------
-        # Registration detection (single OCR)
+        # Registration detection
         # ---------------------------------
         reg = extract_registration(title)
 
@@ -250,8 +267,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             reg = extract_plate_from_image_url(image_url)
 
         # ---------------------------------
-        # VALUATION PRIORITY
-        # CAP → REG MODEL → TEMP
+        # VALUATION
         # ---------------------------------
         valuation_data = None
 
@@ -259,10 +275,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             valuation_data = get_market_value(reg)
 
         if not valuation_data or not valuation_data.get("clean"):
-
             if reg:
                 reg_value = get_market_value_from_reg(reg, mileage or 0)
-
                 if reg_value:
                     valuation_data = {
                         "clean": reg_value,

@@ -14,14 +14,9 @@ _cached_token = None
 _token_expiry = 0
 
 
-# ==========================================
-# OAUTH TOKEN (WITH CORRECT BUY SCOPE)
-# ==========================================
-
 def get_ebay_access_token():
     global _cached_token, _token_expiry
 
-    # Use cached token if still valid
     if _cached_token and time.time() < _token_expiry:
         return _cached_token
 
@@ -33,15 +28,12 @@ def get_ebay_access_token():
         "Content-Type": "application/x-www-form-urlencoded"
     }
 
-    # ✅ Proper Browse API scope
     data = {
         "grant_type": "client_credentials",
         "scope": "https://api.ebay.com/oauth/api_scope"
     }
 
     response = requests.post(TOKEN_URL, headers=headers, data=data)
-
-    print("OAUTH STATUS:", response.status_code)
 
     if response.status_code != 200:
         print("❌ eBay OAuth error:", response.text)
@@ -55,12 +47,8 @@ def get_ebay_access_token():
     return _cached_token
 
 
-# ==========================================
-# SEARCH — SUMMARY ONLY (LIGHTWEIGHT)
-# ==========================================
-
 def search_ebay_browse(
-    keywords="",
+    keywords="cars",
     limit=20,
     min_price=500,
     max_price=50000,
@@ -76,48 +64,34 @@ def search_ebay_browse(
         "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
     }
 
-    # 🔥 STRICT VEHICLE FILTER
-    filter_string = (
-        f"price:[{min_price}..{max_price}],"
-        "buyingOptions:{FIXED_PRICE},"
-        "conditions:{USED},"
-        "itemLocationCountry:GB"
-    )
-
     params = {
         "q": keywords,
         "limit": limit,
         "category_ids": "9801",  # Cars
         "sort": sort,
-        "filter": filter_string
+        "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}}"
     }
 
     response = requests.get(SEARCH_URL, headers=headers, params=params)
-
-    print("SEARCH STATUS:", response.status_code)
 
     if response.status_code != 200:
         print("❌ Browse API error:", response.text)
         return []
 
     summaries = response.json().get("itemSummaries", [])
+
     listings = []
+
+    banned_words = [
+        "breaking", "spares", "repair", "parts", "engine",
+        "gearbox", "bumper", "door", "mirror", "alloy",
+        "wheel", "tyre", "tire"
+    ]
 
     for summary in summaries:
         title = summary.get("title", "").lower()
 
-        # 🔥 SECONDARY DEFENSIVE FILTER
-        if any(bad_word in title for bad_word in [
-            "breaking",
-            "spares",
-            "repair",
-            "parts",
-            "engine",
-            "gearbox",
-            "bumper",
-            "wheel",
-            "tyre"
-        ]):
+        if any(word in title for word in banned_words):
             continue
 
         listings.append({
@@ -132,14 +106,10 @@ def search_ebay_browse(
             "summary_only": True
         })
 
-    print(f"✅ eBay returned {len(listings)} clean vehicle listings")
+    print(f"✅ eBay returned {len(listings)} vehicle summaries")
 
     return listings
 
-
-# ==========================================
-# DETAIL FETCH (EXPENSIVE)
-# ==========================================
 
 def get_item_detail(item_id):
 
@@ -153,9 +123,6 @@ def get_item_detail(item_id):
     }
 
     response = requests.get(f"{ITEM_URL}{item_id}", headers=headers)
-
-    print("DETAIL STATUS:", response.status_code)
-    print("DETAIL HEADERS:", dict(response.headers))
 
     if response.status_code != 200:
         print("❌ Item detail error:", response.text)
