@@ -5,6 +5,7 @@
 
 <div class="row g-4">
 
+    <!-- LEFT COLUMN -->
     <div class="col-lg-6">
 
         <!-- FINANCIAL SUMMARY -->
@@ -13,17 +14,17 @@
 
             <div class="d-flex justify-content-between">
                 <span>Listing Price</span>
-                <strong>£{{ report.financials.get("listing_price", 0) }}</strong>
+                <strong>£{{ report.financials.listing_price }}</strong>
             </div>
 
             <div class="d-flex justify-content-between">
                 <span>Market Value</span>
-                <strong>£{{ report.financials.get("market_value", 0) }}</strong>
+                <strong>£{{ report.financials.market_value }}</strong>
             </div>
 
             <div class="d-flex justify-content-between">
                 <span>Total Risk Penalty</span>
-                <strong>£{{ report.risk_breakdown.get("total_risk_penalty", 0) }}</strong>
+                <strong>£{{ report.risk_breakdown.total_risk_penalty }}</strong>
             </div>
 
             <hr>
@@ -31,67 +32,73 @@
             <div class="d-flex justify-content-between fs-4">
                 <span>True Profit</span>
                 <strong class="text-success">
-                    £{{ report.financials.get("profit", 0) }}
+                    £{{ report.financials.profit }}
                 </strong>
             </div>
 
-            {% set mv = report.financials.get("market_value", 0) %}
-            {% set profit = report.financials.get("profit", 0) %}
-            {% set margin = (profit / mv * 100) if mv else 0 %}
+            {% set margin = (report.financials.profit / report.financials.market_value * 100)
+                if report.financials.market_value else 0 %}
 
-            <div class="mt-2 small">
+            <div class="small mt-2">
                 Margin: {{ "%.1f"|format(margin) }}%
             </div>
         </div>
 
-        <!-- MARKET MODEL -->
+
+        <!-- SOLD MARKET MODEL -->
         <div class="card p-4 mb-4">
             <h5 class="mb-3">Market Valuation (Sold Data Model)</h5>
 
-            {% if report.market_model.get("market_price") %}
+            {% if report.market_model.market_price %}
                 <div class="d-flex justify-content-between">
                     <span>Estimated Market Price</span>
-                    <strong>£{{ report.market_model.get("market_price") }}</strong>
+                    <strong>£{{ report.market_model.market_price }}</strong>
                 </div>
 
                 <div class="small text-secondary mt-2">
-                    Source: {{ report.market_model.get("source") }}
+                    Source: {{ report.market_model.source }}
+                    {% if report.market_model.sample_size %}
+                        ({{ report.market_model.sample_size }} samples)
+                    {% endif %}
                 </div>
             {% else %}
                 <p>No sold data available</p>
             {% endif %}
         </div>
 
-        <!-- RISK -->
+
+        <!-- RISK BREAKDOWN -->
         <div class="card p-4 mb-4">
             <h5 class="mb-3">Risk Analysis</h5>
 
             <div class="d-flex justify-content-between">
                 <span>Description Risk</span>
-                <strong>£{{ report.risk_breakdown.get("description_penalty", 0) }}</strong>
+                <strong>£{{ report.risk_breakdown.description_penalty }}</strong>
             </div>
 
             <div class="d-flex justify-content-between">
                 <span>MOT Risk</span>
-                <strong>£{{ report.risk_breakdown.get("mot_penalty", 0) }}</strong>
+                <strong>£{{ report.risk_breakdown.mot_penalty }}</strong>
             </div>
         </div>
 
     </div>
 
+
+    <!-- RIGHT COLUMN -->
     <div class="col-lg-6">
 
-        <!-- LISTING -->
+        <!-- LISTING INFO -->
         <div class="card p-4 mb-4">
             <h5 class="mb-3">Listing Information</h5>
 
             <p><strong>Registration:</strong> {{ deal.reg or "Not detected" }}</p>
             <p><strong>Mileage:</strong> {{ deal.mileage or "Not provided" }}</p>
-            <p><strong>Seller:</strong> {{ report.get("seller", "Unknown") }}</p>
-            <p><strong>Location:</strong> {{ report.get("location", "Unknown") }}</p>
+            <p><strong>Seller:</strong> {{ report.seller or "Unknown" }}</p>
+            <p><strong>Location:</strong> {{ report.location or "Unknown" }}</p>
 
-            {% if report.get("listing_url") %}
-                <a href="{{ report.get('listing_url') }}"
+            {% if report.listing_url %}
+                <a href="{{ report.listing_url }}"
                    target="_blank"
                    class="btn btn-outline-light mt-2">
                     View Original Listing
@@ -99,27 +106,107 @@
             {% endif %}
         </div>
 
+
         <!-- MOT SUMMARY -->
         <div class="card p-4 mb-4">
             <h5 class="mb-3">MOT Summary</h5>
 
             <div class="d-flex justify-content-between">
                 <span>Fails</span>
-                <strong>{{ report.mot_summary.get("fail_count", 0) }}</strong>
+                <strong>{{ report.mot_summary.fail_count }}</strong>
             </div>
 
             <div class="d-flex justify-content-between">
                 <span>Advisories</span>
-                <strong>{{ report.mot_summary.get("advisory_count", 0) }}</strong>
+                <strong>{{ report.mot_summary.advisory_count }}</strong>
             </div>
 
             <div class="d-flex justify-content-between">
                 <span>MOT Penalty</span>
-                <strong>£{{ report.mot_summary.get("mot_penalty", 0) }}</strong>
+                <strong>£{{ report.mot_summary.mot_penalty }}</strong>
             </div>
         </div>
 
     </div>
+</div>
+
+
+<!-- FULL MOT HISTORY -->
+<div class="card p-4 mt-4">
+    <h5 class="mb-3">Full MOT History</h5>
+
+    {% if report.mot_full_data %}
+        <div class="accordion" id="motAccordion">
+
+            {% for mot in report.mot_full_data %}
+                {% set test_date = mot.completedDate[:10] if mot.completedDate else "Unknown Date" %}
+                {% set result = mot.testResult %}
+                {% set defects = mot.defects if mot.defects else [] %}
+
+                <div class="accordion-item bg-dark text-light border-secondary mb-3">
+
+                    <h2 class="accordion-header">
+                        <button class="accordion-button collapsed bg-dark text-light"
+                                type="button"
+                                data-bs-toggle="collapse"
+                                data-bs-target="#collapse{{ loop.index }}">
+
+                            <strong>{{ test_date }}</strong>
+
+                            <span class="ms-3 {% if result == 'FAILED' %}text-danger{% else %}text-success{% endif %}">
+                                {{ result }}
+                            </span>
+
+                            <span class="ms-auto small">
+                                {{ mot.odometerValue }} miles
+                            </span>
+                        </button>
+                    </h2>
+
+                    <div id="collapse{{ loop.index }}"
+                         class="accordion-collapse collapse"
+                         data-bs-parent="#motAccordion">
+
+                        <div class="accordion-body">
+
+                            <p><strong>Expiry Date:</strong> {{ mot.expiryDate or "N/A" }}</p>
+
+                            {% if defects|length > 0 %}
+                                <hr>
+                                <h6>Tester Notes</h6>
+
+                                {% for defect in defects %}
+                                    <div class="mb-3 p-3 rounded"
+                                         style="background:#0f172a;
+                                         border-left:5px solid
+                                         {% if defect.type == 'FAIL' %}
+                                             #ef4444
+                                         {% elif defect.type == 'ADVISORY' %}
+                                             #f59e0b
+                                         {% else %}
+                                             #64748b
+                                         {% endif %};">
+
+                                        <strong>{{ defect.type }}</strong><br>
+                                        {{ defect.text }}
+                                    </div>
+                                {% endfor %}
+                            {% else %}
+                                <div class="text-success">
+                                    No advisories or defects recorded.
+                                </div>
+                            {% endif %}
+
+                        </div>
+                    </div>
+
+                </div>
+            {% endfor %}
+
+        </div>
+    {% else %}
+        <p>No MOT history available</p>
+    {% endif %}
 </div>
 
 {% endblock %}
