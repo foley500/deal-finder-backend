@@ -1,17 +1,109 @@
-<!-- MARKET VALUATION -->
-<div class="card p-4 mb-4">
-    <h5 class="mb-3">Market Valuation (Sold Data Model)</h5>
+{% extends "layout.html" %}
+{% block content %}
 
-    {% if report.market_model.market_price %}
-        <div class="d-flex justify-content-between">
-            <span>Estimated Market Price</span>
-            <strong>£{{ report.market_model.market_price }}</strong>
-        </div>
+<div class="container mt-4">
 
-        <div class="small text-secondary mt-2">
-            Source: {{ report.market_model.source }}
+    <a href="/deals" class="btn btn-secondary mb-3">← Back to Deals</a>
+
+    <div class="card p-4 mb-4">
+        <h4 class="mb-3">{{ deal.title }}</h4>
+
+        <div class="row">
+            <div class="col-md-6">
+                <p><strong>Registration:</strong> {{ deal.reg or "N/A" }}</p>
+                <p><strong>Mileage:</strong> {{ deal.mileage or "N/A" }}</p>
+                <p><strong>Listing Price:</strong> £{{ deal.listing_price }}</p>
+                <p><strong>Market Value:</strong> £{{ deal.market_value }}</p>
+                <p><strong>Estimated Profit:</strong> £{{ deal.profit }}</p>
+                <p><strong>Risk Penalty:</strong> £{{ deal.risk_penalty }}</p>
+                <p><strong>Score:</strong> {{ deal.score }}</p>
+                <p><strong>Status:</strong> {{ deal.status }}</p>
+            </div>
+
+            <div class="col-md-6">
+                {% if report.listing_url %}
+                    <p>
+                        <strong>Listing:</strong><br>
+                        <a href="{{ report.listing_url }}" target="_blank">
+                            View Original Listing
+                        </a>
+                    </p>
+                {% endif %}
+
+                {% if report.seller %}
+                    <p><strong>Seller:</strong> {{ report.seller }}</p>
+                {% endif %}
+
+                {% if report.location %}
+                    <p><strong>Location:</strong> {{ report.location }}</p>
+                {% endif %}
+            </div>
         </div>
-    {% else %}
-        <p>No sold data available</p>
-    {% endif %}
+    </div>
+
+
+    <!-- MARKET VALUATION -->
+    <div class="card p-4 mb-4">
+        <h5 class="mb-3">Market Valuation</h5>
+
+        {% if report.market_model and report.market_model.market_price %}
+            <div class="d-flex justify-content-between">
+                <span>Estimated Market Price</span>
+                <strong>£{{ report.market_model.market_price }}</strong>
+            </div>
+
+            <div class="small text-secondary mt-2">
+                Source: {{ report.market_model.source }}
+            </div>
+        {% else %}
+            <p>No valuation data available</p>
+        {% endif %}
+    </div>
+
+
+    <!-- RISK BREAKDOWN -->
+    <div class="card p-4 mb-4">
+        <h5 class="mb-3">Risk Breakdown</h5>
+
+        <p><strong>Description Penalty:</strong> £{{ report.risk_breakdown.description_penalty or 0 }}</p>
+        <p><strong>MOT Penalty:</strong> £{{ report.risk_breakdown.mot_penalty or 0 }}</p>
+        <p><strong>Total Risk:</strong> £{{ report.risk_breakdown.total_risk_penalty or 0 }}</p>
+    </div>
+
+
+    <!-- SCORING -->
+    <div class="card p-4 mb-4">
+        <h5 class="mb-3">Scoring</h5>
+
+        <p><strong>Score:</strong> {{ report.scoring.score or 0 }}</p>
+        <p><strong>Confidence Level:</strong> {{ report.scoring.confidence_level or "N/A" }}</p>
+    </div>
+
+
+    <!-- VEHICLE DETAILS -->
+    <div class="card p-4 mb-4">
+        <h5 class="mb-3">Vehicle Details</h5>
+
+        <p><strong>Transmission:</strong> {{ report.listing_details.transmission or "N/A" }}</p>
+        <p><strong>Fuel Type:</strong> {{ report.listing_details.fuel_type or "N/A" }}</p>
+        <p><strong>Exterior Colour:</strong> {{ report.listing_details.exterior_color or "N/A" }}</p>
+        <p><strong>Interior Colour:</strong> {{ report.listing_details.interior_color or "N/A" }}</p>
+    </div>
+
+
+    <!-- MOT SUMMARY -->
+    <div class="card p-4 mb-4">
+        <h5 class="mb-3">MOT Summary</h5>
+
+        {% if report.mot_summary %}
+            {% for key, value in report.mot_summary.items() %}
+                <p><strong>{{ key|replace('_',' ')|title }}:</strong> {{ value }}</p>
+            {% endfor %}
+        {% else %}
+            <p>No MOT data available</p>
+        {% endif %}
+    </div>
+
 </div>
+
+{% endblock %}
