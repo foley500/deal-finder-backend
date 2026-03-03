@@ -23,21 +23,12 @@ celery.conf.update(
 
 celery.conf.beat_schedule = {
 
-    # 🔥 SNIPER MODE
-    # Runs frequently to catch newly listed vehicles
-    "sniper-scan-every-3-minutes": {
+    "sniper-scan-every-10-minutes": {
         "task": "app.tasks.scan_sniper",
-        "schedule": 180.0,
-        "args": (1,)  # dealer_id
+        "schedule": 600.0,
+        "args": (1,)
     },
 
-    # 🔍 VALUE SWEEP
-    # Runs slower to catch older underpriced vehicles
-    "value-sweep-every-30-minutes": {
-        "task": "app.tasks.scan_value_sweep",
-        "schedule": 1800.0,
-        "args": (1,)  # dealer_id
-    },
 }
 
 import app.tasks
