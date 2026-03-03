@@ -14,17 +14,17 @@
 
             <div class="d-flex justify-content-between">
                 <span>Listing Price</span>
-                <strong>£{{ report.financials.listing_price }}</strong>
+                <strong>£{{ report.financials.listing_price or 0 }}</strong>
             </div>
 
             <div class="d-flex justify-content-between">
                 <span>Market Value</span>
-                <strong>£{{ report.financials.market_value }}</strong>
+                <strong>£{{ report.financials.market_value or 0 }}</strong>
             </div>
 
             <div class="d-flex justify-content-between">
                 <span>Total Risk Penalty</span>
-                <strong>£{{ report.risk_breakdown.total_risk_penalty }}</strong>
+                <strong>£{{ report.risk_breakdown.total_risk_penalty or 0 }}</strong>
             </div>
 
             <hr>
@@ -32,40 +32,66 @@
             <div class="d-flex justify-content-between fs-4">
                 <span>True Profit</span>
                 <strong class="text-success">
-                    £{{ report.financials.profit }}
+                    £{{ report.financials.profit or 0 }}
                 </strong>
             </div>
 
-            {% set margin = (report.financials.profit / report.financials.market_value * 100)
-                if report.financials.market_value else 0 %}
+            {% set mv = report.financials.market_value or 0 %}
+            {% set profit = report.financials.profit or 0 %}
+            {% set margin = (profit / mv * 100) if mv else 0 %}
 
-            <div class="small mt-2">
-                Margin: {{ "%.1f"|format(margin) }}%
+            <div class="mt-3">
+                <div class="small mb-1">Profit Margin</div>
+                <div class="progress bg-dark" style="height: 8px;">
+                    <div class="progress-bar bg-success"
+                         style="width: {{ margin }}%;">
+                    </div>
+                </div>
+                <div class="small mt-1">
+                    {{ "%.1f"|format(margin) }}%
+                </div>
+            </div>
+
+            <div class="mt-3 d-flex gap-2 align-items-center">
+                <div class="badge bg-dark border border-light px-3 py-2">
+                    Score: {{ report.scoring.score or 0 }}
+                </div>
+
+                {% set conf = report.scoring.confidence_level or "low" %}
+
+                {% if conf == "very_high" %}
+                    <div class="badge bg-success px-3 py-2">VERY HIGH</div>
+                {% elif conf == "high" %}
+                    <div class="badge bg-warning text-dark px-3 py-2">HIGH</div>
+                {% elif conf == "medium" %}
+                    <div class="badge bg-secondary px-3 py-2">MEDIUM</div>
+                {% else %}
+                    <div class="badge bg-danger px-3 py-2">LOW</div>
+                {% endif %}
             </div>
         </div>
 
-
-        <!-- SOLD MARKET MODEL -->
+        <!-- MARKET VALUATION -->
         <div class="card p-4 mb-4">
             <h5 class="mb-3">Market Valuation (Sold Data Model)</h5>
 
-            {% if report.market_model.market_price %}
+            {% if report.market_model and report.market_model.market_price %}
                 <div class="d-flex justify-content-between">
                     <span>Estimated Market Price</span>
                     <strong>£{{ report.market_model.market_price }}</strong>
                 </div>
 
                 <div class="small text-secondary mt-2">
+                    Sample Size: {{ report.market_model.sample_size or 0 }}
+                </div>
+
+                <div class="small text-secondary">
                     Source: {{ report.market_model.source }}
-                    {% if report.market_model.sample_size %}
-                        ({{ report.market_model.sample_size }} samples)
-                    {% endif %}
                 </div>
             {% else %}
                 <p>No sold data available</p>
             {% endif %}
         </div>
-
 
         <!-- RISK BREAKDOWN -->
         <div class="card p-4 mb-4">
@@ -73,17 +99,16 @@
 
             <div class="d-flex justify-content-between">
                 <span>Description Risk</span>
-                <strong>£{{ report.risk_breakdown.description_penalty }}</strong>
+                <strong>£{{ report.risk_breakdown.description_penalty or 0 }}</strong>
             </div>
 
             <div class="d-flex justify-content-between">
                 <span>MOT Risk</span>
-                <strong>£{{ report.risk_breakdown.mot_penalty }}</strong>
+                <strong>£{{ report.risk_breakdown.mot_penalty or 0 }}</strong>
             </div>
         </div>
 
     </div>
-
 
     <!-- RIGHT COLUMN -->
     <div class="col-lg-6">
@@ -94,6 +119,10 @@
 
             <p><strong>Registration:</strong> {{ deal.reg or "Not detected" }}</p>
             <p><strong>Mileage:</strong> {{ deal.mileage or "Not provided" }}</p>
+            <p><strong>Transmission:</strong> {{ report.listing_details.transmission or "Not provided" }}</p>
+            <p><strong>Fuel Type:</strong> {{ report.listing_details.fuel_type or "Not provided" }}</p>
+            <p><strong>Exterior Colour:</strong> {{ report.listing_details.exterior_color or "Not provided" }}</p>
+            <p><strong>Interior Colour:</strong> {{ report.listing_details.interior_color or "Not provided" }}</p>
             <p><strong>Seller:</strong> {{ report.seller or "Unknown" }}</p>
             <p><strong>Location:</strong> {{ report.location or "Unknown" }}</p>
 
@@ -106,104 +135,98 @@
             {% endif %}
         </div>
 
-
         <!-- MOT SUMMARY -->
         <div class="card p-4 mb-4">
             <h5 class="mb-3">MOT Summary</h5>
 
             <div class="d-flex justify-content-between">
                 <span>Fails</span>
-                <strong>{{ report.mot_summary.fail_count }}</strong>
+                <strong>{{ report.mot_summary.fail_count or 0 }}</strong>
             </div>
 
             <div class="d-flex justify-content-between">
                 <span>Advisories</span>
-                <strong>{{ report.mot_summary.advisory_count }}</strong>
+                <strong>{{ report.mot_summary.advisory_count or 0 }}</strong>
             </div>
 
             <div class="d-flex justify-content-between">
                 <span>MOT Penalty</span>
-                <strong>£{{ report.mot_summary.mot_penalty }}</strong>
+                <strong>£{{ report.mot_summary.mot_penalty or 0 }}</strong>
             </div>
         </div>
 
     </div>
 </div>
 
-
 <!-- FULL MOT HISTORY -->
 <div class="card p-4 mt-4">
     <h5 class="mb-3">Full MOT History</h5>
 
     {% if report.mot_full_data %}
-        <div class="accordion" id="motAccordion">
+    <div class="accordion" id="motAccordion">
 
-            {% for mot in report.mot_full_data %}
-                {% set test_date = mot.completedDate[:10] if mot.completedDate else "Unknown Date" %}
-                {% set result = mot.testResult %}
-                {% set defects = mot.defects if mot.defects else [] %}
+        {% for mot in report.mot_full_data %}
+        <div class="accordion-item bg-dark text-light border-secondary mb-3">
 
-                <div class="accordion-item bg-dark text-light border-secondary mb-3">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed bg-dark text-light"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#collapse{{ loop.index }}">
 
-                    <h2 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light"
-                                type="button"
-                                data-bs-toggle="collapse"
-                                data-bs-target="#collapse{{ loop.index }}">
+                    <strong>{{ mot.completedDate[:10] if mot.completedDate else "Unknown Date" }}</strong>
 
-                            <strong>{{ test_date }}</strong>
+                    <span class="ms-3 {% if mot.testResult == 'FAILED' %}text-danger{% else %}text-success{% endif %}">
+                        {{ mot.testResult }}
+                    </span>
 
-                            <span class="ms-3 {% if result == 'FAILED' %}text-danger{% else %}text-success{% endif %}">
-                                {{ result }}
-                            </span>
+                    <span class="ms-auto small">
+                        {{ mot.odometerValue or "N/A" }} miles
+                    </span>
+                </button>
+            </h2>
 
-                            <span class="ms-auto small">
-                                {{ mot.odometerValue }} miles
-                            </span>
-                        </button>
-                    </h2>
+            <div id="collapse{{ loop.index }}"
+                 class="accordion-collapse collapse"
+                 data-bs-parent="#motAccordion">
 
-                    <div id="collapse{{ loop.index }}"
-                         class="accordion-collapse collapse"
-                         data-bs-parent="#motAccordion">
+                <div class="accordion-body">
 
-                        <div class="accordion-body">
+                    <p><strong>Expiry Date:</strong> {{ mot.expiryDate or "N/A" }}</p>
 
-                            <p><strong>Expiry Date:</strong> {{ mot.expiryDate or "N/A" }}</p>
+                    {% if mot.defects %}
+                        <hr>
+                        <h6>Tester Notes</h6>
 
-                            {% if defects|length > 0 %}
-                                <hr>
-                                <h6>Tester Notes</h6>
+                        {% for defect in mot.defects %}
+                        <div class="mb-3 p-3 rounded"
+                             style="background:#0f172a;
+                             border-left:5px solid
+                             {% if defect.type == 'FAIL' %}
+                                 #ef4444
+                             {% elif defect.type == 'ADVISORY' %}
+                                 #f59e0b
+                             {% else %}
+                                 #64748b
+                             {% endif %};">
 
-                                {% for defect in defects %}
-                                    <div class="mb-3 p-3 rounded"
-                                         style="background:#0f172a;
-                                         border-left:5px solid
-                                         {% if defect.type == 'FAIL' %}
-                                             #ef4444
-                                         {% elif defect.type == 'ADVISORY' %}
-                                             #f59e0b
-                                         {% else %}
-                                             #64748b
-                                         {% endif %};">
-
-                                        <strong>{{ defect.type }}</strong><br>
-                                        {{ defect.text }}
-                                    </div>
-                                {% endfor %}
-                            {% else %}
-                                <div class="text-success">
-                                    No advisories or defects recorded.
-                                </div>
-                            {% endif %}
-
+                            <strong>{{ defect.type }}</strong><br>
+                            {{ defect.text }}
                         </div>
-                    </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="text-success">
+                            No advisories or defects recorded.
+                        </div>
+                    {% endif %}
 
                 </div>
-            {% endfor %}
+            </div>
 
         </div>
+        {% endfor %}
+
+    </div>
     {% else %}
         <p>No MOT history available</p>
     {% endif %}
