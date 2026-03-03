@@ -72,25 +72,21 @@ def get_mot_data(registration: str):
         return build_empty_response()
 
     token = get_dvsa_token()
-
     if not token:
         return build_empty_response()
 
     headers = {
         "Authorization": f"Bearer {token}",
         "x-api-key": DVSA_API_KEY,
-        "Accept": "application/json"
-    }
-
-    params = {
-        "registration": registration.upper().strip()
+        "Accept": "application/json",
+        "Content-Type": "application/json"
     }
 
     try:
-        response = requests.get(
+        response = requests.post(
             MOT_TRADE_URL,
             headers=headers,
-            params=params,
+            json={"registration": registration.upper().strip()},
             timeout=10
         )
 
@@ -102,7 +98,7 @@ def get_mot_data(registration: str):
             print("❌ DVSA MOT error body:", response.text)
 
     except Exception as e:
-        print("❌ DVSA MOT exception:", e)
+        print("DVSA MOT exception:", e)
 
     return build_empty_response()
 
