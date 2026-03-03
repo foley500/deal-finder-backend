@@ -13,3 +13,7 @@ reportlab
 jinja2
 python-multipart
 Pillow
+easyocr
+torch
+torchvision
+

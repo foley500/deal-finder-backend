@@ -1,77 +1,52 @@
 import requests
-import os
-import time
 import re
+import io
+import numpy as np
+import cv2
+from PIL import Image
+import easyocr
 
-PLATE_API_KEY = os.getenv("PLATE_API_KEY")
-PLATE_API_URL = "https://api.platerecognizer.com/v1/plate-reader/"
+# Load once globally (important for Celery performance)
+reader = easyocr.Reader(['en'], gpu=False)
+
+
+def normalise_uk_plate(raw_plate: str) -> str:
+    plate = raw_plate.upper()
+    plate = re.sub(r"[^A-Z0-9]", "", plate)
+    return plate
+
+
+def is_valid_uk_plate(plate: str) -> bool:
+    return bool(re.match(r"^[A-Z]{2}[0-9]{2}[A-Z]{3}$", plate))
 
 
 def extract_plate_from_image_url(image_url: str):
 
-    if not PLATE_API_KEY:
-        print("❌ PLATE_API_KEY is missing!")
-        return None
-
     try:
         print("⬇️ Downloading image...")
-        image_response = requests.get(image_url, timeout=10)
+        response = requests.get(image_url, timeout=10)
 
-        if image_response.status_code != 200:
-            print("❌ Failed to download image:", image_response.status_code)
+        if response.status_code != 200:
+            print("❌ Image download failed")
             return None
 
-        print("📡 Sending to Plate Recognizer API...")
+        image = Image.open(io.BytesIO(response.content)).convert("RGB")
+        img_np = np.array(image)
 
-        response = requests.post(
-            PLATE_API_URL,
-            headers={
-                "Authorization": f"Token {PLATE_API_KEY}"
-            },
-            data={
-                "regions": "gb",
-                "recognize_vehicle": 1
-            },
-            files={
-                "upload": ("image.jpg", image_response.content)
-            },
-            timeout=20
-        )
+        print("🔎 Running EasyOCR...")
+        results = reader.readtext(img_np)
 
-        print("🔎 API Status Code:", response.status_code)
+        for (_, text, confidence) in results:
 
-        if response.status_code == 429:
-            print("⚠️ Rate limited")
-            time.sleep(1)
-            return None
+            cleaned = normalise_uk_plate(text)
 
-        if response.status_code not in [200, 201]:
-            print("❌ API Error Response:", response.text)
-            return None
+            print("🔍 OCR Raw:", text, "| Cleaned:", cleaned)
 
-        data = response.json()
+            if is_valid_uk_plate(cleaned):
+                print("✅ Valid UK Plate:", cleaned)
+                return cleaned
 
-        if "results" in data and len(data["results"]) > 0:
-
-            raw_plate = data["results"][0].get("plate")
-
-            if not raw_plate:
-                print("⚠️ Plate missing in response")
-                return None
-
-            plate = raw_plate.upper().replace(" ", "")
-            plate = re.sub(r"[^A-Z0-9]", "", plate)
-
-            print("✅ Detected plate:", plate)
-
-            if 6 <= len(plate) <= 8:
-                return plate
-            else:
-                print("⚠️ Plate length invalid:", plate)
-
-        else:
-            print("⚠️ No results returned from API")
-
+        print("❌ No valid UK plate detected")
         return None
 
     except Exception as e:
