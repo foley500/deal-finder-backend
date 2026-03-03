@@ -187,17 +187,34 @@ def deal_detail(
     deal = db.query(Deal).filter(Deal.id == deal_id).first()
 
     if not deal:
-        return {"error": "Deal not found"}
+        return templates.TemplateResponse(
+            "deal_detail.html",
+            {
+                "request": request,
+                "deal": None,
+                "report": {},
+                "error": "Deal not found"
+            },
+        )
 
     raw_report = deal.report or {}
 
     normalized_report = {
+        # Financial
         "financials": raw_report.get("financials") or {},
-        "cap_data": raw_report.get("cap_data") or {},
+
+        # 🔥 NEW — required for eBay sold valuation
+        "market_model": raw_report.get("market_model") or {},
+
+        # MOT
         "mot_summary": raw_report.get("mot_summary") or {},
         "mot_full_data": raw_report.get("mot_full_data") or [],
+
+        # Risk + scoring
         "risk_breakdown": raw_report.get("risk_breakdown") or {},
         "scoring": raw_report.get("scoring") or {},
+
+        # Listing
         "listing_details": raw_report.get("listing_details") or {},
         "listing_url": raw_report.get("listing_url"),
         "seller": raw_report.get("seller"),
