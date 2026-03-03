@@ -181,7 +181,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if not price:
             return None
 
-        # HARD vehicle validation
         if not is_valid_vehicle(title, price):
             return None
 
@@ -205,11 +204,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             raw_item["aspects"] = aspect_dict
             raw_item["seller"] = detail.get("seller", {}).get("username")
 
-            images = []
             if detail.get("image"):
-                images.append(detail["image"].get("imageUrl"))
-
-            raw_item["image_url"] = images[0] if images else None
+                raw_item["image_url"] = detail["image"].get("imageUrl")
 
         # ---------------------------------
         # Extract fields
@@ -246,19 +242,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 return None
 
         # ---------------------------------
-        # Distance filter
-        # ---------------------------------
-        if location and TARGET_LAT:
-            listing_lat, listing_lon = get_lat_long(location)
-            if listing_lat:
-                distance = calculate_distance(
-                    TARGET_LAT, TARGET_LON,
-                    listing_lat, listing_lon
-                )
-                if distance > MAX_DISTANCE_MILES:
-                    return None
-
-        # ---------------------------------
         # Registration detection
         # ---------------------------------
         reg = extract_registration(title)
@@ -267,31 +250,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             reg = extract_plate_from_image_url(image_url)
 
         # ---------------------------------
-        # VALUATION
-        # ---------------------------------
-        valuation_data = None
-
-        if reg:
-            valuation_data = get_market_value(reg)
-
-        if not valuation_data or not valuation_data.get("clean"):
-            if reg:
-                reg_value = get_market_value_from_reg(reg, mileage or 0)
-                if reg_value:
-                    valuation_data = {
-                        "clean": reg_value,
-                        "retail": reg_value * 1.15,
-                        "trade": reg_value,
-                        "source": "reg_model"
-                    }
-
-        if not valuation_data:
-            valuation_data = smart_temp_valuation(price, year, mileage)
-
-        market_value = valuation_data.get("trade", 0)
-
-        # ---------------------------------
-        # MOT
+        # MOT (needed before valuation)
         # ---------------------------------
         mot_penalty = 0
         mot_summary = {}
@@ -310,6 +269,32 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
 
             except Exception as e:
                 print("MOT processing error:", e)
+
+        # ---------------------------------
+        # MARKET VALUATION (EBAY SOLD MODEL)
+        # ---------------------------------
+        make = vehicle_data.get("make")
+        model = vehicle_data.get("model")
+
+        valuation_result = None
+
+        if make and model:
+            valuation_result = get_market_price_from_sold(
+                make=make,
+                model=model,
+                year=year,
+                mileage=mileage
+            )
+
+        if valuation_result:
+            market_value = valuation_result["market_price"]
+        else:
+            market_value = smart_temp_valuation(price, year, mileage)["trade"]
+
+        valuation_data = {
+            "market_price": market_value,
+            "source": valuation_result["source"] if valuation_result else "fallback_model"
+        }
 
         # ---------------------------------
         # Risk + Profit
@@ -357,7 +342,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                     "market_value": market_value,
                     "profit": profit,
                 },
-                "valuation": valuation_data,
+                "market_model": valuation_data,
                 "risk_breakdown": {
                     "description_penalty": description_penalty,
                     "mot_penalty": mot_penalty,
