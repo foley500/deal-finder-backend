@@ -3,13 +3,12 @@ from app.risk import description_risk
 from app.scoring import calculate_score
 from app.registration import extract_registration
 from app.services.valuation_service import get_market_value
-from app.models import Deal
+from app.models import Deal, DealerSettings
 from app.database import SessionLocal
 from app.services.ocr_service import extract_plate_from_image_url
 from app.services.mot_service import get_mot_data
-from app.valuation import get_market_value_from_reg  # ✅ FIXED IMPORT
+from app.valuation import get_market_value_from_reg
 from app.services.ebay_browse_service import get_item_detail
-from app.models import DealerSettings
 
 from math import radians, sin, cos, sqrt, atan2
 from datetime import datetime
@@ -72,7 +71,7 @@ def get_lat_long(postcode: str):
             return None, None
         data = response.json().get("result", {})
         return data.get("latitude"), data.get("longitude")
-    except:
+    except Exception:
         return None, None
 
 
@@ -91,38 +90,27 @@ TARGET_LAT, TARGET_LON = get_lat_long(TARGET_POSTCODE)
 
 
 # ---------------------------------
-# TEMP VALUATION MODEL (Until CAP Live)
+# TEMP VALUATION (Conservative)
 # ---------------------------------
 
 def smart_temp_valuation(price, year, mileage):
+    """
+    Conservative fallback model until CAP API is live.
+    Prevents fake inflated profits.
+    """
 
-    current_year = datetime.now().year
-    vehicle_age = current_year - year if year else 8
+    if not price:
+        return {
+            "clean": 0,
+            "retail": 0,
+            "trade": 0,
+            "part_ex": 0,
+            "source": "temporary_model"
+        }
 
-    if price < 1500:
-        retail_multiplier = 1.45
-    elif price < 3000:
-        retail_multiplier = 1.35
-    elif price < 6000:
-        retail_multiplier = 1.25
-    else:
-        retail_multiplier = 1.18
-
-    estimated_retail = price * retail_multiplier
-
-    if vehicle_age > 12:
-        estimated_retail *= 0.92
-    elif vehicle_age < 4:
-        estimated_retail *= 1.05
-
-    if mileage:
-        if mileage > 120000:
-            estimated_retail *= 0.9
-        elif mileage < 60000:
-            estimated_retail *= 1.05
-
-    estimated_trade = estimated_retail * 0.85
-    estimated_part_ex = estimated_retail * 0.92
+    estimated_trade = price * 0.85
+    estimated_part_ex = price * 0.90
+    estimated_retail = price * 1.05
 
     return {
         "clean": round(estimated_trade, 2),
@@ -142,6 +130,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
     db = SessionLocal()
 
     try:
+        # ---------------------------------
+        # Prevent duplicates
+        # ---------------------------------
         external_id = raw_item.get("id") or raw_item.get("view_url")
         if not external_id:
             return None
@@ -154,6 +145,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if existing:
             return None
 
+        # ---------------------------------
+        # Load dealer settings
+        # ---------------------------------
         settings = db.query(DealerSettings).filter(
             DealerSettings.dealer_id == dealer_id
         ).first()
@@ -161,6 +155,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if not settings:
             return None
 
+        # ---------------------------------
+        # Basic listing data
+        # ---------------------------------
         title = raw_item.get("title", "") or ""
         price = float(raw_item.get("price", 0) or 0)
 
@@ -171,6 +168,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if max_price and price > max_price:
             return None
 
+        # ---------------------------------
+        # Expand summary listing
+        # ---------------------------------
         if raw_item.get("summary_only"):
             detail = get_item_detail(raw_item.get("id"))
             if not detail:
@@ -192,18 +192,15 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             if detail.get("image"):
                 images.append(detail["image"].get("imageUrl"))
 
-            for img in detail.get("additionalImages", []):
-                images.append(img.get("imageUrl"))
-
-            raw_item["all_images"] = images
             raw_item["image_url"] = images[0] if images else None
 
+        # ---------------------------------
+        # Extract fields
+        # ---------------------------------
         description = raw_item.get("description", "") or ""
         aspects = raw_item.get("aspects", {}) or {}
-
         listing_url = raw_item.get("view_url")
         image_url = raw_item.get("image_url")
-        all_images = raw_item.get("all_images", []) or []
         seller = raw_item.get("seller")
         location = raw_item.get("location")
 
@@ -218,6 +215,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         year = safe_int(structured_year) or extract_year_from_text(title)
         mileage = safe_int(structured_mileage) or extract_mileage_from_text(title)
 
+        # ---------------------------------
+        # Apply filters
+        # ---------------------------------
         if year:
             if settings.min_year and year < settings.min_year:
                 return None
@@ -228,6 +228,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             if settings.max_mileage and mileage > settings.max_mileage:
                 return None
 
+        # ---------------------------------
+        # Distance filter
+        # ---------------------------------
         if location and TARGET_LAT:
             listing_lat, listing_lon = get_lat_long(location)
             if listing_lat:
@@ -238,45 +241,44 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 if distance > MAX_DISTANCE_MILES:
                     return None
 
+        # ---------------------------------
+        # Registration detection (single OCR)
+        # ---------------------------------
         reg = extract_registration(title)
 
-        if not reg:
-            images_to_scan = []
-            if image_url:
-                images_to_scan.append(image_url)
-
-            for img in all_images:
-                if img not in images_to_scan:
-                    images_to_scan.append(img)
-                if len(images_to_scan) >= 5:
-                    break
-
-            for img in images_to_scan:
-                reg = extract_plate_from_image_url(img)
-                if reg:
-                    break
+        if not reg and image_url:
+            reg = extract_plate_from_image_url(image_url)
 
         # ---------------------------------
-        # VALUATION (CAP → REG MODEL → TEMP)
+        # VALUATION PRIORITY
+        # CAP → REG MODEL → TEMP
         # ---------------------------------
+        valuation_data = None
 
-        valuation_data = get_market_value(reg)
+        if reg:
+            valuation_data = get_market_value(reg)
 
         if not valuation_data or not valuation_data.get("clean"):
 
             if reg:
                 reg_value = get_market_value_from_reg(reg, mileage or 0)
-                valuation_data = {
-                    "clean": reg_value,
-                    "retail": reg_value * 1.15,
-                    "trade": reg_value,
-                    "source": "reg_model"
-                }
-            else:
-                valuation_data = smart_temp_valuation(price, year, mileage)
+
+                if reg_value:
+                    valuation_data = {
+                        "clean": reg_value,
+                        "retail": reg_value * 1.15,
+                        "trade": reg_value,
+                        "source": "reg_model"
+                    }
+
+        if not valuation_data:
+            valuation_data = smart_temp_valuation(price, year, mileage)
 
         market_value = valuation_data.get("trade", 0)
 
+        # ---------------------------------
+        # MOT
+        # ---------------------------------
         mot_penalty = 0
         mot_summary = {}
         mot_full_data = []
@@ -295,6 +297,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             except Exception as e:
                 print("MOT processing error:", e)
 
+        # ---------------------------------
+        # Risk + Profit
+        # ---------------------------------
         description_penalty = description_risk(description, price)
         risk_penalty = description_penalty + mot_penalty
 
@@ -307,12 +312,18 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         score = calculate_score(profit, risk_penalty, mileage)
         confidence = assign_confidence(score)
 
+        # ---------------------------------
+        # Final filters
+        # ---------------------------------
         if settings.min_profit is not None and profit < settings.min_profit:
             return None
 
         if settings.min_score is not None and score < settings.min_score:
             return None
 
+        # ---------------------------------
+        # Save Deal
+        # ---------------------------------
         deal = Deal(
             dealer_id=dealer_id,
             external_id=external_id,
@@ -332,7 +343,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                     "market_value": market_value,
                     "profit": profit,
                 },
-                "cap_data": valuation_data,
+                "valuation": valuation_data,
                 "risk_breakdown": {
                     "description_penalty": description_penalty,
                     "mot_penalty": mot_penalty,
