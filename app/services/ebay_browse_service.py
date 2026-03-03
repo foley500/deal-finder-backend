@@ -36,7 +36,7 @@ def get_ebay_access_token():
     # ✅ Proper Browse API scope
     data = {
         "grant_type": "client_credentials",
-        "scope": "https://api.ebay.com/oauth/api_scope/buy.browse"
+        "scope": "https://api.ebay.com/oauth/api_scope"
     }
 
     response = requests.post(TOKEN_URL, headers=headers, data=data)
