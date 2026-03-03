@@ -197,57 +197,77 @@
         </div>
 
 
-        <!-- COLLAPSIBLE MOT HISTORY -->
-        <div class="card p-4">
-            <h5 class="mb-3">Full MOT History</h5>
+        <!-- FULL MOT HISTORY -->
+<div class="card p-4">
+    <h5 class="mb-3">Full MOT History</h5>
 
-            {% if report.mot_full_data %}
-            <div class="accordion" id="motAccordion">
+    {% if report.mot_full_data %}
+    <div class="accordion" id="motAccordion">
 
-                {% for mot in report.mot_full_data %}
-                <div class="accordion-item bg-dark text-light border-secondary">
+        {% for mot in report.mot_full_data %}
+        <div class="accordion-item bg-dark text-light border-secondary mb-2">
 
-                    <h2 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light"
-                                type="button"
-                                data-bs-toggle="collapse"
-                                data-bs-target="#collapse{{ loop.index }}">
-                            {{ mot.testDate }} — {{ mot.testResult }}
-                        </button>
-                    </h2>
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed bg-dark text-light"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#collapse{{ loop.index }}">
 
-                    <div id="collapse{{ loop.index }}"
-                         class="accordion-collapse collapse"
-                         data-bs-parent="#motAccordion">
+                    {% set test_date = mot.completedDate[:10] if mot.completedDate else "Unknown Date" %}
 
-                        <div class="accordion-body">
+                    {{ test_date }} — 
+                    <span class="{% if mot.testResult == 'FAILED' %}text-danger{% else %}text-success{% endif %} ms-2">
+                        {{ mot.testResult }}
+                    </span>
 
-                            <p><strong>Expiry:</strong> {{ mot.expiryDate }}</p>
-                            <p><strong>Mileage:</strong> {{ mot.odometerValue }}</p>
+                </button>
+            </h2>
 
-                            {% if mot.rfrAndComments %}
-                                <hr>
-                                {% for item in mot.rfrAndComments %}
-                                    <p>
-                                        <strong>{{ item.type }}:</strong>
-                                        {{ item.text }}
-                                    </p>
-                                {% endfor %}
-                            {% endif %}
+            <div id="collapse{{ loop.index }}"
+                 class="accordion-collapse collapse"
+                 data-bs-parent="#motAccordion">
 
-                        </div>
+                <div class="accordion-body">
 
-                    </div>
+                    <p><strong>Expiry:</strong> {{ mot.expiryDate or "N/A" }}</p>
+                    <p><strong>Mileage:</strong> {{ mot.odometerValue }} miles</p>
+
+                    {% if mot.defects and mot.defects|length > 0 %}
+                        <hr>
+                        <h6 class="mb-2">Defects / Advisories</h6>
+
+                        {% for defect in mot.defects %}
+                            <div class="mb-2 p-2 rounded"
+                                 style="background:#0f172a; border-left:4px solid
+                                 {% if defect.type == 'FAIL' %}
+                                     #ef4444
+                                 {% elif defect.type == 'ADVISORY' %}
+                                     #f59e0b
+                                 {% else %}
+                                     #64748b
+                                 {% endif %};">
+
+                                <strong>{{ defect.type }}</strong><br>
+                                {{ defect.text }}
+
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="text-success">No recorded issues</div>
+                    {% endif %}
 
                 </div>
-                {% endfor %}
 
             </div>
-            {% else %}
-                <p class="text-secondary">No MOT history available</p>
-            {% endif %}
 
         </div>
+        {% endfor %}
+
+    </div>
+    {% else %}
+        <p class="text-secondary">No MOT history available</p>
+    {% endif %}
+</div>
 
     </div>
 

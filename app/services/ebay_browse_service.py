@@ -60,9 +60,9 @@ def get_ebay_access_token():
 # ==========================================
 
 def search_ebay_browse(
-    keywords="cars",
+    keywords="",
     limit=20,
-    min_price=0,
+    min_price=500,
     max_price=50000,
     sort="newlyListed"
 ):
@@ -76,29 +76,50 @@ def search_ebay_browse(
         "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
     }
 
+    # 🔥 STRICT VEHICLE FILTER
+    filter_string = (
+        f"price:[{min_price}..{max_price}],"
+        "buyingOptions:{FIXED_PRICE},"
+        "conditions:{USED},"
+        "itemLocationCountry:GB"
+    )
+
     params = {
         "q": keywords,
         "limit": limit,
-        "category_ids": "9801",
+        "category_ids": "9801",  # Cars
         "sort": sort,
-        "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}}"
+        "filter": filter_string
     }
 
     response = requests.get(SEARCH_URL, headers=headers, params=params)
 
-    # 🔍 DEBUG THROTTLING INFO
     print("SEARCH STATUS:", response.status_code)
-    print("SEARCH HEADERS:", dict(response.headers))
 
     if response.status_code != 200:
         print("❌ Browse API error:", response.text)
         return []
 
     summaries = response.json().get("itemSummaries", [])
-
     listings = []
 
     for summary in summaries:
+        title = summary.get("title", "").lower()
+
+        # 🔥 SECONDARY DEFENSIVE FILTER
+        if any(bad_word in title for bad_word in [
+            "breaking",
+            "spares",
+            "repair",
+            "parts",
+            "engine",
+            "gearbox",
+            "bumper",
+            "wheel",
+            "tyre"
+        ]):
+            continue
+
         listings.append({
             "id": summary.get("itemId"),
             "title": summary.get("title"),
@@ -111,7 +132,7 @@ def search_ebay_browse(
             "summary_only": True
         })
 
-    print(f"✅ eBay returned {len(listings)} summaries")
+    print(f"✅ eBay returned {len(listings)} clean vehicle listings")
 
     return listings
 

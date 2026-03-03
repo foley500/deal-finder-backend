@@ -219,10 +219,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         # Apply filters
         # ---------------------------------
         if year:
-            if settings.min_year and year < settings.min_year:
-                return None
-            if settings.max_year and year > settings.max_year:
-                return None
+           # if settings.min_year and year < settings.min_year:
+           #     return None
+           #  if settings.max_year and year > settings.max_year:
+           #    return None
 
         if mileage:
             if settings.max_mileage and mileage > settings.max_mileage:
