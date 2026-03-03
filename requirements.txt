@@ -16,4 +16,5 @@ Pillow
 easyocr
 torch
 torchvision
+ultralytics
 

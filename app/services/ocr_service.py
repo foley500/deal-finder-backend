@@ -1,17 +1,20 @@
-import requests
-import re
 import io
-import numpy as np
+import re
 import cv2
+import numpy as np
+import requests
 from PIL import Image
+from ultralytics import YOLO
 import easyocr
 
-# Load once globally (important for Celery performance)
-reader = easyocr.Reader(['en'], gpu=False)
+
+# Load once
+model = YOLO("app/services/license_plate_detector.pt")
+reader = easyocr.Reader(["en"], gpu=False)
 
 
 def normalise_uk_plate(raw_plate: str) -> str:
-    plate = raw_plate.upper()
+    plate = raw_plate.upper().replace(" ", "")
     plate = re.sub(r"[^A-Z0-9]", "", plate)
     return plate
 
@@ -23,32 +26,40 @@ def is_valid_uk_plate(plate: str) -> bool:
 def extract_plate_from_image_url(image_url: str):
 
     try:
-        print("⬇️ Downloading image...")
         response = requests.get(image_url, timeout=10)
-
         if response.status_code != 200:
-            print("❌ Image download failed")
             return None
 
         image = Image.open(io.BytesIO(response.content)).convert("RGB")
         img_np = np.array(image)
 
-        print("🔎 Running EasyOCR...")
-        results = reader.readtext(img_np)
+        # Detect plate region
+        results = model(img_np)
 
-        for (_, text, confidence) in results:
+        if not results or len(results[0].boxes) == 0:
+            print("❌ No plate detected")
+            return None
 
-            cleaned = normalise_uk_plate(text)
+        for box in results[0].boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            plate_crop = img_np[y1:y2, x1:x2]
 
-            print("🔍 OCR Raw:", text, "| Cleaned:", cleaned)
+            # Improve OCR accuracy
+            gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+            _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
 
-            if is_valid_uk_plate(cleaned):
-                print("✅ Valid UK Plate:", cleaned)
-                return cleaned
+            results = reader.readtext(thresh)
 
-        print("❌ No valid UK plate detected")
+            for (_, text, _) in results:
+                plate = normalise_uk_plate(text)
+                print("🔍 OCR detected:", plate)
+
+                if is_valid_uk_plate(plate):
+                    print("✅ VALID UK PLATE:", plate)
+                    return plate
+
         return None
 
     except Exception as e:
-        print("💥 OCR Exception:", str(e))
+        print("OCR exception:", e)
         return None
