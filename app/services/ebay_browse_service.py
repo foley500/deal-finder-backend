@@ -14,9 +14,14 @@ _cached_token = None
 _token_expiry = 0
 
 
+# ==========================================
+# OAUTH TOKEN (WITH CORRECT BUY SCOPE)
+# ==========================================
+
 def get_ebay_access_token():
     global _cached_token, _token_expiry
 
+    # Use cached token if still valid
     if _cached_token and time.time() < _token_expiry:
         return _cached_token
 
@@ -28,18 +33,22 @@ def get_ebay_access_token():
         "Content-Type": "application/x-www-form-urlencoded"
     }
 
+    # ✅ Proper Browse API scope
     data = {
         "grant_type": "client_credentials",
-        "scope": "https://api.ebay.com/oauth/api_scope"
+        "scope": "https://api.ebay.com/oauth/api_scope/buy.browse"
     }
 
     response = requests.post(TOKEN_URL, headers=headers, data=data)
+
+    print("OAUTH STATUS:", response.status_code)
 
     if response.status_code != 200:
         print("❌ eBay OAuth error:", response.text)
         return None
 
     token_data = response.json()
+
     _cached_token = token_data.get("access_token")
     _token_expiry = time.time() + token_data.get("expires_in", 7200) - 60
 
@@ -77,6 +86,10 @@ def search_ebay_browse(
 
     response = requests.get(SEARCH_URL, headers=headers, params=params)
 
+    # 🔍 DEBUG THROTTLING INFO
+    print("SEARCH STATUS:", response.status_code)
+    print("SEARCH HEADERS:", dict(response.headers))
+
     if response.status_code != 200:
         print("❌ Browse API error:", response.text)
         return []
@@ -99,6 +112,7 @@ def search_ebay_browse(
         })
 
     print(f"✅ eBay returned {len(listings)} summaries")
+
     return listings
 
 
@@ -118,6 +132,9 @@ def get_item_detail(item_id):
     }
 
     response = requests.get(f"{ITEM_URL}{item_id}", headers=headers)
+
+    print("DETAIL STATUS:", response.status_code)
+    print("DETAIL HEADERS:", dict(response.headers))
 
     if response.status_code != 200:
         print("❌ Item detail error:", response.text)

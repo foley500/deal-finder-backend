@@ -13,3 +13,4 @@ reportlab
 jinja2
 python-multipart
 Pillow
+ultralytics

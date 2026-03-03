@@ -22,13 +22,11 @@ celery.conf.update(
 # ==========================================
 
 celery.conf.beat_schedule = {
-
     "sniper-scan-every-10-minutes": {
         "task": "app.tasks.scan_sniper",
         "schedule": 600.0,
         "args": (1,)
-    },
-
+    }
 }
 
 import app.tasks
