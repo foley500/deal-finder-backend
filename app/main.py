@@ -191,12 +191,31 @@ def deal_detail(
     raw_report = deal.report or {}
 
     normalized_report = {
-        "financials": raw_report.get("financials") or {},
-        "market_model": raw_report.get("market_model") or {},
-        "mot_summary": raw_report.get("mot_summary") or {},
+        "financials": raw_report.get("financials") or {
+            "listing_price": 0,
+            "market_value": 0,
+            "profit": 0,
+        },
+        "market_model": raw_report.get("market_model") or {
+            "market_price": None,
+            "source": None,
+            "sample_size": None,
+        },
+        "mot_summary": raw_report.get("mot_summary") or {
+            "fail_count": 0,
+            "advisory_count": 0,
+            "mot_penalty": 0,
+        },
         "mot_full_data": raw_report.get("mot_full_data") or [],
-        "risk_breakdown": raw_report.get("risk_breakdown") or {},
-        "scoring": raw_report.get("scoring") or {},
+        "risk_breakdown": raw_report.get("risk_breakdown") or {
+            "description_penalty": 0,
+            "mot_penalty": 0,
+            "total_risk_penalty": 0,
+        },
+        "scoring": raw_report.get("scoring") or {
+            "score": 0,
+            "confidence_level": "low",
+        },
         "listing_details": raw_report.get("listing_details") or {},
         "listing_url": raw_report.get("listing_url"),
         "seller": raw_report.get("seller"),
