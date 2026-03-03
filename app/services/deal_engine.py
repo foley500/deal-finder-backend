@@ -97,31 +97,35 @@ TARGET_LAT, TARGET_LON = get_lat_long(TARGET_POSTCODE)
 def smart_temp_valuation(price, year, mileage):
 
     current_year = datetime.now().year
-    vehicle_age = current_year - year if year else 5
+    vehicle_age = current_year - year if year else 8
 
-    average_mileage = vehicle_age * 10000
-
-    mileage_factor = 1.0
-
-    if mileage and average_mileage:
-        ratio = mileage / average_mileage
-        if ratio < 0.8:
-            mileage_factor = 1.05
-        elif ratio > 1.2:
-            mileage_factor = 0.92
-
-    base_retail = price * 1.18
-
-    if vehicle_age <= 3:
-        age_factor = 1.08
-    elif vehicle_age <= 6:
-        age_factor = 1.0
+    # Base market retail bands (more realistic UK rough model)
+    if price < 1500:
+        retail_multiplier = 1.45
+    elif price < 3000:
+        retail_multiplier = 1.35
+    elif price < 6000:
+        retail_multiplier = 1.25
     else:
-        age_factor = 0.95
+        retail_multiplier = 1.18
 
-    estimated_retail = base_retail * mileage_factor * age_factor
-    estimated_trade = estimated_retail * 0.78
-    estimated_part_ex = estimated_retail * 0.88
+    estimated_retail = price * retail_multiplier
+
+    # Age depreciation realism
+    if vehicle_age > 12:
+        estimated_retail *= 0.92
+    elif vehicle_age < 4:
+        estimated_retail *= 1.05
+
+    # Mileage realism
+    if mileage:
+        if mileage > 120000:
+            estimated_retail *= 0.9
+        elif mileage < 60000:
+            estimated_retail *= 1.05
+
+    estimated_trade = estimated_retail * 0.85
+    estimated_part_ex = estimated_retail * 0.92
 
     return {
         "clean": round(estimated_trade, 2),
@@ -293,7 +297,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         # ---------------------------------
         # Valuation
         # ---------------------------------
-        valuation_data = get_market_value(reg)
+        if CAP not available → use valuation.py model instead of smart_temp_valuation
 
         if not valuation_data or not valuation_data.get("clean"):
             valuation_data = smart_temp_valuation(price, year, mileage)

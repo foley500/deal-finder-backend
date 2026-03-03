@@ -34,8 +34,8 @@ class DealerSettings(Base):
     max_year = Column(Integer, default=2024)
     max_mileage = Column(Integer, default=120000)
 
-    min_profit = Column(Float, default=1500)
-    min_score = Column(Float, default=30)
+    min_profit = Column(Float, default=500)
+    min_score = Column(Float, default=10)
 
     required_keywords = Column(JSON, default=list)
     excluded_keywords = Column(JSON, default=list)
