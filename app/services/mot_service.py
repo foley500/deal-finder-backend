@@ -79,19 +79,18 @@ def get_mot_data(registration: str):
     headers = {
         "Authorization": f"Bearer {token}",
         "x-api-key": DVSA_API_KEY,
-        "Accept": "application/json",
-        "Content-Type": "application/json"
+        "Accept": "application/json"
     }
 
-    body = {
-        "registrationNumber": registration.upper().strip()
+    params = {
+        "registration": registration.upper().strip()
     }
 
     try:
-        response = requests.post(
+        response = requests.get(
             MOT_TRADE_URL,
             headers=headers,
-            json=body,
+            params=params,
             timeout=10
         )
 
