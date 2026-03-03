@@ -21,11 +21,12 @@ _token_expiry = 0
 def get_dvsa_token():
     global _cached_token, _token_expiry
 
+    # Use cached token if valid
     if _cached_token and time.time() < _token_expiry:
         return _cached_token
 
     if not DVSA_CLIENT_ID or not DVSA_CLIENT_SECRET:
-        print("DVSA credentials missing")
+        print("❌ DVSA credentials missing")
         return None
 
     payload = {
@@ -35,25 +36,30 @@ def get_dvsa_token():
         "grant_type": "client_credentials"
     }
 
-    response = requests.post(
-        DVSA_TOKEN_URL,
-        data=payload,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        timeout=10
-    )
+    try:
+        response = requests.post(
+            DVSA_TOKEN_URL,
+            data=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10
+        )
 
-    print("DVSA TOKEN STATUS:", response.status_code)
+        print("🔐 DVSA TOKEN STATUS:", response.status_code)
 
-    if response.status_code != 200:
-        print("DVSA token error:", response.text)
+        if response.status_code != 200:
+            print("❌ DVSA token error:", response.text)
+            return None
+
+        token_data = response.json()
+
+        _cached_token = token_data.get("access_token")
+        _token_expiry = time.time() + token_data.get("expires_in", 3600) - 60
+
+        return _cached_token
+
+    except Exception as e:
+        print("❌ DVSA token exception:", e)
         return None
-
-    token_data = response.json()
-
-    _cached_token = token_data.get("access_token")
-    _token_expiry = time.time() + token_data.get("expires_in", 3600) - 60
-
-    return _cached_token
 
 
 # ==========================================
@@ -77,27 +83,28 @@ def get_mot_data(registration: str):
         "Content-Type": "application/json"
     }
 
-    params = {
+    body = {
         "registration": registration.upper().strip()
     }
 
     try:
-        response = requests.get(
+        response = requests.post(
             MOT_TRADE_URL,
             headers=headers,
-            params=params,
+            json=body,
             timeout=10
         )
 
-        print("DVSA MOT Status:", response.status_code)
+        print("🚗 DVSA MOT Status:", response.status_code)
 
         if response.status_code == 200:
-            return parse_mot_trade_response(response.json())
+            data = response.json()
+            return parse_mot_trade_response(data)
         else:
-            print("DVSA MOT error body:", response.text)
+            print("❌ DVSA MOT error body:", response.text)
 
     except Exception as e:
-        print("DVSA MOT exception:", e)
+        print("❌ DVSA MOT exception:", e)
 
     return build_empty_response()
 
@@ -108,7 +115,7 @@ def get_mot_data(registration: str):
 
 def parse_mot_trade_response(data):
 
-    if not data:
+    if not data or not isinstance(data, list):
         return build_empty_response()
 
     vehicle = data[0]
