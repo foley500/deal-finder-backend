@@ -253,6 +253,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if not reg and raw_item.get("image_urls"):
             reg = extract_plate_from_images(raw_item["image_urls"])
 
+        if not reg:
+            return None
+
         # ---------------------------------
         # DVSA Lookup
         # ---------------------------------
@@ -310,7 +313,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 make=make,
                 model=model,
                 year=year,
-                mileage=mileage
+                mileage=mileage,
+                engine_size=vehicle_data.get("engine_size")
             )
 
         if valuation_result:
