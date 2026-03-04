@@ -190,7 +190,7 @@ def filter_sold_data(summaries, target_year, target_mileage):
 
 def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
 
-    if not make or not model or not year or not mileage:
+    if not make or not model or not year or not mileage or not engine_size:
         return None
 
     base_model, trim = split_model_components(model)
@@ -198,18 +198,14 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
 
     search_layers = []
 
-    search_layers.append(f"{year} {make} {base_model}")
+    # Broad engine market
+    search_layers.append(f"{make} {base_model} {engine_litre}")
 
+    # Trim-specific engine market
     if trim:
-        search_layers.append(f"{year} {make} {base_model} {trim}")
+        search_layers.append(f"{make} {base_model} {trim} {engine_litre}")
 
-    if engine_litre:
-        search_layers.append(f"{year} {make} {base_model} {engine_litre}")
-
-    if trim and engine_litre:
-        search_layers.append(f"{year} {make} {base_model} {trim} {engine_litre}")
-
-    cache_key = f"sold_cache:{make}:{model}:{year}:{mileage}"
+    cache_key = f"sold_cache:{make}:{model}:{year}:{mileage}:{engine_litre}"
     cached = redis_client.get(cache_key)
     if cached:
         return json.loads(cached)
@@ -219,6 +215,7 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
 
     for query in search_layers:
         results = get_sold_listings(query)
+
         for item in results:
             item_id = item.get("itemId")
             if item_id and item_id not in seen_ids:
