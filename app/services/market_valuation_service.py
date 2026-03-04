@@ -1,9 +1,12 @@
 import statistics
-import re
 import os
 import redis
+import json
 import requests
-from app.services.ebay_browse_service import get_ebay_access_token
+from app.services.ebay_browse_service import (
+    get_ebay_access_token,
+    get_item_detail
+)
 
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 
@@ -11,9 +14,12 @@ REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 CACHE_TTL = 1800  # 30 minutes
 
+MAX_DETAIL_EXPANSIONS = 15
+MIN_SAMPLE_SIZE = 3
+
 
 # ---------------------------------------------------
-# eBay Sold Search
+# eBay Sold Search (Summary)
 # ---------------------------------------------------
 
 def get_sold_listings(query: str, limit: int = 100):
@@ -43,118 +49,108 @@ def get_sold_listings(query: str, limit: int = 100):
 
 
 # ---------------------------------------------------
-# Extractors
+# Extract Structured Year + Mileage
 # ---------------------------------------------------
 
-def extract_year_from_title(title: str):
-    match = re.search(r"\b(20\d{2}|19\d{2})\b", title)
-    return int(match.group(1)) if match else None
+def extract_structured_data(item_detail):
+    aspects = item_detail.get("localizedAspects", [])
 
+    year = None
+    mileage = None
 
-def extract_mileage_from_title(title: str):
-    match = re.search(r"(\d{2,3},?\d{3})\s?miles?", title.lower())
-    return int(match.group(1).replace(",", "")) if match else None
+    for aspect in aspects:
+        name = aspect.get("name", "").lower()
+        values = aspect.get("value", [])
 
+        if not values:
+            continue
 
-# ---------------------------------------------------
-# Mileage Adjustment
-# ---------------------------------------------------
+        value = values[0]
 
-def adjust_for_mileage(base_price, target_mileage, sample_avg):
-    if not target_mileage or not sample_avg:
-        return base_price
+        if "year" in name:
+            try:
+                year = int(value)
+            except:
+                pass
 
-    diff = target_mileage - sample_avg
-    adjustment = diff * 0.04  # £40 per 1k miles approx
-    return round(base_price - adjustment, 2)
+        if "mileage" in name:
+            try:
+                mileage = int(value.replace(",", ""))
+            except:
+                pass
 
-
-# ---------------------------------------------------
-# Progressive Filtering Engine
-# ---------------------------------------------------
-
-def progressive_filter(sold_listings, year, mileage):
-
-    # Each stage:
-    # (year_tolerance, mileage_tolerance, min_samples, require_year, require_mileage)
-    tolerance_stages = [
-        (2, 15000, 3, True, True),   # strict
-        (3, 20000, 3, True, True),   # wider
-        (None, 15000, 3, False, True),  # ignore year but require mileage
-    ]
-
-    for YEAR_TOLERANCE, MILEAGE_TOLERANCE, MIN_SAMPLES, REQUIRE_YEAR, REQUIRE_MILEAGE in tolerance_stages:
-
-        filtered_prices = []
-        mileage_samples = []
-
-        for listing in sold_listings:
-
-            price_obj = listing.get("price")
-            if not price_obj:
-                continue
-
-            price = float(price_obj["value"])
-            title = listing.get("title", "")
-
-            listing_year = extract_year_from_title(title)
-            listing_mileage = extract_mileage_from_title(title)
-
-            # --------------------
-            # REQUIREMENTS
-            # --------------------
-            if REQUIRE_YEAR and not listing_year:
-                continue
-
-            if REQUIRE_MILEAGE and not listing_mileage:
-                continue
-
-            # --------------------
-            # YEAR FILTER
-            # --------------------
-            if YEAR_TOLERANCE is not None and year and listing_year:
-                if abs(listing_year - year) > YEAR_TOLERANCE:
-                    continue
-
-            # --------------------
-            # MILEAGE FILTER
-            # --------------------
-            if MILEAGE_TOLERANCE is not None and mileage and listing_mileage:
-                if abs(listing_mileage - mileage) > MILEAGE_TOLERANCE:
-                    continue
-
-            filtered_prices.append(price)
-
-            if listing_mileage:
-                mileage_samples.append(listing_mileage)
-
-        if len(filtered_prices) >= MIN_SAMPLES:
-
-            median_price = statistics.median(filtered_prices)
-
-            sample_avg_mileage = (
-                int(statistics.mean(mileage_samples))
-                if mileage_samples
-                else None
-            )
-
-            adjusted_price = adjust_for_mileage(
-                median_price,
-                mileage,
-                sample_avg_mileage
-            )
-
-            return {
-                "market_price": round(adjusted_price, 2),
-                "sample_size": len(filtered_prices),
-                "source": "ebay_sold_progressive_model"
-            }
-
-    return None
+    return year, mileage
 
 
 # ---------------------------------------------------
-# PUBLIC FUNCTION (REQUIRED BY DEAL ENGINE)
+# Core Filtering Logic
+# ---------------------------------------------------
+
+def filter_sold_data(sold_summaries, target_year, target_mileage):
+
+    prices = []
+    mileage_samples = []
+
+    expansions = 0
+
+    for summary in sold_summaries:
+
+        if expansions >= MAX_DETAIL_EXPANSIONS:
+            break
+
+        item_id = summary.get("itemId")
+        if not item_id:
+            continue
+
+        detail = get_item_detail(item_id)
+        expansions += 1
+
+        if not detail:
+            continue
+
+        listing_year, listing_mileage = extract_structured_data(detail)
+
+        if not listing_year or not listing_mileage:
+            continue
+
+        # YEAR FILTER ±2
+        if target_year and abs(listing_year - target_year) > 2:
+            continue
+
+        # MILEAGE FILTER ±15k
+        if target_mileage and abs(listing_mileage - target_mileage) > 15000:
+            continue
+
+        price_obj = summary.get("price")
+        if not price_obj:
+            continue
+
+        price = float(price_obj["value"])
+
+        prices.append(price)
+        mileage_samples.append(listing_mileage)
+
+    if len(prices) < MIN_SAMPLE_SIZE:
+        return None
+
+    median_price = statistics.median(prices)
+
+    sample_avg_mileage = int(statistics.mean(mileage_samples))
+
+    # Light mileage normalisation
+    mileage_diff = target_mileage - sample_avg_mileage
+    adjustment = mileage_diff * 0.04  # ~£40 per 1k miles
+    adjusted_price = round(median_price - adjustment, 2)
+
+    return {
+        "market_price": adjusted_price,
+        "sample_size": len(prices),
+        "source": "ebay_structured_sold_model"
+    }
+
+
+# ---------------------------------------------------
+# PUBLIC FUNCTION
 # ---------------------------------------------------
 
 def get_market_price_from_sold(make, model, year, mileage):
@@ -162,23 +158,26 @@ def get_market_price_from_sold(make, model, year, mileage):
     if not make or not model:
         return None
 
-    # STRICTLY search only make + model
     query = f"{make} {model}"
 
     cache_key = f"sold_cache:{query}:{year}:{mileage}"
 
     cached = redis_client.get(cache_key)
     if cached:
-        return eval(cached)
+        return json.loads(cached)
 
-    sold_listings = get_sold_listings(query)
+    sold_summaries = get_sold_listings(query)
 
-    if not sold_listings:
+    if not sold_summaries:
         return None
 
-    result = progressive_filter(sold_listings, year, mileage)
+    result = filter_sold_data(
+        sold_summaries,
+        target_year=year,
+        target_mileage=mileage
+    )
 
     if result:
-        redis_client.set(cache_key, str(result), ex=CACHE_TTL)
+        redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
 
     return result

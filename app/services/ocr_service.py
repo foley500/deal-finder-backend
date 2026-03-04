@@ -19,7 +19,7 @@ reader = easyocr.Reader(["en"], gpu=False)
 # CONFIG (TUNED FOR FULL RES EBAY IMAGES)
 # ===============================
 MIN_YOLO_CONFIDENCE = 0.35      # lowered from 0.45
-MIN_OCR_CONFIDENCE = 0.28       # lowered from 0.35
+MIN_OCR_CONFIDENCE = 0.21       # lowered from 0.35
 MAX_IMAGES_PER_LISTING = 5
 BOX_PADDING_RATIO = 0.15        # slightly increased padding
 
@@ -163,7 +163,7 @@ def extract_plate_from_images(image_urls: list[str]):
                 h, w = plate_crop.shape[:2]
                 aspect_ratio = w / float(h)
 
-                if aspect_ratio < 2.0 or aspect_ratio > 6.5:
+                if aspect_ratio < 1.5 or aspect_ratio > 7.5:
                     continue
 
                 variants = preprocess_variants(plate_crop)
@@ -179,10 +179,16 @@ def extract_plate_from_images(image_urls: list[str]):
 
                         plate = normalise_uk_plate(text)
 
-                        if len(plate) != 7:
+                        if len(plate) < 6 or len(plate) > 8:
                             continue
 
                         plate = correct_common_ocr_errors(plate)
+
+                        if len(plate) == 8:
+                            plate = plate[:7]
+
+                        if len(plate) != 7:
+                            continue
 
                         print("🔍 OCR detected:", plate, "conf:", ocr_conf)
 
@@ -195,4 +201,16 @@ def extract_plate_from_images(image_urls: list[str]):
             continue
 
     print("❌ No valid plate found across listing images")
+    return None
+
+def extract_plate_from_text(text: str):
+    if not text:
+        return None
+
+    text = text.upper()
+    matches = re.findall(r"[A-Z]{2}[0-9]{2}[A-Z]{3}", text)
+
+    if matches:
+        return matches[0]
+
     return None

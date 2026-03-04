@@ -247,17 +247,20 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
 
         reg = extract_registration(title)
 
+        if not reg:
+            reg = extract_registration(description)
+
         if not reg and raw_item.get("image_urls"):
             reg = extract_plate_from_images(raw_item["image_urls"])
-
-        mot_penalty = 0
-        mot_summary = {}
-        mot_full_data = []
-        vehicle_data = {}
 
         # ---------------------------------
         # DVSA Lookup
         # ---------------------------------
+        
+        mot_penalty = 0
+        mot_summary = {}
+        mot_full_data = []
+        vehicle_data = {}
 
         if reg:
             try:
