@@ -228,6 +228,7 @@ def get_market_price_from_sold(make, model, year, mileage):
         "sample_size": len(filtered_prices),
         "source": "ebay_sold_cluster_model"
     }
+    
 
     redis_client.set(cache_key, str(result), ex=CACHE_TTL)
 
