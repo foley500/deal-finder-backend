@@ -241,9 +241,9 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
     print("No valid comps after filtering")
     return None
 
-# ---------------------------------------------------
+# --------------------------------------------------
 # PUBLIC ENTRY
-# ---------------------------------------------------
+# --------------------------------------------------
 
 def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
 

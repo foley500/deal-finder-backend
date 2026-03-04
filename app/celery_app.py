@@ -26,7 +26,14 @@ celery.conf.beat_schedule = {
         "task": "app.tasks.scan_sniper",
         "schedule": 600.0,
         "args": (1,)
+    },
+
+    "value-sweep-every-30-minutes": {
+        "task": "app.tasks.scan_value_sweep",
+        "schedule": 1800.0,
+        "args": (1,)
     }
 }
 
 import app.tasks
+

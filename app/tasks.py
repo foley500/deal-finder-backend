@@ -108,16 +108,15 @@ def scan_value_sweep(dealer_id: int):
 # ==========================================
 # SHARED SCAN ENGINE
 # ==========================================
-def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, deep_sweep=False):
+ddef run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, deep_sweep=False):
 
-    lock_key = f"scan_lock_{dealer_id}"
+    lock_key = f"scan_lock_{dealer_id}_{mode_name}"
 
-    # Prevent overlapping scans
     if redis_client.get(lock_key):
         print("⚠️ Scan already running — skipping")
         return {"skipped": True}
 
-    redis_client.set(lock_key, "1", ex=540)  # auto-expire in 9 minutes
+    redis_client.set(lock_key, "1", ex=540)
 
     db = SessionLocal()
 
@@ -150,35 +149,40 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
         for source_name in SOURCES:
 
             source = get_listing_source(source_name)
-
             items = []
-        if deep_sweep:
-            for page in range(0, 200, listings_to_pull):
-                page_items = source.search(
+
+            # -----------------------------
+            # DEEP SWEEP PAGINATION
+            # -----------------------------
+            if deep_sweep:
+                for page in range(0, 200, listings_to_pull):
+                    page_items = source.search(
+                        keywords="cars",
+                        entries=listings_to_pull,
+                        min_price=None,
+                        max_price=filters["max_price"],
+                        min_year=filters["min_year"],
+                        max_year=filters["max_year"],
+                        sort=sort,
+                        offset=page
+                    )
+                    items.extend(page_items)
+            else:
+                items = source.search(
                     keywords="cars",
                     entries=listings_to_pull,
                     min_price=None,
                     max_price=filters["max_price"],
                     min_year=filters["min_year"],
-                    max_years=filters["max_year"],
-                    sort=sort,
-                    offset=page
-                )
-                items.extend(page_items)
-
-         else:
-            items = source.search(
-                keywords="cars",
-                entries=listings_to_pull,
-                min_price=None,
-                max_price=filters["max_price"],
-                min_year=filters["min_year"],
-                max_year=filters["max_year"],
-                sort=sort
+                    max_year=filters["max_year"],
+                    sort=sort
                 )
 
             total_listings += len(items)
 
+            # -----------------------------
+            # PROCESS ITEMS
+            # -----------------------------
             for item in items:
 
                 if detail_expansions >= MAX_DETAIL_EXPANSIONS:
@@ -191,7 +195,6 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
 
                 processed_ids.add(external_id)
 
-                # Cheap pre-filter before detail expansion
                 rough_price = float(item.get("price", 0))
                 if not rough_price:
                     continue
@@ -217,6 +220,9 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
                 total_deals += 1
                 notify_deal.delay(deal.id)
 
+        # -----------------------------
+        # SAVE SCAN RESULT (AFTER LOOP)
+        # -----------------------------
         scan = ScanRun(
             dealer_id=dealer.id,
             source=f"mode_{mode_name}",
