@@ -16,12 +16,12 @@ reader = easyocr.Reader(["en"], gpu=False)
 
 
 # ===============================
-# CONFIG
+# CONFIG (TUNED FOR FULL RES EBAY IMAGES)
 # ===============================
-MIN_YOLO_CONFIDENCE = 0.45
-MIN_OCR_CONFIDENCE = 0.35
+MIN_YOLO_CONFIDENCE = 0.35      # lowered from 0.45
+MIN_OCR_CONFIDENCE = 0.28       # lowered from 0.35
 MAX_IMAGES_PER_LISTING = 5
-BOX_PADDING_RATIO = 0.12  # 12% padding
+BOX_PADDING_RATIO = 0.15        # slightly increased padding
 
 
 # ===============================
@@ -43,10 +43,7 @@ def correct_common_ocr_errors(plate: str) -> str:
 
     plate = list(plate)
 
-    # Letters positions: 0,1,4,5,6
-    # Numbers positions: 2,3
-
-    # Fix number positions
+    # Numbers positions
     for i in [2, 3]:
         if plate[i] == "O":
             plate[i] = "0"
@@ -55,7 +52,7 @@ def correct_common_ocr_errors(plate: str) -> str:
         if plate[i] == "Z":
             plate[i] = "2"
 
-    # Fix letter positions
+    # Letter positions
     for i in [0, 1, 4, 5, 6]:
         if plate[i] == "0":
             plate[i] = "O"
@@ -93,10 +90,10 @@ def preprocess_variants(plate_crop):
 
     gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
 
-    # Variant 1: Raw gray
+    # Raw
     variants.append(gray)
 
-    # Variant 2: Adaptive threshold
+    # Adaptive threshold
     adaptive = cv2.adaptiveThreshold(
         gray,
         255,
@@ -107,12 +104,12 @@ def preprocess_variants(plate_crop):
     )
     variants.append(adaptive)
 
-    # Variant 3: CLAHE contrast boost
+    # Contrast boost (CLAHE)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     contrast = clahe.apply(gray)
     variants.append(contrast)
 
-    # Variant 4: Upscaled
+    # Upscaled
     upscaled = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
     variants.append(upscaled)
 
@@ -127,7 +124,7 @@ def extract_plate_from_images(image_urls: list[str]):
     if not image_urls:
         return None
 
-    for idx, image_url in enumerate(image_urls[:MAX_IMAGES_PER_LISTING]):
+    for image_url in image_urls[:MAX_IMAGES_PER_LISTING]:
 
         try:
             response = requests.get(image_url, timeout=10)
@@ -142,7 +139,14 @@ def extract_plate_from_images(image_urls: list[str]):
             if not results or len(results[0].boxes) == 0:
                 continue
 
-            for box in results[0].boxes:
+            # 🔥 SORT boxes by highest confidence first
+            boxes = sorted(
+                results[0].boxes,
+                key=lambda b: float(b.conf[0]),
+                reverse=True
+            )
+
+            for box in boxes:
 
                 conf = float(box.conf[0])
                 if conf < MIN_YOLO_CONFIDENCE:
@@ -153,6 +157,13 @@ def extract_plate_from_images(image_urls: list[str]):
 
                 plate_crop = img_np[y1:y2, x1:x2]
                 if plate_crop.size == 0:
+                    continue
+
+                # 🔥 Aspect ratio filter (UK plates are wide)
+                h, w = plate_crop.shape[:2]
+                aspect_ratio = w / float(h)
+
+                if aspect_ratio < 2.0 or aspect_ratio > 6.5:
                     continue
 
                 variants = preprocess_variants(plate_crop)

@@ -119,15 +119,24 @@ def smart_temp_valuation(price, year, mileage):
 # MAIN ENGINE
 # ---------------------------------
 
+def upgrade_image_resolution(url: str):
+    if not url:
+        return url
+
+    return (
+        url.replace("s-l500", "s-l1600")
+           .replace("s-l640", "s-l1600")
+           .replace("s-l800", "s-l1600")
+           .replace("s-l960", "s-l1600")
+    )
+
+
 def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None):
 
     db = SessionLocal()
 
     try:
 
-        # ---------------------------------
-        # Prevent duplicates
-        # ---------------------------------
         external_id = raw_item.get("id") or raw_item.get("view_url")
         if not external_id:
             return None
@@ -140,9 +149,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if existing:
             return None
 
-        # ---------------------------------
-        # Dealer settings
-        # ---------------------------------
         settings = db.query(DealerSettings).filter(
             DealerSettings.dealer_id == dealer_id
         ).first()
@@ -150,9 +156,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if not settings:
             return None
 
-        # ---------------------------------
-        # Basic listing data
-        # ---------------------------------
         title = raw_item.get("title", "") or ""
         price = float(raw_item.get("price", 0) or 0)
 
@@ -184,18 +187,29 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             raw_item["seller"] = detail.get("seller", {}).get("username")
 
             # -----------------------------
-            # Collect ALL listing images
+            # Collect ALL listing images (FULL RES)
             # -----------------------------
             image_urls = []
 
             if detail.get("image") and detail["image"].get("imageUrl"):
-                image_urls.append(detail["image"]["imageUrl"])
+                image_urls.append(
+                    upgrade_image_resolution(detail["image"]["imageUrl"])
+                )
 
             for img in detail.get("additionalImages", []):
                 if img.get("imageUrl"):
-                    image_urls.append(img["imageUrl"])
+                    image_urls.append(
+                        upgrade_image_resolution(img["imageUrl"])
+                    )
 
-            raw_item["image_urls"] = image_urls
+            seen = set()
+            cleaned = []
+            for url in image_urls:
+                if url not in seen:
+                    cleaned.append(url)
+                    seen.add(url)
+
+            raw_item["image_urls"] = cleaned
 
         # ---------------------------------
         # Extract fields
@@ -217,9 +231,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         year = safe_int(structured_year) or extract_year_from_text(title)
         mileage = safe_int(structured_mileage) or extract_mileage_from_text(title)
 
-        # ---------------------------------
-        # Apply filters
-        # ---------------------------------
         if year:
             if settings.min_year and year < settings.min_year:
                 return None
@@ -230,17 +241,11 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             if settings.max_mileage and mileage > settings.max_mileage:
                 return None
 
-        # ---------------------------------
-        # Registration detection
-        # ---------------------------------
         reg = extract_registration(title)
 
         if not reg and raw_item.get("image_urls"):
             reg = extract_plate_from_images(raw_item["image_urls"])
 
-        # ---------------------------------
-        # MOT
-        # ---------------------------------
         mot_penalty = 0
         mot_summary = {}
         mot_full_data = []
@@ -259,9 +264,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             except Exception as e:
                 print("MOT processing error:", e)
 
-        # ---------------------------------
-        # MARKET VALUATION
-        # ---------------------------------
         make = vehicle_data.get("make")
         model = vehicle_data.get("model")
 
@@ -286,9 +288,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             "sample_size": valuation_result.get("sample_size") if valuation_result else None
         }
 
-        # ---------------------------------
-        # Risk + Profit
-        # ---------------------------------
         description_penalty = description_risk(description, price)
         risk_penalty = description_penalty + mot_penalty
 
@@ -301,18 +300,12 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         score = calculate_score(profit, risk_penalty, mileage)
         confidence = assign_confidence(score)
 
-        # ---------------------------------
-        # Final filters
-        # ---------------------------------
         if settings.min_profit is not None and profit < settings.min_profit:
             return None
 
         if settings.min_score is not None and score < settings.min_score:
             return None
 
-        # ---------------------------------
-        # Save Deal
-        # ---------------------------------
         deal = Deal(
             dealer_id=dealer_id,
             external_id=external_id,
