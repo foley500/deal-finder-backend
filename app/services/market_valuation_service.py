@@ -16,8 +16,8 @@ REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 1800
-MAX_DETAIL_EXPANSIONS = 150
-MIN_SAMPLE_SIZE = 5
+MAX_DETAIL_EXPANSIONS = 70
+MIN_SAMPLE_SIZE = 3
 
 
 # ---------------------------------------------------
@@ -92,160 +92,109 @@ def get_sold_listings(query: str, limit: int = 100):
 # CORE FILTER ENGINE
 # ---------------------------------------------------
 
-def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre=None):
+def strict_filter(
+    summaries,
+    target_year,
+    target_mileage,
+    target_engine_litre=None,
+    target_trim=None,
+):
+    prices = []
+    expansions = 0
 
-    tolerance_stages = [
-        (2, 15000),
-        (3, 20000),
-        (4, 30000),
-    ]
+    for summary in summaries:
 
-    for YEAR_TOL, MILE_TOL in tolerance_stages:
+        if expansions >= MAX_DETAIL_EXPANSIONS:
+            break
 
-        prices = []
-        mileage_samples = []
-        expansions = 0
+        title = summary.get("title", "").lower()
+        item_id = summary.get("itemId")
 
-        for summary in summaries:
+        if not item_id:
+            continue
 
-            title = summary.get("title", "").lower()
+        detail = get_item_detail(item_id)
+        expansions += 1
 
-            # QUICK YEAR FILTER (pre-expansion)
-            quick_year = extract_year_from_title(title)
-            if YEAR_TOL is not None and target_year and quick_year:
-                if abs(quick_year - target_year) > YEAR_TOL:
-                    continue
+        if not detail:
+            continue
 
-            if expansions >= MAX_DETAIL_EXPANSIONS:
-                break
+        listing_year = None
+        listing_mileage = None
+        engine_match = True
+        trim_match = True
 
-            item_id = summary.get("itemId")
-            if not item_id:
+        # Extract aspects
+        for aspect in detail.get("localizedAspects", []):
+            name = aspect.get("name", "").lower()
+            value = aspect.get("value", [])
+            if not value:
                 continue
 
-            detail = get_item_detail(item_id)
-            expansions += 1
+            val = str(value[0]).lower()
 
-            if not detail:
-                continue
+            if "year" in name:
+                try:
+                    listing_year = int(val)
+                except:
+                    pass
 
-            listing_year = None
-            listing_mileage = None
-            engine_match = None  # If no engine required, auto pass
+            if "mileage" in name:
+                try:
+                    listing_mileage = int(val.replace(",", ""))
+                except:
+                    pass
 
-            if not listing_year:
-                listing_year = extract_year_from_title(title)
+            if target_engine_litre and (
+                "engine" in name or "cc" in name or "capacity" in name
+            ):
+                normalised = normalise_engine(val)
+                if normalised != target_engine_litre:
+                    engine_match = False
 
-            if not listing_mileage:
-                listing_mileage = extract_mileage_from_title(title) 
+        # Trim match (title fallback)
+        if target_trim:
+            if target_trim.lower() not in title:
+                trim_match = False
 
-            for aspect in detail.get("localizedAspects", []):
-                name = aspect.get("name", "").lower()
-                value = aspect.get("value", [])
-                if not value:
-                    continue
+        # HARD RULES
+        if listing_year is None:
+            continue
 
-                val = str(value[0]).lower()
+        if abs(listing_year - target_year) > 2:
+            continue
 
-                # YEAR
-                if "year" in name:
-                    try:
-                        listing_year = int(val)
-                    except:
-                        pass
+        if listing_mileage is None:
+            continue
 
-                # MILEAGE
-                if "mileage" in name:
-                    try:
-                        listing_mileage = int(val.replace(",", ""))
-                    except:
-                        pass
+        if abs(listing_mileage - target_mileage) > 15000:
+            continue
 
-                # ENGINE WATCH
+        if not engine_match:
+            continue
 
-                if target_engine_litre and ("engine" in name or "cc" in name or "capacity" in name):
-                    normalised = normalise_engine(val)
-                    if normalised == target_engine_litre:
-                        engine_match = True
-                    else:
-                        engine_match = False
+        if not trim_match:
+            continue
 
-            if target_engine_litre and not engine_match:
-                engine_pattern = re.search(r"\b\d\.\d\b", title)
-                if engine_pattern and engine_pattern.group(0) == target_engine_litre:
-                    engine_match = True
+        price_obj = summary.get("price")
+        if not price_obj:
+            continue
 
-            if target_engine_litre and engine_match is False:
-                continue
+        prices.append(float(price_obj["value"]))
 
-            if not listing_year:
-                listing_year = quick_year
+    if len(prices) < 5:
+        return None
 
-            if not listing_mileage:
-                listing_mileage = extract_mileage_from_title(title)
+    prices = sorted(prices)
+    cut = int(len(prices) * 0.1)
+    if cut > 0:
+        prices = prices[cut:-cut]
 
-            if not listing_year and not listing_mileage:
-                continue
-
-            # STRICT YEAR FILTER
-            if YEAR_TOL is not None and target_year:
-                if listing_year is None:
-                    continue
-                if abs(listing_year - target_year) > YEAR_TOL:
-                    continue
-
-            # MILEAGE FILTER
-            if MILE_TOL is not None and target_mileage:
-                if listing_mileage is None:
-                    continue
-                if abs(listing_mileage - target_mileage) > MILE_TOL:
-                    continue 
-
-            price_obj = summary.get("price")
-            if not price_obj:
-                continue
-
-            prices.append(float(price_obj["value"]))
-
-            if listing_mileage:
-                mileage_samples.append(listing_mileage)
-
-        if len(prices) >= MIN_SAMPLE_SIZE:
-
-            if len(prices) >= 5:
-                prices = sorted(prices)
-                cut = int(len(prices) * 0.1)
-                if cut > 0:
-                    prices = prices[cut:-cut]
-                
-            median_price = statistics.median(prices)
-
-            if mileage_samples and target_mileage:
-                sample_avg_mileage = int(statistics.mean(mileage_samples))
-                mileage_diff = target_mileage - sample_avg_mileage
-
-                mileage_adjustment_rate = 0.005
-
-                mileage_steps = mileage_diff / 1000
-                adjustment = median_price * mileage_adjustment_rate * mileage_steps
-            
-                max_adjustment = median_price * 0.15
-                adjustment = max(-max_adjustment, min(max_adjustment, adjustment))
-
-                adjusted_price = round(median_price - adjustment, 2)
-                adjusted_price = max(0, adjusted_price)
-            else:
-                adjusted_price = round(median_price, 2)
-
-            return {
-                "market_price": adjusted_price,
-                "sample_size": len(prices),
-                "source": "ebay_progressive_engine_locked"
-            }
-
-    print(f"Filtered summaries count: {len(summaries)}")
-    print("No valid comps after filtering")
-    return None
+    return {
+        "market_price": round(statistics.median(prices), 2),
+        "sample_size": len(prices),
+        "source": "ebay_strict_spec"
+    }
 
 # --------------------------------------------------
 # PUBLIC ENTRY
@@ -287,12 +236,28 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
     if not all_summaries:
         return None
 
-    result = filter_sold_data(
-        all_summaries,
-        target_year=year,
-        target_mileage=mileage,
-        target_engine_litre=engine_litre
-    )
+    layers = [
+    {"engine": True, "trim": True},
+    {"engine": True, "trim": False},
+    {"engine": False, "trim": True},
+    {"engine": False, "trim": False},
+]
+
+    for layer in layers:
+
+        result = strict_filter(
+            all_summaries,
+            target_year=year,
+            target_mileage=mileage,
+            target_engine_litre=engine_litre if layer["engine"] else None,
+            target_trim=trim if layer["trim"] else None,
+        )
+
+        if result:
+            redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
+            return result
+
+    return None
 
     if result:
         redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
