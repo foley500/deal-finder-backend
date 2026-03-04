@@ -269,6 +269,13 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             except Exception as e:
                 print("MOT processing error:", e)
 
+        if not year and vehicle_data.get("first_used_date"):
+            try:
+                year = int(vehicle_data["first_used_date"][:4])
+                print("📅 Using DVSA year fallback:", year)
+            except Exception:
+                pass
+
         make = vehicle_data.get("make")
         model = vehicle_data.get("model")
 

@@ -83,7 +83,9 @@ def progressive_filter(sold_listings, year, mileage):
             listing_mileage = extract_mileage_from_title(title)
 
             # Year filter
-            if YEAR_TOLERANCE is not None and year and listing_year:
+            if YEAR_TOLERANCE is not None and year:
+                if not listing_year:
+                    continue
                 if abs(listing_year - year) > YEAR_TOLERANCE:
                     continue
 
