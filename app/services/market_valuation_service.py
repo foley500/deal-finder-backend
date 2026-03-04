@@ -168,10 +168,10 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
                     if normalised == target_engine_litre:
                         engine_match = True
 
-                if target_engine_litre and not engine_match:
-                    engine_pattern = re.search(r"\b\d\.\d\b", title)
-                    if engine_pattern and engine_pattern.group(0) == target_engine_litre:
-                        engine_match = True
+            if target_engine_litre and not engine_match:
+                engine_pattern = re.search(r"\b\d\.\d\b", title)
+                if engine_pattern and engine_pattern.group(0) == target_engine_litre:
+                    engine_match = True
 
             if target_engine_litre and YEAR_TOL is not None and not engine_match:
                 continue
@@ -200,17 +200,28 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
                 continue
 
             prices.append(float(price_obj["value"]))
-            mileage_samples.append(listing_mileage)
+
+            if listing_mileage:
+                mileage_samples.append(listing_mileage)
 
         if len(prices) >= MIN_SAMPLE_SIZE:
 
             median_price = statistics.median(prices)
 
-            sample_avg_mileage = int(statistics.mean(mileage_samples))
-            mileage_diff = target_mileage - sample_avg_mileage
-            adjustment = mileage_diff * 0.04
+            if mileage_samples:
+                sample_avg_mileage = int(statistics.mean(mileage_samples))
+                mileage_diff = target_mileage - sample_avg_mileage
 
-            adjusted_price = round(median_price - adjustment, 2)
+                per_mile_adjustment = 0.008
+                raw_adjustment = mileage_diff * per_mile_adjustment
+
+                max_adjustment = median_price * 0.4
+                adjustment = max(min(raw_adjustment, max_adjustment), -max_adjustment)
+
+                adjusted_price = round(median_price - adjustment, 2)
+                adjusted_price = max(0, adjusted_price)
+            else:
+                adjusted_price = round(median_price, 2)
 
             return {
                 "market_price": adjusted_price,
@@ -218,9 +229,8 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
                 "source": "ebay_progressive_engine_locked"
             }
 
-            print(f"Filtered summaries count: {len(summaries)}")
-            print("No valid comps after filtering")
-
+    print(f"Filtered summaries count: {len(summaries)}")
+    print("No valid comps after filtering")
     return None
 
 # ---------------------------------------------------
