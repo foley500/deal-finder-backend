@@ -16,8 +16,8 @@ REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 1800
-MAX_DETAIL_EXPANSIONS = 85
-MIN_SAMPLE_SIZE = 3
+MAX_DETAIL_EXPANSIONS = 150
+MIN_SAMPLE_SIZE = 2
 
 
 # ---------------------------------------------------
@@ -133,6 +133,12 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
             listing_mileage = None
             engine_match = not target_engine_litre  # If no engine required, auto pass
 
+            if not listing_year:
+                listing_year = extract_year_from_title(title)
+
+            if not listing_mileage:
+                listing_mileage = extract_mileage_from_title(title) 
+
             for aspect in detail.get("localizedAspects", []):
                 name = aspect.get("name", "").lower()
                 value = aspect.get("value", [])
@@ -167,7 +173,7 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
                     if engine_pattern and engine_pattern.group(0) == target_engine_litre:
                         engine_match = True
 
-            if not engine_match:
+            if target_engine_litre and YEAR_TOL is not None and not engine_match:
                 continue
 
             if not listing_year:
@@ -176,7 +182,7 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
             if not listing_mileage:
                 listing_mileage = extract_mileage_from_title(title)
 
-            if not listing_year or not listing_mileage:
+            if not listing_year and not listing_mileage:
                 continue
 
             # STRICT YEAR FILTER
@@ -185,7 +191,7 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
                     continue
 
             # MILEAGE FILTER
-            if MILE_TOL is not None and target_mileage:
+            if MILE_TOL is not None and target_mileage and listing_mileage:
                 if abs(listing_mileage - target_mileage) > MILE_TOL:
                     continue
 
@@ -211,6 +217,9 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
                 "sample_size": len(prices),
                 "source": "ebay_progressive_engine_locked"
             }
+
+            print(f"Filtered summaries count: {len(summaries)}")
+            print("No valid comps after filtering")
 
     return None
 
