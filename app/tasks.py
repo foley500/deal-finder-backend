@@ -158,7 +158,7 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
             items = []
 
             if deep_sweep:
-                for page in range(40, 400, listings_to_pull):
+                for page in range(0, 120, listings_to_pull):
                     page_items = source.search(
                         keywords="cars",
                         entries=listings_to_pull,

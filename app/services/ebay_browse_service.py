@@ -69,15 +69,28 @@ def search_ebay_browse(
         "q": keywords,
         "limit": limit,
         "offset": offset,
-        "category_ids": "9801",  # Cars
+        "category_ids": "9801",
         "sort": sort,
         "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}}"
     }
 
-    response = requests.get(SEARCH_URL, headers=headers, params=params)
+    for attempt in range(2):  # retry once if rate limited
 
-    if response.status_code != 200:
-        print("❌ Browse API error:", response.text)
+        response = requests.get(SEARCH_URL, headers=headers, params=params)
+
+        if response.status_code == 429:
+            print("⚠️ Browse rate limited — sleeping 5s")
+            time.sleep(5)
+            continue
+
+        if response.status_code != 200:
+            print("❌ Browse API error:", response.text)
+            time.sleep(1)
+            return []
+
+        time.sleep(0.35)  # global throttle
+        break
+    else:
         return []
 
     summaries = response.json().get("itemSummaries", [])
@@ -86,8 +99,8 @@ def search_ebay_browse(
 
     banned_words = [
         "breaking", "spares", "repair", "parts",
-        "gearbox", "bumper", "door", "mirror", "alloy",
-        "wheel", "tyre", "tire"
+        "gearbox", "bumper", "door", "mirror",
+        "alloy", "wheel", "tyre", "tire"
     ]
 
     for summary in summaries:
@@ -126,8 +139,15 @@ def get_item_detail(item_id):
 
     response = requests.get(f"{ITEM_URL}{item_id}", headers=headers)
 
+    if response.status_code == 429:
+        print("Rate limited - sleeping 5s")
+        time.sleep(5)
+        return []
+
     if response.status_code != 200:
         print("❌ Item detail error:", response.text)
-        return None
+        time.sleep(1)
+        return []
+    time.sleep(0.4)
 
     return response.json()
