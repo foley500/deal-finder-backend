@@ -188,7 +188,11 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
                 continue
 
             # STRICT YEAR FILTER
-            if YEAR_TOL is not None and target_year:
+            if (
+                YEAR_TOL is not None
+                and target_year
+                and listing_year is not None
+            ):
                 if abs(listing_year - target_year) > YEAR_TOL:
                     continue
 
