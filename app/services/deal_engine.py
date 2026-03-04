@@ -4,7 +4,7 @@ from app.scoring import calculate_score
 from app.registration import extract_registration
 from app.models import Deal, DealerSettings
 from app.database import SessionLocal
-from app.services.ocr_service import extract_plate_from_image_url
+from app.services.ocr_service import extract_plate_from_images
 from app.services.mot_service import get_mot_data
 from app.services.ebay_browse_service import get_item_detail
 from app.services.market_valuation_service import get_market_price_from_sold
@@ -112,8 +112,6 @@ TARGET_LAT, TARGET_LON = get_lat_long(TARGET_POSTCODE)
 def smart_temp_valuation(price, year, mileage):
     if not price:
         return 0
-
-    # Conservative baseline
     return round(price * 0.85, 2)
 
 
@@ -126,6 +124,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
     db = SessionLocal()
 
     try:
+
         # ---------------------------------
         # Prevent duplicates
         # ---------------------------------
@@ -142,7 +141,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             return None
 
         # ---------------------------------
-        # Load dealer settings
+        # Dealer settings
         # ---------------------------------
         settings = db.query(DealerSettings).filter(
             DealerSettings.dealer_id == dealer_id
@@ -167,6 +166,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         # Expand summary listing
         # ---------------------------------
         if raw_item.get("summary_only") and not raw_item.get("skip_detail"):
+
             detail = get_item_detail(raw_item.get("id"))
             if not detail:
                 return None
@@ -183,8 +183,19 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             raw_item["aspects"] = aspect_dict
             raw_item["seller"] = detail.get("seller", {}).get("username")
 
-            if detail.get("image"):
-                raw_item["image_url"] = detail["image"].get("imageUrl")
+            # -----------------------------
+            # Collect ALL listing images
+            # -----------------------------
+            image_urls = []
+
+            if detail.get("image") and detail["image"].get("imageUrl"):
+                image_urls.append(detail["image"]["imageUrl"])
+
+            for img in detail.get("additionalImages", []):
+                if img.get("imageUrl"):
+                    image_urls.append(img["imageUrl"])
+
+            raw_item["image_urls"] = image_urls
 
         # ---------------------------------
         # Extract fields
@@ -192,7 +203,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         description = raw_item.get("description", "") or ""
         aspects = raw_item.get("aspects", {}) or {}
         listing_url = raw_item.get("view_url")
-        image_url = raw_item.get("image_url")
         seller = raw_item.get("seller")
         location = raw_item.get("location")
 
@@ -225,11 +235,11 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         # ---------------------------------
         reg = extract_registration(title)
 
-        if not reg and image_url:
-            reg = extract_plate_from_image_url(image_url)
+        if not reg and raw_item.get("image_urls"):
+            reg = extract_plate_from_images(raw_item["image_urls"])
 
         # ---------------------------------
-        # MOT (required before valuation)
+        # MOT
         # ---------------------------------
         mot_penalty = 0
         mot_summary = {}
@@ -250,7 +260,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 print("MOT processing error:", e)
 
         # ---------------------------------
-        # MARKET VALUATION (EBAY SOLD MODEL)
+        # MARKET VALUATION
         # ---------------------------------
         make = vehicle_data.get("make")
         model = vehicle_data.get("model")
