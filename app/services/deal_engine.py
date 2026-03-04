@@ -259,7 +259,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         # ---------------------------------
         # DVSA Lookup
         # ---------------------------------
-        
+
         mot_penalty = 0
         mot_summary = {}
         mot_full_data = []
@@ -277,6 +277,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
 
             except Exception as e:
                 print("MOT processing error:", e)
+
+        if not vehicle_data:
+            return None
 
         # ---------------------------------
         # Final Field Resolution (DVSA First)

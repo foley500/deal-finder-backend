@@ -17,7 +17,7 @@ redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 1800
 MAX_DETAIL_EXPANSIONS = 150
-MIN_SAMPLE_SIZE = 2
+MIN_SAMPLE_SIZE = 5
 
 
 # ---------------------------------------------------
@@ -97,7 +97,7 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
     tolerance_stages = [
         (2, 15000),
         (3, 20000),
-        (None, None)
+        (4, 30000),
     ]
 
     for YEAR_TOL, MILE_TOL in tolerance_stages:
@@ -173,7 +173,7 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
                 if engine_pattern and engine_pattern.group(0) == target_engine_litre:
                     engine_match = True
 
-            if target_engine_litre and YEAR_TOL is not None and not engine_match:
+            if target_engine_litre and not engine_match:
                 continue
 
             if not listing_year:
@@ -206,17 +206,25 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
 
         if len(prices) >= MIN_SAMPLE_SIZE:
 
+            if len(prices) >= 5:
+                prices = sorted(prices)
+                cut = int(len(prices) * 0.1)
+                if cut > 0:
+                    prices = prices[cut:-cut]
+                
             median_price = statistics.median(prices)
 
             if mileage_samples:
                 sample_avg_mileage = int(statistics.mean(mileage_samples))
                 mileage_diff = target_mileage - sample_avg_mileage
 
-                per_mile_adjustment = 0.008
-                raw_adjustment = mileage_diff * per_mile_adjustment
+                mileage_adjustment_rate = 0.005
 
-                max_adjustment = median_price * 0.4
-                adjustment = max(min(raw_adjustment, max_adjustment), -max_adjustment)
+                mileage_steps = mileage_diff / 1000
+                adjustment = median_price * mileage_adjustment_rate * mileage_steps
+            
+                max_adjustment = median_price * 0.15
+                adjustment = max(-max_adjustment, min(max_adjustment, adjustment))
 
                 adjusted_price = round(median_price - adjustment, 2)
                 adjusted_price = max(0, adjusted_price)

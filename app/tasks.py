@@ -19,7 +19,7 @@ TEST_MODE = True
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
-MAX_DETAIL_EXPANSIONS = 8  # HARD LIMIT
+MAX_DETAIL_EXPANSIONS = 20  # SNIPER SAFE LIMIT
 
 
 # ==========================================
@@ -100,14 +100,15 @@ def scan_value_sweep(dealer_id: int):
         dealer_id=dealer_id,
         sort="price",
         listings_to_pull=40,
-        mode_name="value_sweep"
+        mode_name="value_sweep",
+        deep_sweep=True
     )
 
 
 # ==========================================
 # SHARED SCAN ENGINE
 # ==========================================
-def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str):
+def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, deep_sweep=False):
 
     lock_key = f"scan_lock_{dealer_id}"
 
@@ -150,6 +151,22 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str):
 
             source = get_listing_source(source_name)
 
+            items = []
+        if deep_sweep:
+            for page in range(0, 200, listings_to_pull):
+                page_items = source.search(
+                    keywords="cars",
+                    entries=listings_to_pull,
+                    min_price=None,
+                    max_price=filters["max_price"],
+                    min_year=filters["min_year"],
+                    max_years=filters["max_year"],
+                    sort=sort,
+                    offset=page
+                )
+                items.extend(page_items)
+
+         else:
             items = source.search(
                 keywords="cars",
                 entries=listings_to_pull,
@@ -158,7 +175,7 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str):
                 min_year=filters["min_year"],
                 max_year=filters["max_year"],
                 sort=sort
-            )
+                )
 
             total_listings += len(items)
 
@@ -179,7 +196,7 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str):
                 if not rough_price:
                     continue
 
-                rough_estimated_value = rough_price * 0.9
+                rough_estimated_value = rough_price * 1.15
                 rough_profit = rough_estimated_value - rough_price
 
                 if settings.min_profit and rough_profit < (settings.min_profit * 0.5):
