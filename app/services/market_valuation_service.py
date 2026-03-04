@@ -4,7 +4,6 @@ from app.services.ebay_browse_service import get_ebay_access_token
 import requests
 
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
-MIN_SAMPLE_SIZE = 5
 
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
@@ -77,9 +76,17 @@ def adjust_for_mileage(base_price, target_mileage, sample_avg):
 
 def get_market_price_from_sold(make, model, year, mileage):
 
-    query = build_search_query(make, model, year)
+    if not make or not model:
+        return None
 
-    cache_key = f"sold_cache:{query}"
+    # Tolerance settings
+    YEAR_TOLERANCE = 2
+    MILEAGE_TOLERANCE = 15000
+
+    # Broader search query (no exact year restriction)
+    query = f"{make} {model}"
+
+    cache_key = f"sold_cache:{query}:{year}:{mileage}"
     cached = redis_client.get(cache_key)
 
     if cached:
@@ -90,34 +97,60 @@ def get_market_price_from_sold(make, model, year, mileage):
     if not sold_listings:
         return None
 
-    prices = [
-        float(l["price"]["value"])
-        for l in sold_listings
-        if l.get("price")
-    ]
+    filtered_prices = []
+    mileage_samples = []
 
-    if len(prices) < MIN_SAMPLE_SIZE:
+    for listing in sold_listings:
+
+        price_obj = listing.get("price")
+        if not price_obj:
+            continue
+
+        price = float(price_obj["value"])
+        title = listing.get("title", "")
+
+        # Extract year from title
+        year_match = re.search(r"\b(20\d{2}|19\d{2})\b", title)
+        listing_year = int(year_match.group(1)) if year_match else None
+
+        # Extract mileage
+        listing_mileage = extract_mileage_from_title(title)
+
+        # Apply year tolerance
+        if year and listing_year:
+            if abs(listing_year - year) > YEAR_TOLERANCE:
+                continue
+
+        # Apply mileage tolerance
+        if mileage and listing_mileage:
+            if abs(listing_mileage - mileage) > MILEAGE_TOLERANCE:
+                continue
+            mileage_samples.append(listing_mileage)
+
+        filtered_prices.append(price)
+
+    if len(filtered_prices) < 3:
         return None
 
-    prices = filter_reasonable_prices(prices)
-    if not prices:
-        return None
+    median_price = statistics.median(filtered_prices)
 
-    median_price = statistics.median(prices)
+    # Soft mileage adjustment
+    sample_avg_mileage = (
+        int(statistics.mean(mileage_samples))
+        if mileage_samples
+        else None
+    )
 
-    mileages = []
-    for l in sold_listings:
-        m = extract_mileage_from_title(l.get("title", ""))
-        if m:
-            mileages.append(m)
-
-    sample_avg = int(statistics.mean(mileages)) if mileages else None
-    adjusted = adjust_for_mileage(median_price, mileage, sample_avg)
+    adjusted_price = adjust_for_mileage(
+        median_price,
+        mileage,
+        sample_avg_mileage
+    )
 
     result = {
-        "market_price": round(adjusted, 2),
-        "sample_size": len(prices),
-        "source": "ebay_sold_market_model"
+        "market_price": round(adjusted_price, 2),
+        "sample_size": len(filtered_prices),
+        "source": "ebay_sold_cluster_model"
     }
 
     redis_client.set(cache_key, str(result), ex=CACHE_TTL)
