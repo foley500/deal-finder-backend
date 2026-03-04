@@ -108,15 +108,16 @@ def scan_value_sweep(dealer_id: int):
 # ==========================================
 # SHARED SCAN ENGINE
 # ==========================================
-ddef run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, deep_sweep=False):
+def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, deep_sweep=False):
 
     lock_key = f"scan_lock_{dealer_id}_{mode_name}"
 
+    # Prevent overlapping scans
     if redis_client.get(lock_key):
         print("⚠️ Scan already running — skipping")
         return {"skipped": True}
 
-    redis_client.set(lock_key, "1", ex=540)
+    redis_client.set(lock_key, "1", ex=540)  # auto-expire in 9 minutes
 
     db = SessionLocal()
 
@@ -148,81 +149,73 @@ ddef run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, 
 
         for source_name in SOURCES:
 
-            source = get_listing_source(source_name)
-            items = []
+    source = get_listing_source(source_name)
 
-            # -----------------------------
-            # DEEP SWEEP PAGINATION
-            # -----------------------------
-            if deep_sweep:
-                for page in range(0, 200, listings_to_pull):
-                    page_items = source.search(
-                        keywords="cars",
-                        entries=listings_to_pull,
-                        min_price=None,
-                        max_price=filters["max_price"],
-                        min_year=filters["min_year"],
-                        max_year=filters["max_year"],
-                        sort=sort,
-                        offset=page
-                    )
-                    items.extend(page_items)
-            else:
-                items = source.search(
-                    keywords="cars",
-                    entries=listings_to_pull,
-                    min_price=None,
-                    max_price=filters["max_price"],
-                    min_year=filters["min_year"],
-                    max_year=filters["max_year"],
-                    sort=sort
-                )
+    items = []
 
-            total_listings += len(items)
+    if deep_sweep:
+        for page in range(0, 200, listings_to_pull):
+            page_items = source.search(
+                keywords="cars",
+                entries=listings_to_pull,
+                min_price=None,
+                max_price=filters["max_price"],
+                min_year=filters["min_year"],
+                max_year=filters["max_year"],
+                sort=sort,
+                offset=page
+            )
+            items.extend(page_items)
+    else:
+        items = source.search(
+            keywords="cars",
+            entries=listings_to_pull,
+            min_price=None,
+            max_price=filters["max_price"],
+            min_year=filters["min_year"],
+            max_year=filters["max_year"],
+            sort=sort
+        )
 
-            # -----------------------------
-            # PROCESS ITEMS
-            # -----------------------------
-            for item in items:
+    total_listings += len(items)
 
-                if detail_expansions >= MAX_DETAIL_EXPANSIONS:
-                    print("🛑 Expansion cap reached")
-                    break
+    for item in items:
 
-                external_id = item.get("id") or item.get("view_url")
-                if not external_id or external_id in processed_ids:
-                    continue
+        if detail_expansions >= MAX_DETAIL_EXPANSIONS:
+            print("🛑 Expansion cap reached")
+            break
 
-                processed_ids.add(external_id)
+        external_id = item.get("id") or item.get("view_url")
+        if not external_id or external_id in processed_ids:
+            continue
 
-                rough_price = float(item.get("price", 0))
-                if not rough_price:
-                    continue
+        processed_ids.add(external_id)
 
-                rough_estimated_value = rough_price * 1.15
-                rough_profit = rough_estimated_value - rough_price
+        rough_price = float(item.get("price", 0))
+        if not rough_price:
+            continue
 
-                if settings.min_profit and rough_profit < (settings.min_profit * 0.5):
-                    continue
+        rough_estimated_value = rough_price * 1.15
+        rough_profit = rough_estimated_value - rough_price
 
-                deal = process_listing(
-                    item,
-                    dealer.id,
-                    source=source_name,
-                    filters=filters
-                )
+        if settings.min_profit and rough_profit < (settings.min_profit * 0.5):
+            continue
 
-                detail_expansions += 1
+        deal = process_listing(
+            item,
+            dealer.id,
+            source=source_name,
+            filters=filters
+        )
 
-                if not deal:
-                    continue
+        detail_expansions += 1
 
-                total_deals += 1
-                notify_deal.delay(deal.id)
+        if not deal:
+            continue
 
-        # -----------------------------
-        # SAVE SCAN RESULT (AFTER LOOP)
-        # -----------------------------
+        total_deals += 1
+        notify_deal.delay(deal.id)
+
         scan = ScanRun(
             dealer_id=dealer.id,
             source=f"mode_{mode_name}",
