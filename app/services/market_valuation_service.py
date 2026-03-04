@@ -188,18 +188,18 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
                 continue
 
             # STRICT YEAR FILTER
-            if (
-                YEAR_TOL is not None
-                and target_year
-                and listing_year is not None
-            ):
+            if YEAR_TOL is not None and target_year:
+                if listing_year is None:
+                    continue
                 if abs(listing_year - target_year) > YEAR_TOL:
                     continue
 
             # MILEAGE FILTER
-            if MILE_TOL is not None and target_mileage and listing_mileage:
-                if abs(listing_mileage - target_mileage) > MILE_TOL:
+            if MILE_TOL is not None and target_mileage:
+                if listing_mileage is None:
                     continue
+                if abs(listing_mileage - target_mileage) > MILE_TOL:
+                    continue 
 
             price_obj = summary.get("price")
             if not price_obj:
@@ -220,7 +220,7 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
                 
             median_price = statistics.median(prices)
 
-            if mileage_samples:
+            if mileage_samples and target_mileage:
                 sample_avg_mileage = int(statistics.mean(mileage_samples))
                 mileage_diff = target_mileage - sample_avg_mileage
 
