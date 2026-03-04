@@ -52,7 +52,8 @@ def search_ebay_browse(
     limit=20,
     min_price=500,
     max_price=50000,
-    sort="newlyListed"
+    sort="newlyListed",
+    offset=0
 ):
 
     token = get_ebay_access_token()
@@ -67,6 +68,7 @@ def search_ebay_browse(
     params = {
         "q": keywords,
         "limit": limit,
+        "offset": offset,
         "category_ids": "9801",  # Cars
         "sort": sort,
         "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}}"
