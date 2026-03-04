@@ -157,15 +157,15 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
 
                 # ENGINE WATCH
 
-            if target_engine_litre and ("engine" in name or "cc" in name or "capacity" in name):
+                if target_engine_litre and ("engine" in name or "cc" in name or "capacity" in name):
                     normalised = normalise_engine(val)
                     if normalised == target_engine_litre:
                         engine_match = True
 
-            if target_engine_litre and not engine_match:
-                engine_pattern = re.search(r"\b\d\.\d\b", title)
-                if engine_pattern and engine_pattern.group(0) == target_engine_litre:
-                    engine_match = True
+                if target_engine_litre and not engine_match:
+                    engine_pattern = re.search(r"\b\d\.\d\b", title)
+                    if engine_pattern and engine_pattern.group(0) == target_engine_litre:
+                        engine_match = True
 
             if not engine_match:
                 continue
