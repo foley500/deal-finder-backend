@@ -16,7 +16,7 @@ REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 1800
-MAX_DETAIL_EXPANSIONS = 40
+MAX_DETAIL_EXPANSIONS = 85
 MIN_SAMPLE_SIZE = 3
 
 
@@ -90,7 +90,7 @@ def get_sold_listings(query: str, limit: int = 100):
 # CORE FILTER ENGINE
 # ---------------------------------------------------
 
-def filter_sold_data(summaries, target_year, target_mileage):
+def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre=None):
 
     tolerance_stages = [
         (2, 15000),
@@ -105,6 +105,19 @@ def filter_sold_data(summaries, target_year, target_mileage):
         expansions = 0
 
         for summary in summaries:
+
+            title = summary.get("title", "").lower()
+
+            # Quick year filter BEFORE expansion
+            quick_year = extract_year_from_title(title)
+            if YEAR_TOL is not None and target_year and quick_year:
+                if abs(quick_year - target_year) > YEAR_TOL:
+                    continue
+
+            # Quick engine filter BEFORE expansion
+            if target_engine_litre:
+                if target_engine_litre not in title:
+                    continue
 
             if expansions >= MAX_DETAIL_EXPANSIONS:
                 break
@@ -143,18 +156,21 @@ def filter_sold_data(summaries, target_year, target_mileage):
                     except:
                         pass
 
-            if not listing_year or not listing_mileage:
-                title = summary.get("title", "")
-                listing_year = listing_year or extract_year_from_title(title)
-                listing_mileage = listing_mileage or extract_mileage_from_title(title)
+            if not listing_year:
+                listing_year = quick_year
+
+            if not listing_mileage:
+                listing_mileage = extract_mileage_from_title(title)
 
             if not listing_year or not listing_mileage:
                 continue
 
+            # Strict year filter
             if YEAR_TOL is not None and target_year:
                 if abs(listing_year - target_year) > YEAR_TOL:
                     continue
 
+            # Mileage tolerance
             if MILE_TOL is not None and target_mileage:
                 if abs(listing_mileage - target_mileage) > MILE_TOL:
                     continue
@@ -163,9 +179,7 @@ def filter_sold_data(summaries, target_year, target_mileage):
             if not price_obj:
                 continue
 
-            price = float(price_obj["value"])
-
-            prices.append(price)
+            prices.append(float(price_obj["value"]))
             mileage_samples.append(listing_mileage)
 
         if len(prices) >= MIN_SAMPLE_SIZE:
@@ -190,19 +204,24 @@ def filter_sold_data(summaries, target_year, target_mileage):
 
 def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
 
-    if not make or not model or not year or not mileage or not engine_size:
+    if not make or not model or not year or not mileage:
         return None
 
     base_model, trim = split_model_components(model)
-    engine_litre = normalise_engine(engine_size)
+    engine_litre = normalise_engine(engine_size) if engine_size else None
 
     search_layers = []
 
     # Broad engine market
-    search_layers.append(f"{make} {base_model} {engine_litre}")
+    search_layers.append(f"{make} {base_model}")
 
-    # Trim-specific engine market
     if trim:
+        search_layers.append(f"{make} {base_model} {trim}")
+
+    if engine_litre:
+        search_layers.append(f"{make} {base_model} {engine_litre}")
+
+    if trim and engine_litre:
         search_layers.append(f"{make} {base_model} {trim} {engine_litre}")
 
     cache_key = f"sold_cache:{make}:{model}:{year}:{mileage}:{engine_litre}"
@@ -228,7 +247,8 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
     result = filter_sold_data(
         all_summaries,
         target_year=year,
-        target_mileage=mileage
+        target_mileage=mileage,
+        target_engine_litre=engine_litre
     )
 
     if result:
