@@ -75,13 +75,15 @@ def adjust_for_mileage(base_price, target_mileage, sample_avg):
 
 def progressive_filter(sold_listings, year, mileage):
 
+    # Each stage:
+    # (year_tolerance, mileage_tolerance, min_samples, require_year, require_mileage)
     tolerance_stages = [
-        (2, 15000),   # tight
-        (3, 20000),   # medium
-        (None, None)  # last resort
+        (2, 15000, 3, True, True),   # strict
+        (3, 20000, 3, True, True),   # wider
+        (None, 15000, 3, False, True),  # ignore year but require mileage
     ]
 
-    for YEAR_TOLERANCE, MILEAGE_TOLERANCE in tolerance_stages:
+    for YEAR_TOLERANCE, MILEAGE_TOLERANCE, MIN_SAMPLES, REQUIRE_YEAR, REQUIRE_MILEAGE in tolerance_stages:
 
         filtered_prices = []
         mileage_samples = []
@@ -98,17 +100,26 @@ def progressive_filter(sold_listings, year, mileage):
             listing_year = extract_year_from_title(title)
             listing_mileage = extract_mileage_from_title(title)
 
+            # --------------------
+            # REQUIREMENTS
+            # --------------------
+            if REQUIRE_YEAR and not listing_year:
+                continue
+
+            if REQUIRE_MILEAGE and not listing_mileage:
+                continue
+
+            # --------------------
             # YEAR FILTER
-            if YEAR_TOLERANCE is not None and year:
-                if not listing_year:
-                    continue
+            # --------------------
+            if YEAR_TOLERANCE is not None and year and listing_year:
                 if abs(listing_year - year) > YEAR_TOLERANCE:
                     continue
 
+            # --------------------
             # MILEAGE FILTER
-            if MILEAGE_TOLERANCE is not None and mileage:
-                if not listing_mileage:
-                    continue
+            # --------------------
+            if MILEAGE_TOLERANCE is not None and mileage and listing_mileage:
                 if abs(listing_mileage - mileage) > MILEAGE_TOLERANCE:
                     continue
 
@@ -117,7 +128,7 @@ def progressive_filter(sold_listings, year, mileage):
             if listing_mileage:
                 mileage_samples.append(listing_mileage)
 
-        if len(filtered_prices) >= 3:
+        if len(filtered_prices) >= MIN_SAMPLES:
 
             median_price = statistics.median(filtered_prices)
 

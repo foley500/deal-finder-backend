@@ -191,9 +191,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             raw_item["aspects"] = aspect_dict
             raw_item["seller"] = detail.get("seller", {}).get("username")
 
-            # -----------------------------
-            # Collect ALL listing images (FULL RES)
-            # -----------------------------
             image_urls = []
 
             if detail.get("image") and detail["image"].get("imageUrl"):
@@ -219,11 +216,16 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         # ---------------------------------
         # Extract fields
         # ---------------------------------
+
         description = raw_item.get("description", "") or ""
         aspects = raw_item.get("aspects", {}) or {}
         listing_url = raw_item.get("view_url")
         seller = raw_item.get("seller")
         location = raw_item.get("location")
+
+        # ---------------------------------
+        # Initial extraction from listing
+        # ---------------------------------
 
         structured_year = extract_structured_value(
             aspects, ["Year", "Model Year", "Registration Year"]
@@ -233,18 +235,15 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             aspects, ["Mileage", "Miles"]
         )
 
-        year = safe_int(structured_year) or extract_year_from_text(title)
-        mileage = safe_int(structured_mileage) or extract_mileage_from_text(title)
+        listing_year = safe_int(structured_year) or extract_year_from_text(title)
+        listing_mileage = safe_int(structured_mileage) or extract_mileage_from_text(title)
 
-        if year:
-            if settings.min_year and year < settings.min_year:
-                return None
-            if settings.max_year and year > settings.max_year:
-                return None
+        listing_make = aspects.get("Make")
+        listing_model = aspects.get("Model")
 
-        if mileage:
-            if settings.max_mileage and mileage > settings.max_mileage:
-                return None
+        # ---------------------------------
+        # Registration extraction
+        # ---------------------------------
 
         reg = extract_registration(title)
 
@@ -255,6 +254,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         mot_summary = {}
         mot_full_data = []
         vehicle_data = {}
+
+        # ---------------------------------
+        # DVSA Lookup
+        # ---------------------------------
 
         if reg:
             try:
@@ -269,15 +272,33 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             except Exception as e:
                 print("MOT processing error:", e)
 
-        if not year and vehicle_data.get("first_used_date"):
+        # ---------------------------------
+        # Final Field Resolution (DVSA First)
+        # ---------------------------------
+
+        year = listing_year
+        if vehicle_data.get("first_used_date"):
             try:
                 year = int(vehicle_data["first_used_date"][:4])
-                print("📅 Using DVSA year fallback:", year)
             except Exception:
                 pass
 
-        make = vehicle_data.get("make")
-        model = vehicle_data.get("model")
+        mileage = listing_mileage
+        if mot_full_data:
+            try:
+                latest_mot = sorted(
+                    mot_full_data,
+                    key=lambda x: x.get("completedDate", ""),
+                    reverse=True
+                )[0]
+                mot_mileage = safe_int(latest_mot.get("odometerValue"))
+                if mot_mileage:
+                    mileage = mot_mileage
+            except Exception:
+                pass
+
+        make = vehicle_data.get("make") or listing_make
+        model = vehicle_data.get("model") or listing_model
 
         valuation_result = None
 
@@ -294,7 +315,6 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         else:
             market_value = smart_temp_valuation(price, year, mileage)
 
-# Ensure valuation never drops below asking price unless real data proves it
         if not valuation_result:
             market_value = max(market_value, price)
 
