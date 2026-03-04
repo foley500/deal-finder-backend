@@ -110,9 +110,14 @@ TARGET_LAT, TARGET_LON = get_lat_long(TARGET_POSTCODE)
 # ---------------------------------
 
 def smart_temp_valuation(price, year, mileage):
+    """
+    Conservative fallback valuation when sold data is unavailable.
+    We assume equal market value to asking price instead of forcing
+    an artificial 15% loss.
+    """
     if not price:
         return 0
-    return round(price * 0.85, 2)
+    return float(price)
 
 
 # ---------------------------------
@@ -281,6 +286,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             market_value = valuation_result["market_price"]
         else:
             market_value = smart_temp_valuation(price, year, mileage)
+
+# Ensure valuation never drops below asking price unless real data proves it
+        if not valuation_result:
+            market_value = max(market_value, price)
 
         valuation_data = {
             "market_price": market_value,
