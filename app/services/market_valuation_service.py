@@ -60,9 +60,9 @@ def adjust_for_mileage(base_price, target_mileage, sample_avg):
 def progressive_filter(sold_listings, year, mileage):
 
     tolerance_stages = [
-        (2, 15000),
-        (3, 20000),
-        (None, None)
+        (2, 15000),   # tight
+        (3, 20000),   # wider
+        (None, None)  # final fallback
     ]
 
     for YEAR_TOLERANCE, MILEAGE_TOLERANCE in tolerance_stages:
@@ -82,22 +82,27 @@ def progressive_filter(sold_listings, year, mileage):
             listing_year = extract_year_from_title(title)
             listing_mileage = extract_mileage_from_title(title)
 
-            # Year filter
+            # YEAR FILTER
             if YEAR_TOLERANCE is not None and year:
                 if not listing_year:
                     continue
                 if abs(listing_year - year) > YEAR_TOLERANCE:
                     continue
 
-            # Mileage filter
-            if MILEAGE_TOLERANCE is not None and mileage and listing_mileage:
+            # MILEAGE FILTER
+            if MILEAGE_TOLERANCE is not None and mileage:
+                if not listing_mileage:
+                    continue
                 if abs(listing_mileage - mileage) > MILEAGE_TOLERANCE:
                     continue
-                mileage_samples.append(listing_mileage)
 
             filtered_prices.append(price)
 
+            if listing_mileage:
+                mileage_samples.append(listing_mileage)
+
         if len(filtered_prices) >= 3:
+
             median_price = statistics.median(filtered_prices)
 
             sample_avg_mileage = (
@@ -119,27 +124,3 @@ def progressive_filter(sold_listings, year, mileage):
             }
 
     return None
-
-
-def get_market_price_from_sold(make, model, year, mileage):
-
-    if not make or not model:
-        return None
-
-    query = f"{make} {model}"
-    cache_key = f"sold_cache:{query}:{year}:{mileage}"
-
-    cached = redis_client.get(cache_key)
-    if cached:
-        return eval(cached)
-
-    sold_listings = get_sold_listings(query)
-    if not sold_listings:
-        return None
-
-    result = progressive_filter(sold_listings, year, mileage)
-
-    if result:
-        redis_client.set(cache_key, str(result), ex=CACHE_TTL)
-
-    return result
