@@ -184,7 +184,6 @@ def filter_sold_data(summaries, target_year, target_mileage):
 
     return None
 
-
 # ---------------------------------------------------
 # PUBLIC ENTRY
 # ---------------------------------------------------
@@ -216,10 +215,15 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
         return json.loads(cached)
 
     all_summaries = []
+    seen_ids = set()
 
     for query in search_layers:
         results = get_sold_listings(query)
-        all_summaries.extend(results)
+        for item in results:
+            item_id = item.get("itemId")
+            if item_id and item_id not in seen_ids:
+                seen_ids.add(item_id)
+                all_summaries.append(item)
 
     if not all_summaries:
         return None
