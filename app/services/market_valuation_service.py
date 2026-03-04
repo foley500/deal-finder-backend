@@ -131,7 +131,7 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
 
             listing_year = None
             listing_mileage = None
-            engine_match = not target_engine_litre  # If no engine required, auto pass
+            engine_match = None  # If no engine required, auto pass
 
             if not listing_year:
                 listing_year = extract_year_from_title(title)
@@ -167,13 +167,15 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
                     normalised = normalise_engine(val)
                     if normalised == target_engine_litre:
                         engine_match = True
+                    else:
+                        engine_match = False
 
             if target_engine_litre and not engine_match:
                 engine_pattern = re.search(r"\b\d\.\d\b", title)
                 if engine_pattern and engine_pattern.group(0) == target_engine_litre:
                     engine_match = True
 
-            if target_engine_litre and not engine_match:
+            if target_engine_litre and engine_match is False:
                 continue
 
             if not listing_year:

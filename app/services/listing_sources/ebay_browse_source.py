@@ -11,6 +11,7 @@ class EbayBrowseSource(ListingSource):
         min_price=None,
         max_price=None,
         sort="newlyListed",
+        offset=0,
         **kwargs
     ):
         return search_ebay_browse(
@@ -18,5 +19,6 @@ class EbayBrowseSource(ListingSource):
             limit=entries,
             min_price=min_price or 0,
             max_price=max_price or 50000,
-            sort=sort
+            sort=sort,
+            offset=offset
         )

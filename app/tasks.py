@@ -19,7 +19,8 @@ TEST_MODE = True
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
-MAX_DETAIL_EXPANSIONS = 20  # SNIPER SAFE LIMIT
+SNIPER_LIMIT = 20
+VALUE_SWEEP_LIMIT = 150 
 
 
 # ==========================================
@@ -98,7 +99,7 @@ def scan_value_sweep(dealer_id: int):
 
     return run_scan(
         dealer_id=dealer_id,
-        sort="price",
+        sort="newlyListed",
         listings_to_pull=40,
         mode_name="value_sweep",
         deep_sweep=True
@@ -111,6 +112,11 @@ def scan_value_sweep(dealer_id: int):
 def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, deep_sweep=False):
 
     lock_key = f"scan_lock_{dealer_id}_{mode_name}"
+
+    if mode_name == "value_sweep":
+        max_expansions = VALUE_SWEEP_LIMIT
+    else:
+        max_expansions = SNIPER_LIMIT
 
     if redis_client.get(lock_key):
         print("⚠️ Scan already running — skipping")
@@ -152,7 +158,7 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
             items = []
 
             if deep_sweep:
-                for page in range(0, 200, listings_to_pull):
+                for page in range(40, 400, listings_to_pull):
                     page_items = source.search(
                         keywords="cars",
                         entries=listings_to_pull,
@@ -179,7 +185,7 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
 
             for item in items:
 
-                if detail_expansions >= MAX_DETAIL_EXPANSIONS:
+                if detail_expansions >= max_expansions:
                     print("🛑 Expansion cap reached")
                     break
 
