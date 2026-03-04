@@ -130,46 +130,45 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
                 continue
 
             listing_year = None
-listing_mileage = None
-engine_match = not target_engine_litre  # pass if no engine filter
+            listing_mileage = None
+            engine_match = not target_engine_litre  # If no engine required, auto pass
 
-for aspect in detail.get("localizedAspects", []):
-    name = aspect.get("name", "").lower()
-    value = aspect.get("value", [])
-    if not value:
-        continue
+            for aspect in detail.get("localizedAspects", []):
+                name = aspect.get("name", "").lower()
+                value = aspect.get("value", [])
+                if not value:
+                    continue
 
-    val = str(value[0]).lower()
+                val = str(value[0]).lower()
 
-    # YEAR
-    if "year" in name:
-        try:
-            listing_year = int(val)
-        except:
-            pass
+                # YEAR
+                if "year" in name:
+                    try:
+                        listing_year = int(val)
+                    except:
+                        pass
 
-    # MILEAGE
-    if "mileage" in name:
-        try:
-            listing_mileage = int(val.replace(",", ""))
-        except:
-            pass
+                # MILEAGE
+                if "mileage" in name:
+                    try:
+                        listing_mileage = int(val.replace(",", ""))
+                    except:
+                        pass
 
-    # ENGINE MATCH
-    if target_engine_litre and ("engine" in name or "cc" in name or "capacity" in name):
-        normalised = normalise_engine(val)
-        if normalised == target_engine_litre:
-            engine_match = True
+                # ENGINE WATCH
 
-# TITLE ENGINE FALLBACK
-if target_engine_litre and not engine_match:
-    engine_pattern = re.search(r"\b\d\.\d\b", title)
-    if engine_pattern:
-        if engine_pattern.group(0) == target_engine_litre:
-            engine_match = True
+            if target_engine_litre and ("engine" in name or "cc" in name or "capacity" in name):
+                    normalised = normalise_engine(val)
+                    if normalised == target_engine_litre:
+                        engine_match = True
 
-if not engine_match:
-    continue
+            if target_engine_litre and not engine_match:
+                engine_pattern = re.search(r"\b\d\.\d\b", title)
+                if engine_pattern and engine_pattern.group(0) == target_engine_litre:
+                    engine_match = True
+
+            if not engine_match:
+                continue
 
             if not listing_year:
                 listing_year = quick_year
