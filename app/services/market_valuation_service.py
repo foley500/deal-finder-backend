@@ -38,7 +38,9 @@ def normalise_engine(engine_size):
     if not engine_size:
         return None
     try:
-        size = float(engine_size)
+        cleaned = re.sub(r"[^\d.]", "", str(engine_size))
+        size = float(cleaned)
+
         litre = size / 1000 if size > 10 else size
         return f"{litre:.1f}"
     except:
@@ -108,15 +110,10 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
 
             title = summary.get("title", "").lower()
 
-            # Quick year filter BEFORE expansion
+            # QUICK YEAR FILTER (pre-expansion)
             quick_year = extract_year_from_title(title)
             if YEAR_TOL is not None and target_year and quick_year:
                 if abs(quick_year - target_year) > YEAR_TOL:
-                    continue
-
-            # Quick engine filter BEFORE expansion
-            if target_engine_litre:
-                if target_engine_litre not in title:
                     continue
 
             if expansions >= MAX_DETAIL_EXPANSIONS:
@@ -133,28 +130,46 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
                 continue
 
             listing_year = None
-            listing_mileage = None
+listing_mileage = None
+engine_match = not target_engine_litre  # pass if no engine filter
 
-            for aspect in detail.get("localizedAspects", []):
-                name = aspect.get("name", "").lower()
-                value = aspect.get("value", [])
+for aspect in detail.get("localizedAspects", []):
+    name = aspect.get("name", "").lower()
+    value = aspect.get("value", [])
+    if not value:
+        continue
 
-                if not value:
-                    continue
+    val = str(value[0]).lower()
 
-                val = value[0]
+    # YEAR
+    if "year" in name:
+        try:
+            listing_year = int(val)
+        except:
+            pass
 
-                if "year" in name:
-                    try:
-                        listing_year = int(val)
-                    except:
-                        pass
+    # MILEAGE
+    if "mileage" in name:
+        try:
+            listing_mileage = int(val.replace(",", ""))
+        except:
+            pass
 
-                if "mileage" in name:
-                    try:
-                        listing_mileage = int(val.replace(",", ""))
-                    except:
-                        pass
+    # ENGINE MATCH
+    if target_engine_litre and ("engine" in name or "cc" in name or "capacity" in name):
+        normalised = normalise_engine(val)
+        if normalised == target_engine_litre:
+            engine_match = True
+
+# TITLE ENGINE FALLBACK
+if target_engine_litre and not engine_match:
+    engine_pattern = re.search(r"\b\d\.\d\b", title)
+    if engine_pattern:
+        if engine_pattern.group(0) == target_engine_litre:
+            engine_match = True
+
+if not engine_match:
+    continue
 
             if not listing_year:
                 listing_year = quick_year
@@ -165,12 +180,12 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
             if not listing_year or not listing_mileage:
                 continue
 
-            # Strict year filter
+            # STRICT YEAR FILTER
             if YEAR_TOL is not None and target_year:
                 if abs(listing_year - target_year) > YEAR_TOL:
                     continue
 
-            # Mileage tolerance
+            # MILEAGE FILTER
             if MILE_TOL is not None and target_mileage:
                 if abs(listing_mileage - target_mileage) > MILE_TOL:
                     continue
@@ -185,15 +200,17 @@ def filter_sold_data(summaries, target_year, target_mileage, target_engine_litre
         if len(prices) >= MIN_SAMPLE_SIZE:
 
             median_price = statistics.median(prices)
+
             sample_avg_mileage = int(statistics.mean(mileage_samples))
             mileage_diff = target_mileage - sample_avg_mileage
             adjustment = mileage_diff * 0.04
+
             adjusted_price = round(median_price - adjustment, 2)
 
             return {
                 "market_price": adjusted_price,
                 "sample_size": len(prices),
-                "source": "ebay_progressive_combined_model"
+                "source": "ebay_progressive_engine_locked"
             }
 
     return None
@@ -217,12 +234,6 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
 
     if trim:
         search_layers.append(f"{make} {base_model} {trim}")
-
-    if engine_litre:
-        search_layers.append(f"{make} {base_model} {engine_litre}")
-
-    if trim and engine_litre:
-        search_layers.append(f"{make} {base_model} {trim} {engine_litre}")
 
     cache_key = f"sold_cache:{make}:{model}:{year}:{mileage}:{engine_litre}"
     cached = redis_client.get(cache_key)

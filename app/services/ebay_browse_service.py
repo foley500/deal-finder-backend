@@ -83,7 +83,7 @@ def search_ebay_browse(
     listings = []
 
     banned_words = [
-        "breaking", "spares", "repair", "parts", "engine",
+        "breaking", "spares", "repair", "parts",
         "gearbox", "bumper", "door", "mirror", "alloy",
         "wheel", "tyre", "tire"
     ]
