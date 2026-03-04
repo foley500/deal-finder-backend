@@ -111,31 +111,128 @@ def get_mot_data(registration: str):
 # PARSE RESPONSE (FIXED)
 # ==========================================
 
+from datetime import datetime
+
+
 def parse_mot_trade_response(data):
 
-    # 🔥 This endpoint returns a dict, NOT a list
     if not data or not isinstance(data, dict):
         return build_empty_response()
 
     mot_tests = data.get("motTests", [])
 
-    fail_count = 0
-    advisory_count = 0
+    # --------------------------------------
+    # VEHICLE AGE CALCULATION
+    # --------------------------------------
+
+    first_used_date = data.get("firstUsedDate")
+    vehicle_year = None
+
+    if first_used_date:
+        try:
+            vehicle_year = int(first_used_date.split("-")[0])
+        except:
+            pass
+
+    current_year = datetime.utcnow().year
+    vehicle_age = current_year - vehicle_year if vehicle_year else 10
+
+    # --------------------------------------
+    # TIME-WEIGHTED MOT ANALYSIS
+    # --------------------------------------
+
+    recent_window_years = 3
+    medium_window_years = 6
+
+    recent_fails = 0
+    recent_advisories = 0
+
+    medium_fails = 0
+    medium_advisories = 0
 
     for test in mot_tests:
-        if test.get("testResult") == "FAILED":
-            fail_count += 1
 
-        # NEW API uses "defects" not rfrAndComments
-        for defect in test.get("defects", []):
-            if defect.get("type") == "ADVISORY":
-                advisory_count += 1
+        test_date = test.get("completedDate")
+        if not test_date:
+            continue
+
+        try:
+            test_year = int(test_date.split("-")[0])
+        except:
+            continue
+
+        years_ago = current_year - test_year
+
+        # Count fails
+        is_failed = test.get("testResult") == "FAILED"
+
+        advisory_count_this_test = sum(
+            1 for defect in test.get("defects", [])
+            if defect.get("type") == "ADVISORY"
+        )
+
+        # RECENT (0–3 years) – full weight
+        if years_ago <= recent_window_years:
+            if is_failed:
+                recent_fails += 1
+            recent_advisories += advisory_count_this_test
+
+        # MEDIUM (3–6 years) – half weight
+        elif years_ago <= medium_window_years:
+            if is_failed:
+                medium_fails += 1
+            medium_advisories += advisory_count_this_test
+
+        # Older than 6 years → ignored completely
+
+    # --------------------------------------
+    # PROFESSIONAL RISK WEIGHTING
+    # --------------------------------------
+
+    # Fails matter more than advisories
+    fail_penalty = (recent_fails * 200) + (medium_fails * 100)
+
+    # Advisories diminish quickly
+    advisory_penalty = (recent_advisories * 15) + (medium_advisories * 5)
+
+    # Cap advisory stacking
+    advisory_penalty = min(advisory_penalty, 700)
+
+    raw_penalty = fail_penalty + advisory_penalty
+
+    # --------------------------------------
+    # AGE SCALING
+    # --------------------------------------
+
+    # Older cars expected to have wear
+    # 0–5 yrs → full weight
+    # 6–10 yrs → 85%
+    # 11–15 yrs → 70%
+    # 16+ yrs → 55%
+
+    if vehicle_age <= 5:
+        age_factor = 1.0
+    elif vehicle_age <= 10:
+        age_factor = 0.85
+    elif vehicle_age <= 15:
+        age_factor = 0.7
+    else:
+        age_factor = 0.55
+
+    adjusted_penalty = raw_penalty * age_factor
+
+    # --------------------------------------
+    # SAFETY CAP
+    # --------------------------------------
+
+    # Absolute cap so MOT never destroys valuation
+    final_penalty = min(adjusted_penalty, 2500)
 
     return {
         "mot_summary": {
-            "fail_count": fail_count,
-            "advisory_count": advisory_count,
-            "mot_penalty": fail_count * 150 + advisory_count * 25,
+            "fail_count": recent_fails + medium_fails,
+            "advisory_count": recent_advisories + medium_advisories,
+            "mot_penalty": round(final_penalty, 2),
         },
         "mot_full_data": mot_tests,
         "vehicle_data": {
