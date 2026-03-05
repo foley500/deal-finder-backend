@@ -17,7 +17,7 @@ REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 1800
-MAX_DETAIL_EXPANSIONS = 100
+MAX_DETAIL_EXPANSIONS = 25
 MIN_SAMPLE_SIZE = 1
 
 
@@ -129,14 +129,33 @@ def run_filter_layer(
 
     for summary in summaries:
 
-        if expansions >= MAX_DETAIL_EXPANSIONS:
-            break
-
         title = summary.get("title", "")
         item_id = summary.get("itemId")
 
         if not item_id:
             continue
+
+        # -----------------------------
+        # 1️⃣ FAST TITLE FILTER FIRST
+        # -----------------------------
+        listing_year = extract_year_from_title(title)
+        listing_mileage = extract_mileage_from_text(title)
+
+        if listing_year is None:
+            continue
+
+        if abs(listing_year - target_year) > year_tolerance:
+            continue
+
+        if listing_mileage is not None:
+            if abs(listing_mileage - target_mileage) > mileage_tolerance:
+                continue
+
+        # -----------------------------
+        # 2️⃣ ONLY NOW EXPAND DETAIL
+        # -----------------------------
+        if expansions >= MAX_DETAIL_EXPANSIONS:
+            break
 
         detail = get_item_detail(item_id)
         expansions += 1
@@ -144,70 +163,14 @@ def run_filter_layer(
         if not detail:
             continue
 
-        listing_year = None
-        listing_mileage = None
-
-        # -----------------------------
-        # 1️⃣ Try aspects
-        # -----------------------------
-        for aspect in detail.get("localizedAspects", []):
-            name = aspect.get("name", "").lower()
-            value = aspect.get("value", [])
-            if not value:
-                continue
-
-            val = str(value[0]).strip()
-
-            if name in ["year", "model_year", "registration_year"]:
-                match = re.search(r"(19\d{2}|20\d{2})", val)
-                if match:
-                    listing_year = int(match.group(1))
-
-            if name in ["mileage", "miles"]:
-                try:
-                    listing_mileage = int(val.replace(",", ""))
-                except:
-                    pass
-               
-
-        # -----------------------------
-        # 2️⃣ Fallback: title
-        # -----------------------------
-        if listing_year is None:
-            listing_year = extract_year_from_title(title)
-
-        if listing_mileage is None:
-            listing_mileage = extract_mileage_from_text(title)
-
-        # -----------------------------
-        # 3️⃣ Fallback: description
-        # -----------------------------
+        # If mileage missing from title, try description
         if listing_mileage is None:
             description = detail.get("description", "")
             listing_mileage = extract_mileage_from_text(description)
 
-        print(
-            "DEBUG SOLD:",
-            "Year:", listing_year,
-            "Mileage:", listing_mileage,
-            "TargetYear:", target_year,
-            "TargetMileage:", target_mileage,
-            "Title:", title[:60]
-        )
-
-        # -----------------------------
-        # HARD REQUIREMENTS
-        # -----------------------------
-        if listing_year is None:
-            continue
-
-        if abs(listing_year - target_year) > year_tolerance:
-            continue
-
-        # Mileage optional but preferred
-        if listing_mileage is not None:
-            if abs(listing_mileage - target_mileage) > mileage_tolerance:
-                continue
+            if listing_mileage is not None:
+                if abs(listing_mileage - target_mileage) > mileage_tolerance:
+                    continue
 
         price_obj = summary.get("price")
         if not price_obj:
@@ -220,7 +183,6 @@ def run_filter_layer(
 
     prices = sorted(prices)
 
-    # Remove extreme 10% outliers
     cut = int(len(prices) * 0.1)
     if cut > 0:
         prices = prices[cut:-cut]
