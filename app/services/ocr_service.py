@@ -122,7 +122,9 @@ def preprocess_variants(plate_crop):
 # ===============================
 # MAIN ENTRY
 # ===============================
+
 def extract_plate_from_images(image_urls: list[str]):
+    print("🔎 Starting OCR for listing with", len(image_urls), "images")
 
     if not image_urls:
         return None
@@ -217,7 +219,6 @@ def extract_plate_from_images(image_urls: list[str]):
             if results is not None:
                 del results
             gc.collect()
-            continue
 
     print("❌ No valid plate found across listing images")
     return None
