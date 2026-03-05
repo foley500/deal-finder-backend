@@ -4,7 +4,8 @@ import redis
 import json
 import requests
 import re
-
+import time
+from app.services.ebay_rate_limiter import throttle_ebay
 from app.services.ebay_browse_service import (
     get_ebay_access_token,
     get_item_detail
@@ -16,7 +17,7 @@ REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 1800
-MAX_DETAIL_EXPANSIONS = 70
+MAX_DETAIL_EXPANSIONS = 50
 MIN_SAMPLE_SIZE = 3
 
 
@@ -80,13 +81,19 @@ def get_sold_listings(query: str, limit: int = 100):
         "filter": "soldItems:true,conditions:{USED}"
     }
 
+    throttle_ebay()
     response = requests.get(SEARCH_URL, headers=headers, params=params)
 
+    if response.status_code == 429:
+        print("Sold search rate limited - sleeping 5s")
+        time.sleep(5)
+        return []
+
     if response.status_code != 200:
+        time.sleep(1)
         return []
 
     return response.json().get("itemSummaries", [])
-
 
 # ---------------------------------------------------
 # CORE FILTER ENGINE
@@ -258,8 +265,3 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
             return result
 
     return None
-
-    if result:
-        redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
-
-    return result

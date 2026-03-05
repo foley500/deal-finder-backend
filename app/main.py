@@ -400,7 +400,6 @@ def test_ebay_scan():
 def run_market_scan(dealer_id: int):
 
     scan_sniper.delay(dealer_id)
-    scan_value_sweep.delay(dealer_id)
 
     return RedirectResponse(url="/", status_code=303)
 

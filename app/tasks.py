@@ -1,5 +1,6 @@
 import os
 import redis
+import time
 from app.celery_app import celery
 from app.database import SessionLocal
 from app.models import Dealer, DealerSettings, ScanRun
@@ -97,6 +98,7 @@ def scan_sniper(dealer_id: int):
 @celery.task
 def scan_value_sweep(dealer_id: int):
 
+
     return run_scan(
         dealer_id=dealer_id,
         sort="newlyListed",
@@ -159,6 +161,7 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
 
             if deep_sweep:
                 for page in range(0, 120, listings_to_pull):
+
                     page_items = source.search(
                         keywords="cars",
                         entries=listings_to_pull,
@@ -170,6 +173,7 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
                         offset=page
                     )
                     items.extend(page_items)
+
             else:
                 items = source.search(
                     keywords="cars",

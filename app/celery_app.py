@@ -1,5 +1,6 @@
 import os
 from celery import Celery
+from datetime import timedelta
 
 BROKER_URL = os.getenv("CELERY_BROKER_URL")
 RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND")
@@ -24,15 +25,16 @@ celery.conf.update(
 celery.conf.beat_schedule = {
     "sniper-scan-every-10-minutes": {
         "task": "app.tasks.scan_sniper",
-        "schedule": 600.0,
-        "args": (1,)
+        "schedule": timedelta(minutes=10),
+        "args": (1,),
     },
 
     "value-sweep-every-30-minutes": {
         "task": "app.tasks.scan_value_sweep",
-        "schedule": 1800.0,
-        "args": (1,)
-    }
+        "schedule": timedelta(minutes=30),
+        "args": (1,),
+        "options": {"expires": 1800},
+    },
 }
 
 import app.tasks

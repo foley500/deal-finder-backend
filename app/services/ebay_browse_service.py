@@ -2,6 +2,7 @@ import os
 import requests
 import base64
 import time
+from app.services.ebay_rate_limiter import throttle_ebay
 
 EBAY_CLIENT_ID = os.getenv("EBAY_CLIENT_ID")
 EBAY_CLIENT_SECRET = os.getenv("EBAY_CLIENT_SECRET")
@@ -76,6 +77,7 @@ def search_ebay_browse(
 
     for attempt in range(2):  # retry once if rate limited
 
+        throttle_ebay()
         response = requests.get(SEARCH_URL, headers=headers, params=params)
 
         if response.status_code == 429:
@@ -88,7 +90,6 @@ def search_ebay_browse(
             time.sleep(1)
             return []
 
-        time.sleep(0.35)  # global throttle
         break
     else:
         return []
@@ -137,6 +138,7 @@ def get_item_detail(item_id):
         "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
     }
 
+    throttle_ebay()
     response = requests.get(f"{ITEM_URL}{item_id}", headers=headers)
 
     if response.status_code == 429:
@@ -148,6 +150,5 @@ def get_item_detail(item_id):
         print("❌ Item detail error:", response.text)
         time.sleep(1)
         return []
-    time.sleep(0.4)
 
     return response.json()
