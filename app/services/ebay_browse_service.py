@@ -139,7 +139,10 @@ def get_item_detail(item_id):
     }
 
     throttle_ebay()
-    response = requests.get(f"{ITEM_URL}{item_id}", headers=headers)
+    response = requests.get(
+    f"{ITEM_URL}{item_id}?fieldgroups=PRODUCT,EXTENDED",
+    headers=headers
+    )
 
     if response.status_code == 429:
         print("Rate limited - sleeping 5s")

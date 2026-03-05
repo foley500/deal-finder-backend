@@ -17,8 +17,8 @@ REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 1800
-MAX_DETAIL_EXPANSIONS = 50
-MIN_SAMPLE_SIZE = 3
+MAX_DETAIL_EXPANSIONS = 100
+MIN_SAMPLE_SIZE = 1
 
 
 # ---------------------------------------------------
@@ -30,9 +30,25 @@ def extract_year_from_title(title: str):
     return int(match.group(1)) if match else None
 
 
-def extract_mileage_from_title(title: str):
-    match = re.search(r"(\d{2,3},?\d{3})\s?miles?", title.lower())
-    return int(match.group(1).replace(",", "")) if match else None
+def extract_mileage_from_text(text: str):
+    if not text:
+        return None
+
+    text = text.lower().replace(",", "").replace("miles", "").replace("mi", "")
+
+    # 87000
+    match = re.search(r"\b(\d{4,6})\b", text)
+    if match:
+        val = int(match.group(1))
+        if 1000 < val < 300000:
+            return val
+
+    # 87k / 100k
+    match = re.search(r"\b(\d{2,3})\s?k\b", text)
+    if match:
+        return int(match.group(1)) * 1000
+
+    return None
 
 
 def normalise_engine(engine_size):
@@ -159,14 +175,23 @@ def run_filter_layer(
             listing_year = extract_year_from_title(title)
 
         if listing_mileage is None:
-            listing_mileage = extract_mileage_from_title(title)
+            listing_mileage = extract_mileage_from_text(title)
 
         # -----------------------------
         # 3️⃣ Fallback: description
         # -----------------------------
         if listing_mileage is None:
             description = detail.get("description", "")
-            listing_mileage = extract_mileage_from_title(description)
+            listing_mileage = extract_mileage_from_text(description)
+
+        print(
+            "DEBUG SOLD:",
+            "Year:", listing_year,
+            "Mileage:", listing_mileage,
+            "TargetYear:", target_year,
+            "TargetMileage:", target_mileage,
+            "Title:", title[:60]
+        )
 
         # -----------------------------
         # HARD REQUIREMENTS
@@ -213,20 +238,150 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
     if not make or not model or not year or not mileage:
         return None
 
-    base_model, _ = split_model_components(model)
+    base_model, trim = split_model_components(model)
+    engine_litre = normalise_engine(engine_size) if engine_size else None
 
     cache_key = f"sold_cache:{make}:{model}:{year}:{mileage}"
     cached = redis_client.get(cache_key)
     if cached:
         return json.loads(cached)
 
+    # ==========================================
+    # STAGED + YEAR-SPREAD SEARCH
+    # ==========================================
+
+    search_queries = []
+    year_range = range(year - 2, year + 3)  # 2017–2021
+
+    # Stage 1 — Make Model Year Spread
+    for y in year_range:
+        search_queries.append(f"{make} {base_model} {y}")
+
+    # Stage 2 — Add Trim
+    if trim:
+        search_queries.append(f"{make} {base_model} {year} {trim}")
+
+    # Stage 3 — Add Engine
+    if trim and engine_litre:
+        search_queries.append(f"{make} {base_model} {year} {trim} {engine_litre}")
+
+    all_summaries = []
+    seen_ids = set()
+
+    for query in search_queries:
+
+        print("SEARCHING:", query)
+
+        results = get_sold_listings(query)
+
+        for item in results:
+            item_id = item.get("itemId")
+            if item_id and item_id not in seen_ids:
+                seen_ids.add(item_id)
+                all_summaries.append(item)
+
+    if not all_summaries:
+        return None
+
+    # ==========================================
+    # LAYER 1 — STRICT
+    # ±2 years / ±15k miles
+    # ==========================================
+
+    result = run_filter_layer(
+        all_summaries,
+        target_year=year,
+        target_mileage=mileage,
+        year_tolerance=2,
+        mileage_tolerance=15000,
+    )
+
+    if result:
+        result["source"] = "layer_1_strict"
+        redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
+        return result
+
+    # ==========================================
+    # LAYER 2 — Relax Mileage
+    # ±2 years / ±25k miles
+    # ==========================================
+
+    result = run_filter_layer(
+        all_summaries,
+        target_year=year,
+        target_mileage=mileage,
+        year_tolerance=2,
+        mileage_tolerance=25000,
+    )
+
+    if result:
+        result["source"] = "layer_2_relaxed_mileage"
+        redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
+        return result
+
+    # ==========================================
+    # LAYER 3 — Relax Year
+    # ±3 years / ±25k miles
+    # ==========================================
+
+    result = run_filter_layer(
+        all_summaries,
+        target_year=year,
+        target_mileage=mileage,
+        year_tolerance=3,
+        mileage_tolerance=25000,
+    )
+
+    if result:
+        result["source"] = "layer_3_relaxed_year"
+        redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
+        return result
+
+    return None
+
     # -----------------------------
     # SEARCH
     # -----------------------------
-    query = f"{make} {base_model}"
-    summaries = get_sold_listings(query)
+      # -----------------------------
+# STAGED SEARCH
+# -----------------------------
 
-    if not summaries:
+base_model, trim = split_model_components(model)
+engine_litre = normalise_engine(engine_size) if engine_size else None
+
+search_queries = []
+
+# Stage 1
+search_queries.append(f"{make} {base_model} {year}")
+
+# Stage 2
+if trim:
+    search_queries.append(f"{make} {base_model} {year} {trim}")
+
+# Stage 3
+if trim and engine_litre:
+    search_queries.append(f"{make} {base_model} {year} {trim} {engine_litre}")
+
+all_summaries = []
+seen_ids = set()
+
+for query in search_queries:
+
+    print("SEARCHING:", query)
+
+    results = get_sold_listings(query)
+
+    for item in results:
+        item_id = item.get("itemId")
+        if item_id and item_id not in seen_ids:
+            seen_ids.add(item_id)
+            all_summaries.append(item)
+
+if not all_summaries:
+    return None
+
+
+    if not all_summaries:
         return None
 
     # -----------------------------
@@ -235,7 +390,7 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
     # ±15k miles
     # -----------------------------
     result = run_filter_layer(
-        summaries,
+        all_summaries,
         target_year=year,
         target_mileage=mileage,
         year_tolerance=2,
