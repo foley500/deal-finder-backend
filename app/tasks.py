@@ -124,7 +124,7 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
         print("⚠️ Scan already running — skipping")
         return {"skipped": True}
 
-    redis_client.set(lock_key, "1", ex=540)
+    redis_client.set(lock_key, "1", ex=1800)
 
     db = SessionLocal()
 

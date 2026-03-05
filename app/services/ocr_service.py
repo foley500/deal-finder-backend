@@ -6,6 +6,9 @@ import requests
 from PIL import Image
 from ultralytics import YOLO
 import easyocr
+import gc 
+
+gc.collect()
 
 
 # ===============================
@@ -126,15 +129,22 @@ def extract_plate_from_images(image_urls: list[str]):
 
     for image_url in image_urls[:MAX_IMAGES_PER_LISTING]:
 
+        img_np = None
+        image = None
+        results = None
+
         try:
             response = requests.get(image_url, timeout=10)
             if response.status_code != 200:
                 continue
 
             image = Image.open(io.BytesIO(response.content)).convert("RGB")
+
+            image.thumbnail((1280, 1280))
+
             img_np = np.array(image)
 
-            results = model(img_np)
+            results = model(img_np, imgsz=640)
 
             if not results or len(results[0].boxes) == 0:
                 continue
@@ -198,6 +208,15 @@ def extract_plate_from_images(image_urls: list[str]):
 
         except Exception as e:
             print("OCR exception:", e)
+
+        finally:
+            if img_np is not None:
+                del img_np
+            if image is not None:
+                del image
+            if results is not None:
+                del results
+            gc.collect()
             continue
 
     print("❌ No valid plate found across listing images")
