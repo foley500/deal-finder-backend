@@ -235,8 +235,15 @@ def run_filter_layer(
 
 def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
 
-    if not make or not model or not year or not mileage:
+    if not make or not model:
         return None
+
+    if not year:
+        return None
+
+# If mileage missing, assume neutral midpoint
+    if not mileage:
+        mileage = 100000
 
     base_model, trim = split_model_components(model)
     engine_litre = normalise_engine(engine_size) if engine_size else None

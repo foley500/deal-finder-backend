@@ -278,8 +278,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             except Exception as e:
                 print("MOT processing error:", e)
 
+        # 🔥 DO NOT HARD FAIL IF DVSA FAILS
         if not vehicle_data:
-            return None
+            print("⚠️ DVSA lookup failed — continuing with listing data")
 
         # ---------------------------------
         # Final Field Resolution (DVSA First)
@@ -291,6 +292,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 year = int(vehicle_data["first_used_date"][:4])
             except Exception:
                 pass
+
+        if not year:
+            year = extract_year_from_text(description)
 
         mileage = listing_mileage
         if mot_full_data:
@@ -305,6 +309,12 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                     mileage = mot_mileage
             except Exception:
                 pass
+
+        if not mileage:
+            mileage = extract_mileage_from_text(description)
+        
+        if not mileage:
+            mileage = 100000
 
         make = vehicle_data.get("make") or listing_make
         model = vehicle_data.get("model") or listing_model
@@ -347,9 +357,11 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         confidence = assign_confidence(score)
 
         if settings.min_profit is not None and profit < settings.min_profit:
+            print("❌ Filtered by profit:", profit)
             return None
 
         if settings.min_score is not None and score < settings.min_score:
+            print("❌ Filtered by score:", score)
             return None
 
         deal = Deal(
