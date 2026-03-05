@@ -154,19 +154,19 @@ def run_filter_layer(
             if not value:
                 continue
 
-            val = str(value[0]).lower()
+            val = str(value[0]).strip()
 
-            if "year" in name:
-                try:
-                    listing_year = int(val)
-                except:
-                    pass
+            if name in ["year", "model_year", "registration_year"]:
+                match = re.search(r"(19\d{2}|20\d{2})", val)
+                if match:
+                    listing_year = int(match.group(1))
 
-            if "mileage" in name:
+            if name in ["mileage", "miles"]:
                 try:
                     listing_mileage = int(val.replace(",", ""))
                 except:
                     pass
+               
 
         # -----------------------------
         # 2️⃣ Fallback: title
@@ -199,14 +199,13 @@ def run_filter_layer(
         if listing_year is None:
             continue
 
-        if listing_mileage is None:
-            continue
-
         if abs(listing_year - target_year) > year_tolerance:
             continue
 
-        if abs(listing_mileage - target_mileage) > mileage_tolerance:
-            continue
+        # Mileage optional but preferred
+        if listing_mileage is not None:
+            if abs(listing_mileage - target_mileage) > mileage_tolerance:
+                continue
 
         price_obj = summary.get("price")
         if not price_obj:
