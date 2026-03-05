@@ -18,7 +18,7 @@ redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 1800
 MAX_DETAIL_EXPANSIONS = 25
-MIN_SAMPLE_SIZE = 1
+MIN_SAMPLE_SIZE = 5
 
 
 # ---------------------------------------------------
