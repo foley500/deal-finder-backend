@@ -38,4 +38,3 @@ celery.conf.beat_schedule = {
 }
 
 import app.tasks
-

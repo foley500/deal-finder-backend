@@ -154,4 +154,5 @@ def get_item_detail(item_id):
         time.sleep(1)
         return []
 
+
     return response.json()
