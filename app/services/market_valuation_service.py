@@ -34,19 +34,21 @@ def extract_mileage_from_text(text: str):
     if not text:
         return None
 
-    text = text.lower().replace(",", "").replace("miles", "").replace("mi", "")
+    text = text.lower().replace(",", "")
 
-    # 87000
-    match = re.search(r"\b(\d{4,6})\b", text)
+    # Match 37000 miles / 37000 mi
+    match = re.search(r"(\d{4,6})\s*(miles|mile|mi)\b", text)
     if match:
         val = int(match.group(1))
         if 1000 < val < 300000:
             return val
 
-    # 87k / 100k
-    match = re.search(r"\b(\d{2,3})\s?k\b", text)
+    # Match 37k / 100k
+    match = re.search(r"(\d{2,3})\s?k\b", text)
     if match:
-        return int(match.group(1)) * 1000
+        val = int(match.group(1)) * 1000
+        if 1000 < val < 300000:
+            return val
 
     return None
 
