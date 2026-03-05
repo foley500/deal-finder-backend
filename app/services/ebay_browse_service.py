@@ -140,7 +140,7 @@ def get_item_detail(item_id):
 
     throttle_ebay()
     response = requests.get(
-    f"{ITEM_URL}{item_id}?fieldgroups=PRODUCT,EXTENDED",
+    f"{ITEM_URL}{item_id}?fieldgroups=PRODUCT",
     headers=headers
     )
 
