@@ -202,7 +202,28 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
     if not mileage:
         mileage = 100000
 
-    cache_key = f"sold_cache:{make}:{model}:{year}:{mileage}"
+    # ---------------------------------
+    # NORMALISE DVSA DATA
+    # ---------------------------------
+
+    make = str(make).strip().title()
+    model = str(model).strip().title()
+
+    model_words = model.split()
+    base_model = model_words[0]
+
+    trim = " ".join(model_words[1:]) if len(model_words) > 1 else None
+
+    engine_litre = None
+    if engine_size:
+        try:
+            cleaned = re.sub(r"[^\d.]", "", str(engine_size))
+            size = float(cleaned)
+            engine_litre = round(size / 1000, 1) if size > 10 else round(size, 1)
+        except:
+            pass
+
+    cache_key = f"sold_cache:{make}:{base_model}:{year}:{mileage}"
     cached = redis_client.get(cache_key)
     if cached:
         return json.loads(cached)
@@ -210,9 +231,25 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
     search_queries = []
     year_range = range(year - 2, year + 3)
 
-    # Use FULL model string (fixes BMW 5 issue)
+    # ---------------------------------
+    # LAYER 1 — Base Model Spread
+    # ---------------------------------
     for y in year_range:
-        search_queries.append(f"{make} {model} {y}")
+        search_queries.append(f"{make} {base_model} {y}")
+
+    # ---------------------------------
+    # LAYER 2 — Trim Spread
+    # ---------------------------------
+    if trim:
+        for y in year_range:
+            search_queries.append(f"{make} {base_model} {trim} {y}")
+
+    # ---------------------------------
+    # LAYER 3 — Engine Spread
+    # ---------------------------------
+    if engine_litre:
+        for y in year_range:
+            search_queries.append(f"{make} {base_model} {engine_litre} {y}")
 
     all_summaries = []
     seen_ids = set()
@@ -228,7 +265,11 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
     if not all_summaries:
         return None
 
-    # Layer 1
+    # ---------------------------------
+    # FILTER LAYERS
+    # ---------------------------------
+
+    # Strict: ±2 years / ±15k
     result = run_filter_layer(
         all_summaries,
         target_year=year,
@@ -242,7 +283,7 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
         redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
         return result
 
-    # Layer 2
+    # Relax mileage
     result = run_filter_layer(
         all_summaries,
         target_year=year,
@@ -256,13 +297,13 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
         redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
         return result
 
-    # Layer 3
+    # Relax year
     result = run_filter_layer(
         all_summaries,
         target_year=year,
         target_mileage=mileage,
         year_tolerance=3,
-        mileage_tolerance=25000,
+        mileage_tolerance=30000,
     )
 
     if result:
