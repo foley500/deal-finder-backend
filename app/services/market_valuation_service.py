@@ -129,6 +129,10 @@ def run_filter_layer(
 
     for summary in summaries:
 
+        # Stop if we already have enough samples
+        if len(prices) >= MIN_SAMPLE_SIZE:
+            break
+
         title = summary.get("title", "")
         item_id = summary.get("itemId")
 
@@ -136,23 +140,20 @@ def run_filter_layer(
             continue
 
         # -----------------------------
-        # 1️⃣ FAST TITLE FILTER FIRST
+        # 1️⃣ SOFT TITLE SCREEN
         # -----------------------------
-        listing_year = extract_year_from_title(title)
-        listing_mileage = extract_mileage_from_text(title)
+        title_year = extract_year_from_title(title)
 
-        if listing_year is None:
-            continue
-
-        if abs(listing_year - target_year) > year_tolerance:
-            continue
-
-        if listing_mileage is not None:
-            if abs(listing_mileage - target_mileage) > mileage_tolerance:
+        # If title has year and it's wildly wrong, skip early
+        if title_year is not None:
+            if abs(title_year - target_year) > (year_tolerance + 2):
                 continue
 
+        # Do NOT reject based on mileage yet
+        # Title mileage is unreliable
+
         # -----------------------------
-        # 2️⃣ ONLY NOW EXPAND DETAIL
+        # 2️⃣ EXPAND ONLY LIKELY MATCHES
         # -----------------------------
         if expansions >= MAX_DETAIL_EXPANSIONS:
             break
@@ -163,14 +164,53 @@ def run_filter_layer(
         if not detail:
             continue
 
-        # If mileage missing from title, try description
+        listing_year = None
+        listing_mileage = None
+
+        # ---- Try structured aspects first ----
+        for aspect in detail.get("localizedAspects", []):
+            name = aspect.get("name", "").lower()
+            value = aspect.get("value", [])
+            if not value:
+                continue
+
+            val = str(value[0]).strip()
+
+            if name in ["year", "model_year", "registration_year"]:
+                match = re.search(r"(19\d{2}|20\d{2})", val)
+                if match:
+                    listing_year = int(match.group(1))
+
+            if name in ["mileage", "miles"]:
+                try:
+                    listing_mileage = int(val.replace(",", ""))
+                except:
+                    pass
+
+        # ---- Fallback to title ----
+        if listing_year is None:
+            listing_year = extract_year_from_title(title)
+
+        if listing_mileage is None:
+            listing_mileage = extract_mileage_from_text(title)
+
+        # ---- Fallback to description ----
         if listing_mileage is None:
             description = detail.get("description", "")
             listing_mileage = extract_mileage_from_text(description)
 
-            if listing_mileage is not None:
-                if abs(listing_mileage - target_mileage) > mileage_tolerance:
-                    continue
+        # -----------------------------
+        # 3️⃣ STRICT VALIDATION
+        # -----------------------------
+        if listing_year is None:
+            continue
+
+        if abs(listing_year - target_year) > year_tolerance:
+            continue
+
+        if listing_mileage is not None:
+            if abs(listing_mileage - target_mileage) > mileage_tolerance:
+                continue
 
         price_obj = summary.get("price")
         if not price_obj:
@@ -190,6 +230,7 @@ def run_filter_layer(
     return {
         "market_price": round(statistics.median(prices), 2),
         "sample_size": len(prices),
+        "expansions_used": expansions,
     }
 
 # --------------------------------------------------
