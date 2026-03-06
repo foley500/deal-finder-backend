@@ -50,6 +50,33 @@ def extract_mileage_from_text(text: str):
 
     return None
 
+def normalise_base_model(make: str, base_model: str) -> str:
+    """
+    Expands common DVSA shorthand model names into what sellers
+    typically write on eBay.
+    """
+
+    make_lower = make.lower()
+    model_lower = base_model.lower()
+
+    # -----------------------------
+    # BMW (3 → 3 Series)
+    # -----------------------------
+    if make_lower == "bmw" and model_lower.isdigit():
+        return f"{base_model} Series"
+
+    # -----------------------------
+    # Mercedes (C Class → C-Class)
+    # -----------------------------
+    if make_lower in ["mercedes", "mercedes-benz"]:
+        if "class" in model_lower and "-" not in model_lower:
+            return model_lower.replace("class", "-class").title()
+
+    # -----------------------------
+    # Generic cleanup
+    # -----------------------------
+    return base_model
+
 
 # ---------------------------------------------------
 # EBAY SOLD SEARCH
@@ -101,9 +128,16 @@ def run_filter_layer(
     prices = []
     expansions = 0
 
+    rejected_no_year = 0
+    rejected_year = 0
+    rejected_mileage = 0
+    rejected_no_price = 0
+    accepted = 0
+
     for summary in summaries:
 
         if expansions >= MAX_DETAIL_EXPANSIONS:
+            print("⚠️ Hit MAX_DETAIL_EXPANSIONS limit")
             break
 
         title = summary.get("title", "")
@@ -112,9 +146,9 @@ def run_filter_layer(
         if not item_id:
             continue
 
-        # Soft year screen (cheap filter)
         title_year = extract_year_from_title(title)
         if title_year is not None and abs(title_year - target_year) > 4:
+            rejected_year += 1
             continue
 
         detail = get_item_detail(item_id)
@@ -126,7 +160,6 @@ def run_filter_layer(
         listing_year = None
         listing_mileage = None
 
-        # Structured aspects first
         for aspect in detail.get("localizedAspects", []):
             name = aspect.get("name", "").lower()
             value = aspect.get("value", [])
@@ -146,7 +179,6 @@ def run_filter_layer(
                 except:
                     pass
 
-        # Fallbacks
         if listing_year is None:
             listing_year = extract_year_from_title(title)
 
@@ -157,24 +189,37 @@ def run_filter_layer(
             description = detail.get("description", "")
             listing_mileage = extract_mileage_from_text(description)
 
-        # Strict validation
         if listing_year is None:
+            rejected_no_year += 1
             continue
 
         if abs(listing_year - target_year) > year_tolerance:
+            rejected_year += 1
             continue
 
         if listing_mileage is not None:
             if abs(listing_mileage - target_mileage) > mileage_tolerance:
+                rejected_mileage += 1
                 continue
 
         price_obj = summary.get("price")
         if not price_obj:
+            rejected_no_price += 1
             continue
 
         prices.append(float(price_obj["value"]))
+        accepted += 1
+
+    print("📊 FILTER DEBUG:")
+    print("   Expansions used:", expansions)
+    print("   Accepted:", accepted)
+    print("   Rejected (no year):", rejected_no_year)
+    print("   Rejected (year tolerance):", rejected_year)
+    print("   Rejected (mileage tolerance):", rejected_mileage)
+    print("   Rejected (no price):", rejected_no_price)
 
     if len(prices) < MIN_SAMPLE_SIZE:
+        print("❌ Failed — only", len(prices), "samples (min required:", MIN_SAMPLE_SIZE, ")")
         return None
 
     prices = sorted(prices)
@@ -194,7 +239,15 @@ def run_filter_layer(
 # PUBLIC ENTRY
 # --------------------------------------------------
 
-def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
+def get_market_price_from_sold(
+    make,
+    model,
+    year,
+    mileage,
+    engine_size=None,
+    listing_title=None,
+    listing_aspects=None,
+):
 
     if not make or not model or not year:
         return None
@@ -211,6 +264,8 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
 
     model_words = model.split()
     base_model = model_words[0]
+
+    base_model = normalise_base_model(make, base_model)
 
     trim = " ".join(model_words[1:]) if len(model_words) > 1 else None
 
@@ -230,6 +285,73 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
 
     search_queries = []
     year_range = range(year - 2, year + 3)
+
+     # ---------------------------------
+    # FALLBACK TRIM + ENGINE FROM LISTING
+    # ---------------------------------
+
+    title_lower = listing_title.lower() if listing_title else ""
+
+    # If DVSA trim missing, attempt from listing title
+    if not trim and listing_title:
+        title_words = listing_title.title().split()
+        if base_model in title_words:
+            idx = title_words.index(base_model)
+            possible_trim = title_words[idx+1:idx+3]
+            if possible_trim:
+                trim = " ".join(possible_trim)
+
+    # Extract engine from title if DVSA missing
+    if not engine_litre and listing_title:
+
+        title_lower = listing_title.lower()
+
+    # Pattern 1 — 2.0 / 1.6 / 3.0
+        litre_match = re.search(r"\b(\d\.\d)\b", title_lower)
+        if litre_match:
+            try:
+                engine_litre = float(litre_match.group(1))
+            except:
+                pass
+
+    # Pattern 2 — 1998cc / 1998 cc
+        if not engine_litre:
+            cc_match = re.search(r"\b(\d{3,4})\s?cc\b", title_lower)
+            if cc_match:
+                try:
+                    cc = int(cc_match.group(1))
+                    engine_litre = round(cc / 1000, 1)
+                except:
+                    pass
+
+    # Pattern 3 — 320d / 118i / 20d (BMW-style badges)
+        if not engine_litre:
+            badge_match = re.search(r"\b(\d{2,3})([di])\b", title_lower)
+            if badge_match:
+                try:
+                    digits = badge_match.group(1)
+                    if len(digits) == 3:
+                        engine_litre = float(digits[0] + "." + digits[1])
+                    elif len(digits) == 2:
+                        engine_litre = float(digits[0] + "." + digits[1])
+                except:
+                    pass
+
+    # Extract from structured aspects if still missing
+    if listing_aspects:
+
+        if not trim:
+            trim = listing_aspects.get("Derivative") or listing_aspects.get("Model")
+
+        if not engine_litre:
+            aspect_engine = listing_aspects.get("Engine Size")
+            if aspect_engine:
+                try:
+                    cleaned = re.sub(r"[^\d.]", "", str(aspect_engine))
+                    size = float(cleaned)
+                    engine_litre = round(size / 1000, 1) if size > 10 else round(size, 1)
+                except:
+                    pass
 
     # ---------------------------------
     # LAYER 1 — Base Model Spread
@@ -264,6 +386,7 @@ def get_market_price_from_sold(make, model, year, mileage, engine_size=None):
 
     if not all_summaries:
         return None
+
 
     # ---------------------------------
     # FILTER LAYERS
