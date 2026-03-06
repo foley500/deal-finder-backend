@@ -195,10 +195,13 @@ def run_filter_layer(
             continue
 
         if listing_mileage is not None:
-            if abs(listing_mileage - target_mileage) > mileage_tolerance:
-                rejected_mileage += 1
-                continue
+            mileage_diff = abs(listing_mileage - target_mileage)
 
+            # Only strictly enforce tolerance if we already have enough accepted samples
+            if len(prices) >= MIN_SAMPLE_SIZE:
+                if mileage_diff > mileage_tolerance:
+                    rejected_mileage += 1
+                    continue
         price_obj = summary.get("price")
         if not price_obj:
             rejected_no_price += 1
