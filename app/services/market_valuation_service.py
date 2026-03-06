@@ -133,6 +133,8 @@ def run_filter_layer(
     rejected_mileage = 0
     rejected_no_price = 0
     accepted = 0
+    mileage_diffs = []
+    adjustments = []
 
     for summary in summaries:
 
@@ -197,17 +199,38 @@ def run_filter_layer(
             rejected_year += 1
             continue
 
-        if listing_mileage is not None:
-            if abs(listing_mileage - target_mileage) > mileage_tolerance:
-                rejected_mileage += 1
-                continue
-
         price_obj = summary.get("price")
         if not price_obj:
             rejected_no_price += 1
             continue
 
-        prices.append(float(price_obj["value"]))
+        base_price = float(price_obj["value"])
+        adjusted_price = base_price
+
+        if listing_mileage is not None:
+
+            mileage_diff = listing_mileage - target_mileage
+            mileage_diffs.append(mileage_diff)
+
+            # ----------------------------------
+            # Mileage depreciation adjustment
+            # 1.5% per 5,000 miles
+            # ----------------------------------
+
+            blocks = abs(mileage_diff) / 5000
+            depreciation_rate = 0.015  # 1.5% per 5k miles
+
+            mileage_adjustment = base_price * depreciation_rate * blocks
+            adjustments.append(mileage_adjustment)
+
+            if mileage_diff > 0:
+                # Listing has MORE miles → worth LESS
+                adjusted_price = base_price - mileage_adjustment
+            else:
+                # Listing has FEWER miles → worth MORE
+                adjusted_price = base_price + mileage_adjustment
+
+        prices.append(adjusted_price)
         accepted += 1
 
     print("📊 FILTER DEBUG:")
@@ -215,8 +238,14 @@ def run_filter_layer(
     print("   Accepted:", accepted)
     print("   Rejected (no year):", rejected_no_year)
     print("   Rejected (year tolerance):", rejected_year)
-    print("   Rejected (mileage tolerance):", rejected_mileage)
     print("   Rejected (no price):", rejected_no_price)
+
+    if mileage_diffs:
+        print("   Avg mileage diff:", round(statistics.mean(mileage_diffs), 0))
+        print("   Max mileage diff:", round(max(abs(x) for x in mileage_diffs), 0))
+        print("   Avg price adjustment:", round(statistics.mean(adjustments), 2))
+    else:
+        print("   No mileage data available")
 
     if len(prices) < MIN_SAMPLE_SIZE:
         print("❌ Failed — only", len(prices), "samples (min required:", MIN_SAMPLE_SIZE, ")")
