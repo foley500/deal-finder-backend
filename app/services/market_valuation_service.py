@@ -148,11 +148,6 @@ def run_filter_layer(
         if not item_id:
             continue
 
-        title_year = extract_year_from_title(title)
-        if title_year is not None and abs(title_year - target_year) > 4:
-            rejected_year += 1
-            continue
-
         detail = get_item_detail(item_id)
         expansions += 1
 
