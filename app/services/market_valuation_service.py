@@ -18,7 +18,7 @@ redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 1800
 MAX_DETAIL_EXPANSIONS = 25
-MIN_SAMPLE_SIZE = 5
+MIN_SAMPLE_SIZE = 3
 
 
 # ---------------------------------------------------
@@ -194,6 +194,11 @@ def run_filter_layer(
             rejected_year += 1
             continue
 
+        if listing_mileage is not None:
+            if abs(listing_mileage - target_mileage) > mileage_tolerance:
+                rejected_mileage += 1
+                continue
+
         price_obj = summary.get("price")
         if not price_obj:
             rejected_no_price += 1
@@ -212,7 +217,7 @@ def run_filter_layer(
             # 1.5% per 5,000 miles
             # ----------------------------------
 
-            blocks = abs(mileage_diff) / 5000
+            blocks = min(abs(mileage_diff) / 5000, 8)  # cap at 40k miles adjustment
             depreciation_rate = 0.015  # 1.5% per 5k miles
 
             mileage_adjustment = base_price * depreciation_rate * blocks
@@ -233,6 +238,7 @@ def run_filter_layer(
     print("   Accepted:", accepted)
     print("   Rejected (no year):", rejected_no_year)
     print("   Rejected (year tolerance):", rejected_year)
+    print("   Rejected (mileage tolerance):", rejected_mileage)
     print("   Rejected (no price):", rejected_no_price)
 
     if mileage_diffs:
@@ -252,10 +258,20 @@ def run_filter_layer(
     if cut > 0:
         prices = prices[cut:-cut]
 
+    sample_count = len(prices)
+
+    if sample_count >= 10:
+        confidence = "high"
+    elif sample_count >= 5:
+        confidence = "medium"
+    else:
+       confidence = "low"
+
     return {
         "market_price": round(statistics.median(prices), 2),
-        "sample_size": len(prices),
+        "sample_size": sample_count,
         "expansions_used": expansions,
+        "confidence": confidence,
     }
 
 
