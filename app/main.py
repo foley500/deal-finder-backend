@@ -398,9 +398,12 @@ def test_ebay_scan():
 
 @app.post("/dealer/{dealer_id}/scan")
 def run_market_scan(dealer_id: int):
-
     scan_sniper.delay(dealer_id)
+    return RedirectResponse(url="/", status_code=303)
 
+@app.post("/dealer/{dealer_id}/value-sweep")
+def run_value_sweep(dealer_id: int):
+    scan_value_sweep.delay(dealer_id)
     return RedirectResponse(url="/", status_code=303)
 
 @app.get("/create-test-dealer")
