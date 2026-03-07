@@ -212,6 +212,7 @@ def get_market_price_from_sold(
     make, model, year, mileage,
     engine_size=None, listing_title=None, listing_aspects=None,
 ):
+
     if not make or not model or not year:
         return None
 
@@ -288,6 +289,9 @@ def get_market_price_from_sold(
     if engine_litre:
         for y in year_range:
             search_queries.append(f"{make} {base_model} {engine_litre} {y}")
+
+    print(f"🔎 Searching: make={make} base_model={base_model} engine={engine_litre} years={list(year_range)}")
+    print(f"📋 Queries: {search_queries}")
 
     all_summaries = []
     seen_ids = set()

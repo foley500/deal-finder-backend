@@ -335,10 +335,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if valuation_result:
             market_value = valuation_result["market_price"]
         else:
-            market_value = smart_temp_valuation(price, year, mileage)
-
-        if not valuation_result:
-            market_value = max(market_value, price)
+            print("⚠️ No sold data found — skipping listing")
+            return None
 
         valuation_data = {
             "market_price": market_value,

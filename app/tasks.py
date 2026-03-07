@@ -144,7 +144,7 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
             "min_year": settings.min_year,
             "max_year": settings.max_year,
             "max_mileage": settings.max_mileage,
-            "max_price": 4000,
+            "max_price": settings.max_price if settings.max_price else 50000,
             "min_profit": settings.min_profit,
             "min_score": settings.min_score,
         }
