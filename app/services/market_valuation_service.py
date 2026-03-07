@@ -117,17 +117,8 @@ def get_sold_listings(query: str, limit: int = 100):
 # CORE FILTER ENGINE
 # ---------------------------------------------------
 
-def run_filter_layer(
-    summaries,
-    target_year,
-    target_mileage,
-    year_tolerance,
-    mileage_tolerance,
-):
-
+def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mileage_tolerance):
     prices = []
-    expansions = 0
-
     rejected_no_year = 0
     rejected_year = 0
     rejected_mileage = 0
@@ -137,49 +128,10 @@ def run_filter_layer(
     adjustments = []
 
     for summary in summaries:
+        # Read pre-enriched data — NO API calls here
+        listing_year = summary.get("_year")
+        listing_mileage = summary.get("_mileage")
 
-        if expansions >= MAX_DETAIL_EXPANSIONS:
-            print("⚠️ Hit MAX_DETAIL_EXPANSIONS limit")
-            break
-
-        title = summary.get("title", "")
-        item_id = summary.get("itemId")
-
-        if not item_id:
-            continue
-
-        detail = None
-
-        # Extract from title first (cheap)
-        listing_year = extract_year_from_title(title)
-        listing_mileage = extract_mileage_from_text(title)
-
-        # Only expand if we are missing critical data
-        if (listing_year is None or listing_mileage is None) and expansions < MAX_DETAIL_EXPANSIONS:
-            detail = get_item_detail(item_id)
-            expansions += 1
-
-            if detail:
-                for aspect in detail.get("localizedAspects", []):
-                    name = aspect.get("name", "").lower()
-                    value = aspect.get("value", [])
-                    if not value:
-                        continue
-
-                    val = str(value[0]).strip()
-    
-                    if listing_year is None and name in ["year", "model_year", "registration_year"]:
-                        match = re.search(r"(19\d{2}|20\d{2})", val)
-                        if match:
-                            listing_year = int(match.group(1))
-
-                    if listing_mileage is None and name in ["mileage", "miles"]:
-                        try:
-                            listing_mileage = int(val.replace(",", ""))
-                        except:
-                            pass
-
-        # Final fallback checks
         if listing_year is None:
             if accepted >= MIN_SAMPLE_SIZE:
                 rejected_no_year += 1
@@ -189,26 +141,24 @@ def run_filter_layer(
 
         year_diff = abs(listing_year - target_year)
 
-        # Only enforce strict year tolerance AFTER we have enough samples
-        # Hard cap: never allow beyond 3 years
-        # Hard cap
         if year_diff > 3:
             rejected_year += 1
             continue
 
-        # Strict tolerance only enforced after sample pool healthy
-        if len(prices) >= MIN_SAMPLE_SIZE:
-            if year_diff > year_tolerance:
-                rejected_year += 1
-                continue
-        if listing_mileage is not None:
-            mileage_diff = abs(listing_mileage - target_mileage)
+        if len(prices) >= MIN_SAMPLE_SIZE and year_diff > year_tolerance:
+            rejected_year += 1
+            continue
 
-            # Only strictly enforce tolerance if we already have enough accepted samples
-            if len(prices) >= MIN_SAMPLE_SIZE:
-                if mileage_diff > mileage_tolerance:
-                    rejected_mileage += 1
-                    continue
+        mileage_diff = None
+        abs_mileage_diff = None
+        if listing_mileage is not None:
+            mileage_diff = listing_mileage - target_mileage
+            abs_mileage_diff = abs(mileage_diff)
+
+            if len(prices) >= MIN_SAMPLE_SIZE and abs_mileage_diff > mileage_tolerance:
+                rejected_mileage += 1
+                continue
+
         price_obj = summary.get("price")
         if not price_obj:
             rejected_no_price += 1
@@ -217,34 +167,17 @@ def run_filter_layer(
         base_price = float(price_obj["value"])
         adjusted_price = base_price
 
-        if listing_mileage is not None:
-
-            mileage_diff = listing_mileage - target_mileage
+        if mileage_diff is not None:
             mileage_diffs.append(mileage_diff)
-
-            # ----------------------------------
-            # Mileage depreciation adjustment
-            # 1.5% per 5,000 miles
-            # ----------------------------------
-
-            blocks = min(abs(mileage_diff) / 5000, 8)  # cap at 40k miles adjustment
-            depreciation_rate = 0.015  # 1.5% per 5k miles
-
-            mileage_adjustment = base_price * depreciation_rate * blocks
+            blocks = min(abs_mileage_diff / 5000, 8)
+            mileage_adjustment = base_price * 0.015 * blocks
             adjustments.append(mileage_adjustment)
-
-            if mileage_diff > 0:
-                # Listing has MORE miles → worth LESS
-                adjusted_price = base_price - mileage_adjustment
-            else:
-                # Listing has FEWER miles → worth MORE
-                adjusted_price = base_price + mileage_adjustment
+            adjusted_price = base_price - mileage_adjustment if mileage_diff > 0 else base_price + mileage_adjustment
 
         prices.append(adjusted_price)
         accepted += 1
 
     print("📊 FILTER DEBUG:")
-    print("   Expansions used:", expansions)
     print("   Accepted:", accepted)
     print("   Rejected (no year):", rejected_no_year)
     print("   Rejected (year tolerance):", rejected_year)
@@ -280,7 +213,6 @@ def run_filter_layer(
     return {
         "market_price": round(statistics.median(prices), 2),
         "sample_size": sample_count,
-        "expansions_used": expansions,
         "confidence": confidence,
     }
 
@@ -290,33 +222,20 @@ def run_filter_layer(
 # --------------------------------------------------
 
 def get_market_price_from_sold(
-    make,
-    model,
-    year,
-    mileage,
-    engine_size=None,
-    listing_title=None,
-    listing_aspects=None,
+    make, model, year, mileage,
+    engine_size=None, listing_title=None, listing_aspects=None,
 ):
-
     if not make or not model or not year:
         return None
 
     if not mileage:
         mileage = 100000
 
-    # ---------------------------------
-    # NORMALISE DVSA DATA
-    # ---------------------------------
-
     make = str(make).strip().title()
     model = str(model).strip().title()
-
     model_words = model.split()
     base_model = model_words[0]
-
     base_model = normalise_base_model(make, base_model)
-
     trim = " ".join(model_words[1:]) if len(model_words) > 1 else None
 
     engine_litre = None
@@ -328,35 +247,35 @@ def get_market_price_from_sold(
         except:
             pass
 
-    cache_key = f"sold_cache:{make}:{base_model}:{year}:{mileage}"
+    # ---------------------------------
+    # CACHE — bucket mileage to nearest
+    # 10k to maximise hit rate
+    # ---------------------------------
+    mileage_bucket = round(mileage / 10000) * 10000
+    cache_key = f"sold_cache:{make}:{base_model}:{year}:{mileage_bucket}"
     cached = redis_client.get(cache_key)
     if cached:
         return json.loads(cached)
 
-    search_queries = []
     year_range = range(year - 2, year + 3)
 
-     # ---------------------------------
-    # FALLBACK TRIM + ENGINE FROM LISTING
     # ---------------------------------
-
+    # TRIM + ENGINE EXTRACTION
+    # ---------------------------------
     title_lower = listing_title.lower() if listing_title else ""
 
-    # If DVSA trim missing, attempt from listing title
     if not trim and listing_title:
         title_words = listing_title.title().split()
         if base_model in title_words:
             idx = title_words.index(base_model)
-            possible_trim = title_words[idx+1:idx+3]
+            possible_trim = [
+                w for w in title_words[idx+1:idx+3]
+                if not re.match(r"^\d{4}$", w)  # exclude years
+            ]
             if possible_trim:
                 trim = " ".join(possible_trim)
 
-    # Extract engine from title if DVSA missing
     if not engine_litre and listing_title:
-
-        title_lower = listing_title.lower()
-
-    # Pattern 1 — 2.0 / 1.6 / 3.0
         litre_match = re.search(r"\b(\d\.\d)\b", title_lower)
         if litre_match:
             try:
@@ -364,35 +283,26 @@ def get_market_price_from_sold(
             except:
                 pass
 
-    # Pattern 2 — 1998cc / 1998 cc
         if not engine_litre:
             cc_match = re.search(r"\b(\d{3,4})\s?cc\b", title_lower)
             if cc_match:
                 try:
-                    cc = int(cc_match.group(1))
-                    engine_litre = round(cc / 1000, 1)
+                    engine_litre = round(int(cc_match.group(1)) / 1000, 1)
                 except:
                     pass
 
-    # Pattern 3 — 320d / 118i / 20d (BMW-style badges)
         if not engine_litre:
             badge_match = re.search(r"\b(\d{2,3})([di])\b", title_lower)
             if badge_match:
                 try:
                     digits = badge_match.group(1)
-                    if len(digits) == 3:
-                        engine_litre = float(digits[0] + "." + digits[1])
-                    elif len(digits) == 2:
-                        engine_litre = float(digits[0] + "." + digits[1])
+                    engine_litre = float(digits[0] + "." + digits[1])
                 except:
                     pass
 
-    # Extract from structured aspects if still missing
     if listing_aspects:
-
         if not trim:
             trim = listing_aspects.get("Derivative") or listing_aspects.get("Model")
-
         if not engine_litre:
             aspect_engine = listing_aspects.get("Engine Size")
             if aspect_engine:
@@ -404,25 +314,27 @@ def get_market_price_from_sold(
                     pass
 
     # ---------------------------------
-    # LAYER 1 — Base Model Spread
+    # BUILD SEARCH QUERIES
+    # Layer 1 — base model only (broadest)
+    # Layer 2 — with trim
+    # Layer 3 — with engine
     # ---------------------------------
+    search_queries = []
+
     for y in year_range:
         search_queries.append(f"{make} {base_model} {y}")
 
-    # ---------------------------------
-    # LAYER 2 — Trim Spread
-    # ---------------------------------
     if trim:
         for y in year_range:
             search_queries.append(f"{make} {base_model} {trim} {y}")
 
-    # ---------------------------------
-    # LAYER 3 — Engine Spread
-    # ---------------------------------
     if engine_litre:
         for y in year_range:
             search_queries.append(f"{make} {base_model} {engine_litre} {y}")
 
+    # ---------------------------------
+    # SEARCH ONCE — deduplicated
+    # ---------------------------------
     all_summaries = []
     seen_ids = set()
 
@@ -434,54 +346,89 @@ def get_market_price_from_sold(
                 seen_ids.add(item_id)
                 all_summaries.append(item)
 
+    print(f"📦 Total unique summaries collected: {len(all_summaries)}")
+
     if not all_summaries:
         return None
 
+    # ---------------------------------
+    # PRE-EXPAND DETAILS ONCE
+    # Only expand listings missing year
+    # or mileage in title
+    # Budget: MAX_DETAIL_EXPANSIONS total
+    # across ALL filter layers
+    # ---------------------------------
+    enriched_summaries = _pre_expand_details(all_summaries)
 
     # ---------------------------------
-    # FILTER LAYERS
+    # FILTER LAYERS — reuse same data
+    # No more API calls after this point
     # ---------------------------------
-
-    # Strict: ±2 years / ±15k
-    result = run_filter_layer(
-        all_summaries,
-        target_year=year,
-        target_mileage=mileage,
-        year_tolerance=2,
-        mileage_tolerance=15000,
-    )
-
-    if result:
-        result["source"] = "layer_1_strict"
-        redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
-        return result
-
-    # Relax mileage
-    result = run_filter_layer(
-        all_summaries,
-        target_year=year,
-        target_mileage=mileage,
-        year_tolerance=2,
-        mileage_tolerance=25000,
-    )
-
-    if result:
-        result["source"] = "layer_2_relaxed_mileage"
-        redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
-        return result
-
-    # Relax year
-    result = run_filter_layer(
-        all_summaries,
-        target_year=year,
-        target_mileage=mileage,
-        year_tolerance=3,
-        mileage_tolerance=30000,
-    )
-
-    if result:
-        result["source"] = "layer_3_relaxed_year"
-        redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
-        return result
+    for tolerance_config in [
+        {"year_tolerance": 2, "mileage_tolerance": 15000, "source": "layer_1_strict"},
+        {"year_tolerance": 2, "mileage_tolerance": 25000, "source": "layer_2_relaxed_mileage"},
+        {"year_tolerance": 3, "mileage_tolerance": 30000, "source": "layer_3_relaxed_year"},
+    ]:
+        result = run_filter_layer(
+            enriched_summaries,
+            target_year=year,
+            target_mileage=mileage,
+            year_tolerance=tolerance_config["year_tolerance"],
+            mileage_tolerance=tolerance_config["mileage_tolerance"],
+        )
+        if result:
+            result["source"] = tolerance_config["source"]
+            redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
+            return result
 
     return None
+
+
+def _pre_expand_details(summaries: list) -> list:
+    """
+    Enriches summaries with year/mileage from eBay item detail API.
+    Called ONCE before filter layers — detail data is attached directly
+    to each summary dict so filter layers need zero additional API calls.
+    """
+    expansions = 0
+    enriched = []
+
+    for summary in summaries:
+        title = summary.get("title", "")
+        item_id = summary.get("itemId")
+
+        listing_year = extract_year_from_title(title)
+        listing_mileage = extract_mileage_from_text(title)
+
+        # Only expand if we're missing data and have budget left
+        if (listing_year is None or listing_mileage is None) and expansions < MAX_DETAIL_EXPANSIONS:
+            detail = get_item_detail(item_id)
+            expansions += 1
+
+            if detail:
+                for aspect in detail.get("localizedAspects", []):
+                    name = aspect.get("name", "").lower()
+                    raw_value = aspect.get("value", "")
+                    val = str(raw_value).strip() if isinstance(raw_value, str) else str(raw_value[0]).strip()
+
+                    if not val:
+                        continue
+
+                    if listing_year is None and any(k in name for k in ["year", "reg"]):
+                        match = re.search(r"(19\d{2}|20\d{2})", val)
+                        if match:
+                            listing_year = int(match.group(1))
+
+                    if listing_mileage is None and any(k in name for k in ["mileage", "miles", "odometer"]):
+                        try:
+                            listing_mileage = int(val.replace(",", "").replace(" ", "").split(".")[0])
+                        except:
+                            pass
+
+        # Attach enriched data directly to summary — filter layers read this
+        summary["_year"] = listing_year
+        summary["_mileage"] = listing_mileage
+        enriched.append(summary)
+
+    print(f"🔍 Pre-expansion complete: {expansions} detail calls used")
+    return enriched
