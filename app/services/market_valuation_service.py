@@ -133,11 +133,7 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
 
         year_diff = abs(listing_year - target_year)
 
-        if year_diff > 3:
-            rejected_year += 1
-            continue
-
-        if len(prices) >= MIN_SAMPLE_SIZE and year_diff > year_tolerance:
+        if year_diff > year_tolerance:
             rejected_year += 1
             continue
 
@@ -147,7 +143,7 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
             mileage_diff = listing_mileage - target_mileage
             abs_mileage_diff = abs(mileage_diff)
 
-            if len(prices) >= MIN_SAMPLE_SIZE and abs_mileage_diff > mileage_tolerance:
+            if abs_mileage_diff > mileage_tolerance:
                 rejected_mileage += 1
                 continue
 
