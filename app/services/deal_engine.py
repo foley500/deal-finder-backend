@@ -254,7 +254,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             reg = extract_plate_from_images(raw_item["image_urls"])
 
         if not reg:
-            return None
+            print("⚠️ No reg found — continuing without DVSA data")
 
         # ---------------------------------
         # DVSA Lookup

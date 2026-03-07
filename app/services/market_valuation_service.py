@@ -50,31 +50,24 @@ def extract_mileage_from_text(text: str):
 
     return None
 
+
 def normalise_base_model(make: str, base_model: str) -> str:
     """
     Expands common DVSA shorthand model names into what sellers
     typically write on eBay.
     """
-
     make_lower = make.lower()
     model_lower = base_model.lower()
 
-    # -----------------------------
     # BMW (3 → 3 Series)
-    # -----------------------------
     if make_lower == "bmw" and model_lower.isdigit():
         return f"{base_model} Series"
 
-    # -----------------------------
     # Mercedes (C Class → C-Class)
-    # -----------------------------
     if make_lower in ["mercedes", "mercedes-benz"]:
         if "class" in model_lower and "-" not in model_lower:
             return model_lower.replace("class", "-class").title()
 
-    # -----------------------------
-    # Generic cleanup
-    # -----------------------------
     return base_model
 
 
@@ -128,7 +121,6 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
     adjustments = []
 
     for summary in summaries:
-        # Read pre-enriched data — NO API calls here
         listing_year = summary.get("_year")
         listing_mileage = summary.get("_mileage")
 
@@ -208,7 +200,7 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
     elif sample_count >= 5:
         confidence = "medium"
     else:
-       confidence = "low"
+        confidence = "low"
 
     return {
         "market_price": round(statistics.median(prices), 2),
@@ -260,22 +252,13 @@ def get_market_price_from_sold(
     year_range = range(year - 2, year + 3)
 
     # ---------------------------------
-    # TRIM + ENGINE EXTRACTION
+    # ENGINE EXTRACTION FROM TITLE
+    # Only runs if DVSA engine_size was missing
     # ---------------------------------
     title_lower = listing_title.lower() if listing_title else ""
 
-    if not trim and listing_title:
-        title_words = listing_title.title().split()
-        if base_model in title_words:
-            idx = title_words.index(base_model)
-            possible_trim = [
-                w for w in title_words[idx+1:idx+3]
-                if not re.match(r"^\d{4}$", w)  # exclude years
-            ]
-            if possible_trim:
-                trim = " ".join(possible_trim)
-
     if not engine_litre and listing_title:
+        # Pattern 1 — 2.0 / 1.6 / 3.0
         litre_match = re.search(r"\b(\d\.\d)\b", title_lower)
         if litre_match:
             try:
@@ -283,6 +266,7 @@ def get_market_price_from_sold(
             except:
                 pass
 
+        # Pattern 2 — 1998cc / 1998 cc
         if not engine_litre:
             cc_match = re.search(r"\b(\d{3,4})\s?cc\b", title_lower)
             if cc_match:
@@ -291,6 +275,7 @@ def get_market_price_from_sold(
                 except:
                     pass
 
+        # Pattern 3 — 320d / 118i / 20d (BMW-style badges)
         if not engine_litre:
             badge_match = re.search(r"\b(\d{2,3})([di])\b", title_lower)
             if badge_match:
@@ -300,9 +285,8 @@ def get_market_price_from_sold(
                 except:
                     pass
 
+    # Extract from structured aspects if still missing
     if listing_aspects:
-        if not trim:
-            trim = listing_aspects.get("Derivative") or listing_aspects.get("Model")
         if not engine_litre:
             aspect_engine = listing_aspects.get("Engine Size")
             if aspect_engine:
@@ -316,17 +300,12 @@ def get_market_price_from_sold(
     # ---------------------------------
     # BUILD SEARCH QUERIES
     # Layer 1 — base model only (broadest)
-    # Layer 2 — with trim
-    # Layer 3 — with engine
+    # Layer 2 — engine size (no trim — trim names are inconsistent on eBay)
     # ---------------------------------
     search_queries = []
 
     for y in year_range:
         search_queries.append(f"{make} {base_model} {y}")
-
-    if trim:
-        for y in year_range:
-            search_queries.append(f"{make} {base_model} {trim} {y}")
 
     if engine_litre:
         for y in year_range:
@@ -400,7 +379,6 @@ def _pre_expand_details(summaries: list) -> list:
         listing_year = extract_year_from_title(title)
         listing_mileage = extract_mileage_from_text(title)
 
-        # Only expand if we're missing data and have budget left
         if (listing_year is None or listing_mileage is None) and expansions < MAX_DETAIL_EXPANSIONS:
             detail = get_item_detail(item_id)
             expansions += 1
@@ -425,7 +403,6 @@ def _pre_expand_details(summaries: list) -> list:
                         except:
                             pass
 
-        # Attach enriched data directly to summary — filter layers read this
         summary["_year"] = listing_year
         summary["_mileage"] = listing_mileage
         enriched.append(summary)

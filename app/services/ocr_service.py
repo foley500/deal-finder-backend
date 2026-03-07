@@ -37,38 +37,43 @@ def normalise_uk_plate(raw_plate: str) -> str:
 
 
 def correct_common_ocr_errors(plate: str) -> str:
-    """
-    Fix common UK OCR mistakes based on position.
-    UK format: AA00AAA
-    """
-    if len(plate) != 7:
-        return plate
+    if len(plate) == 7:
+        # Current format AA00AAA
+        plate = list(plate)
+        for i in [2, 3]:  # number positions
+            plate[i] = plate[i].replace("O","0").replace("I","1").replace("Z","2")
+        for i in [0, 1, 4, 5, 6]:  # letter positions
+            plate[i] = plate[i].replace("0","O").replace("1","I").replace("2","Z")
+        return "".join(plate)
 
-    plate = list(plate)
+    elif len(plate) >= 5:
+        # Older formats — just fix obvious O/0 and I/1 swaps
+        plate = list(plate)
+        corrected = []
+        for i, c in enumerate(plate):
+            # If surrounded by letters, likely a letter
+            # If surrounded by digits, likely a digit — simple heuristic
+            prev_digit = plate[i-1].isdigit() if i > 0 else False
+            next_digit = plate[i+1].isdigit() if i < len(plate)-1 else False
+            if c == "O" and (prev_digit or next_digit):
+                corrected.append("0")
+            elif c == "0" and not (prev_digit or next_digit):
+                corrected.append("O")
+            else:
+                corrected.append(c)
+        return "".join(corrected)
 
-    # Numbers positions
-    for i in [2, 3]:
-        if plate[i] == "O":
-            plate[i] = "0"
-        if plate[i] == "I":
-            plate[i] = "1"
-        if plate[i] == "Z":
-            plate[i] = "2"
-
-    # Letter positions
-    for i in [0, 1, 4, 5, 6]:
-        if plate[i] == "0":
-            plate[i] = "O"
-        if plate[i] == "1":
-            plate[i] = "I"
-        if plate[i] == "2":
-            plate[i] = "Z"
-
-    return "".join(plate)
-
+    return plate
 
 def is_valid_uk_plate(plate: str) -> bool:
-    return bool(re.match(r"^[A-Z]{2}[0-9]{2}[A-Z]{3}$", plate))
+    patterns = [
+        r"^[A-Z]{2}[0-9]{2}[A-Z]{3}$",   # Current: AB12CDE (2001+)
+        r"^[A-Z][0-9]{1,3}[A-Z]{3}$",     # Prefix: A123BCD (1983-2001)
+        r"^[A-Z]{3}[0-9]{1,3}[A-Z]$",     # Suffix: ABC123D (1963-1983)
+        r"^[0-9]{1,4}[A-Z]{1,3}$",        # Dateless short
+        r"^[A-Z]{1,3}[0-9]{1,4}$",        # Dateless long
+    ]
+    return any(re.match(p, plate) for p in patterns)
 
 
 # ===============================
@@ -196,10 +201,7 @@ def extract_plate_from_images(image_urls: list[str]):
 
                         plate = correct_common_ocr_errors(plate)
 
-                        if len(plate) == 8:
-                            plate = plate[:7]
-
-                        if len(plate) != 7:
+                        if len(plate) < 5 or len(plate) > 8:
                             continue
 
                         print("🔍 OCR detected:", plate, "conf:", ocr_conf)
