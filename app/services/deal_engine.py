@@ -343,8 +343,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         valuation_data = {
             "market_price": market_value,
             "source": valuation_result["source"] if valuation_result else "fallback_model",
-            "sample_size": valuation_result.get("sample_size") if valuation_result else None
-        }
+            "sample_size": valuation_result.get("sample_size") if valuation_result else None,
+            "confidence": valuation_result.get("confidence") if valuation_result else None,
+    }
 
         description_penalty = description_risk(description, price)
         risk_penalty = description_penalty + mot_penalty

@@ -2,6 +2,9 @@ import os
 import requests
 import time
 import re
+import redis
+import json
+from datetime import datetime
 
 DVSA_CLIENT_ID = os.getenv("DVSA_CLIENT_ID")
 DVSA_CLIENT_SECRET = os.getenv("DVSA_CLIENT_SECRET")
@@ -9,22 +12,19 @@ DVSA_API_KEY = os.getenv("DVSA_API_KEY")
 DVSA_TOKEN_URL = os.getenv("DVSA_TOKEN_URL")
 DVSA_SCOPE_URL = os.getenv("DVSA_SCOPE_URL")
 
-# ✅ Correct endpoint for registration lookup
 MOT_TRADE_URL = "https://history.mot.api.gov.uk/v1/trade/vehicles/registration"
 
-_cached_token = None
-_token_expiry = 0
+REDIS_URL = os.getenv("CELERY_BROKER_URL")
+redis_client = redis.from_url(REDIS_URL)
 
+DVSA_TOKEN_KEY = "dvsa:access_token"
+DVSA_CACHE_TTL = 86400  # 24 hours
 
-# ==========================================
-# GET OAUTH TOKEN
-# ==========================================
 
 def get_dvsa_token():
-    global _cached_token, _token_expiry
-
-    if _cached_token and time.time() < _token_expiry:
-        return _cached_token
+    cached = redis_client.get(DVSA_TOKEN_KEY)
+    if cached:
+        return cached.decode()
 
     if not DVSA_CLIENT_ID or not DVSA_CLIENT_SECRET:
         print("❌ DVSA credentials missing")
@@ -52,28 +52,30 @@ def get_dvsa_token():
             return None
 
         token_data = response.json()
+        token = token_data.get("access_token")
+        expires_in = int(token_data.get("expires_in", 3600)) - 60
 
-        _cached_token = token_data.get("access_token")
-        _token_expiry = time.time() + token_data.get("expires_in", 3600) - 60
-
-        return _cached_token
+        redis_client.set(DVSA_TOKEN_KEY, token, ex=expires_in)
+        return token
 
     except Exception as e:
         print("❌ DVSA token exception:", e)
         return None
 
 
-# ==========================================
-# MAIN ENTRY
-# ==========================================
-
 def get_mot_data(registration: str):
 
     if not registration:
         return build_empty_response()
 
-    # 🔥 Clean registration properly
     clean_reg = re.sub(r"[^A-Z0-9]", "", registration.upper())
+
+    # Check Redis cache first — MOT data doesn't change hourly
+    cache_key = f"dvsa:{clean_reg}"
+    cached = redis_client.get(cache_key)
+    if cached:
+        print(f"✅ DVSA cache hit: {clean_reg}")
+        return json.loads(cached)
 
     token = get_dvsa_token()
     if not token:
@@ -88,16 +90,14 @@ def get_mot_data(registration: str):
     }
 
     try:
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=10
-        )
+        response = requests.get(url, headers=headers, timeout=10)
 
         print("🚗 DVSA MOT Status:", response.status_code)
 
         if response.status_code == 200:
-            return parse_mot_trade_response(response.json())
+            result = parse_mot_trade_response(response.json())
+            redis_client.set(cache_key, json.dumps(result), ex=DVSA_CACHE_TTL)
+            return result
         else:
             print("❌ DVSA MOT error body:", response.text)
 
@@ -107,23 +107,12 @@ def get_mot_data(registration: str):
     return build_empty_response()
 
 
-# ==========================================
-# PARSE RESPONSE (FIXED)
-# ==========================================
-
-from datetime import datetime
-
-
 def parse_mot_trade_response(data):
 
     if not data or not isinstance(data, dict):
         return build_empty_response()
 
     mot_tests = data.get("motTests", [])
-
-    # --------------------------------------
-    # VEHICLE AGE CALCULATION
-    # --------------------------------------
 
     first_used_date = data.get("firstUsedDate")
     vehicle_year = None
@@ -137,16 +126,11 @@ def parse_mot_trade_response(data):
     current_year = datetime.utcnow().year
     vehicle_age = current_year - vehicle_year if vehicle_year else 10
 
-    # --------------------------------------
-    # TIME-WEIGHTED MOT ANALYSIS
-    # --------------------------------------
-
     recent_window_years = 3
     medium_window_years = 6
 
     recent_fails = 0
     recent_advisories = 0
-
     medium_fails = 0
     medium_advisories = 0
 
@@ -162,8 +146,6 @@ def parse_mot_trade_response(data):
             continue
 
         years_ago = current_year - test_year
-
-        # Count fails
         is_failed = test.get("testResult") == "FAILED"
 
         advisory_count_this_test = sum(
@@ -171,44 +153,20 @@ def parse_mot_trade_response(data):
             if defect.get("type") == "ADVISORY"
         )
 
-        # RECENT (0–3 years) – full weight
         if years_ago <= recent_window_years:
             if is_failed:
                 recent_fails += 1
             recent_advisories += advisory_count_this_test
 
-        # MEDIUM (3–6 years) – half weight
         elif years_ago <= medium_window_years:
             if is_failed:
                 medium_fails += 1
             medium_advisories += advisory_count_this_test
 
-        # Older than 6 years → ignored completely
-
-    # --------------------------------------
-    # PROFESSIONAL RISK WEIGHTING
-    # --------------------------------------
-
-    # Fails matter more than advisories
     fail_penalty = (recent_fails * 200) + (medium_fails * 100)
-
-    # Advisories diminish quickly
     advisory_penalty = (recent_advisories * 15) + (medium_advisories * 5)
-
-    # Cap advisory stacking
     advisory_penalty = min(advisory_penalty, 700)
-
     raw_penalty = fail_penalty + advisory_penalty
-
-    # --------------------------------------
-    # AGE SCALING
-    # --------------------------------------
-
-    # Older cars expected to have wear
-    # 0–5 yrs → full weight
-    # 6–10 yrs → 85%
-    # 11–15 yrs → 70%
-    # 16+ yrs → 55%
 
     if vehicle_age <= 5:
         age_factor = 1.0
@@ -220,12 +178,6 @@ def parse_mot_trade_response(data):
         age_factor = 0.55
 
     adjusted_penalty = raw_penalty * age_factor
-
-    # --------------------------------------
-    # SAFETY CAP
-    # --------------------------------------
-
-    # Absolute cap so MOT never destroys valuation
     final_penalty = min(adjusted_penalty, 2500)
 
     return {
@@ -245,10 +197,6 @@ def parse_mot_trade_response(data):
         }
     }
 
-
-# ==========================================
-# SAFE EMPTY STRUCTURE
-# ==========================================
 
 def build_empty_response():
     return {

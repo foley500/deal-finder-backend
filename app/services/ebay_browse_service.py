@@ -2,6 +2,7 @@ import os
 import requests
 import base64
 import time
+import redis
 from app.services.ebay_rate_limiter import throttle_ebay
 
 EBAY_CLIENT_ID = os.getenv("EBAY_CLIENT_ID")
@@ -11,15 +12,16 @@ TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 ITEM_URL = "https://api.ebay.com/buy/browse/v1/item/"
 
-_cached_token = None
-_token_expiry = 0
+REDIS_URL = os.getenv("CELERY_BROKER_URL")
+redis_client = redis.from_url(REDIS_URL)
+
+EBAY_TOKEN_KEY = "ebay:access_token"
 
 
 def get_ebay_access_token():
-    global _cached_token, _token_expiry
-
-    if _cached_token and time.time() < _token_expiry:
-        return _cached_token
+    cached = redis_client.get(EBAY_TOKEN_KEY)
+    if cached:
+        return cached.decode()
 
     credentials = f"{EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}"
     encoded = base64.b64encode(credentials.encode()).decode()
@@ -28,24 +30,22 @@ def get_ebay_access_token():
         "Authorization": f"Basic {encoded}",
         "Content-Type": "application/x-www-form-urlencoded"
     }
-
     data = {
         "grant_type": "client_credentials",
         "scope": "https://api.ebay.com/oauth/api_scope"
     }
 
     response = requests.post(TOKEN_URL, headers=headers, data=data)
-
     if response.status_code != 200:
         print("❌ eBay OAuth error:", response.text)
         return None
 
     token_data = response.json()
+    token = token_data.get("access_token")
+    expires_in = int(token_data.get("expires_in", 7200)) - 60
 
-    _cached_token = token_data.get("access_token")
-    _token_expiry = time.time() + token_data.get("expires_in", 7200) - 60
-
-    return _cached_token
+    redis_client.set(EBAY_TOKEN_KEY, token, ex=expires_in)
+    return token
 
 
 def search_ebay_browse(
@@ -56,7 +56,6 @@ def search_ebay_browse(
     sort="newlyListed",
     offset=0
 ):
-
     token = get_ebay_access_token()
     if not token:
         return []
@@ -75,8 +74,7 @@ def search_ebay_browse(
         "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}}"
     }
 
-    for attempt in range(2):  # retry once if rate limited
-
+    for attempt in range(2):
         throttle_ebay()
         response = requests.get(SEARCH_URL, headers=headers, params=params)
 
@@ -123,12 +121,10 @@ def search_ebay_browse(
         })
 
     print(f"✅ eBay returned {len(listings)} vehicle summaries")
-
     return listings
 
 
 def get_item_detail(item_id):
-
     token = get_ebay_access_token()
     if not token:
         return None
@@ -140,19 +136,18 @@ def get_item_detail(item_id):
 
     throttle_ebay()
     response = requests.get(
-    f"{ITEM_URL}{item_id}?fieldgroups=PRODUCT",
-    headers=headers
+        f"{ITEM_URL}{item_id}?fieldgroups=PRODUCT",
+        headers=headers
     )
 
     if response.status_code == 429:
         print("Rate limited - sleeping 5s")
         time.sleep(5)
-        return []
+        return None
 
     if response.status_code != 200:
         print("❌ Item detail error:", response.text)
         time.sleep(1)
-        return []
-
+        return None
 
     return response.json()

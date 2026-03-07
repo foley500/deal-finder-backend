@@ -12,27 +12,28 @@ MIN_REQUEST_INTERVAL = 0.6
 def throttle_ebay():
     """
     Global eBay API rate limiter.
-    Ensures only one request every MIN_REQUEST_INTERVAL seconds
-    across the entire system.
+    Atomic lock ensures only one worker fires at a time.
+    Prevents race condition causing 429s under multi-worker load.
     """
-
     key = "ebay_global_last_request"
+    lock_key = "ebay_throttle_lock"
 
     while True:
-        last_request = redis_client.get(key)
-
         now = time.time()
+        last_raw = redis_client.get(key)
 
-        if not last_request:
-            redis_client.set(key, now)
-            return
+        if last_raw:
+            elapsed = now - float(last_raw)
+            if elapsed < MIN_REQUEST_INTERVAL:
+                time.sleep(MIN_REQUEST_INTERVAL - elapsed)
+                continue
 
-        last_request = float(last_request)
-        elapsed = now - last_request
+        # Atomic lock — only one worker proceeds at a time
+        acquired = redis_client.set(lock_key, now, nx=True, ex=2)
+        if not acquired:
+            time.sleep(0.05)
+            continue
 
-        if elapsed >= MIN_REQUEST_INTERVAL:
-            redis_client.set(key, now)
-            return
-
-        sleep_time = MIN_REQUEST_INTERVAL - elapsed
-        time.sleep(sleep_time)
+        redis_client.set(key, now)
+        redis_client.delete(lock_key)
+        return
