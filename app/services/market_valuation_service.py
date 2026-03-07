@@ -148,56 +148,59 @@ def run_filter_layer(
         if not item_id:
             continue
 
-        detail = get_item_detail(item_id)
-        expansions += 1
+        detail = None
 
-        if not detail:
-            continue
+        # Extract from title first (cheap)
+        listing_year = extract_year_from_title(title)
+        listing_mileage = extract_mileage_from_text(title)
 
-        listing_year = None
-        listing_mileage = None
+        # Only expand if we are missing critical data
+        if (listing_year is None or listing_mileage is None) and expansions < MAX_DETAIL_EXPANSIONS:
+            detail = get_item_detail(item_id)
+            expansions += 1
 
-        for aspect in detail.get("localizedAspects", []):
-            name = aspect.get("name", "").lower()
-            value = aspect.get("value", [])
-            if not value:
+            if detail:
+                for aspect in detail.get("localizedAspects", []):
+                    name = aspect.get("name", "").lower()
+                    value = aspect.get("value", [])
+                    if not value:
+                        continue
+
+                    val = str(value[0]).strip()
+    
+                    if listing_year is None and name in ["year", "model_year", "registration_year"]:
+                        match = re.search(r"(19\d{2}|20\d{2})", val)
+                        if match:
+                            listing_year = int(match.group(1))
+
+                    if listing_mileage is None and name in ["mileage", "miles"]:
+                        try:
+                            listing_mileage = int(val.replace(",", ""))
+                        except:
+                            pass
+
+        # Final fallback checks
+        if listing_year is None:
+            if accepted >= MIN_SAMPLE_SIZE:
+                rejected_no_year += 1
                 continue
-
-            val = str(value[0]).strip()
-
-            if name in ["year", "model_year", "registration_year"]:
-                match = re.search(r"(19\d{2}|20\d{2})", val)
-                if match:
-                    listing_year = int(match.group(1))
-
-            if name in ["mileage", "miles"]:
-                try:
-                    listing_mileage = int(val.replace(",", ""))
-                except:
-                    pass
-
-        if listing_year is None:
-            listing_year = extract_year_from_title(title)
-
-        if listing_mileage is None:
-            listing_mileage = extract_mileage_from_text(title)
-
-        if listing_mileage is None:
-            description = detail.get("description", "")
-            listing_mileage = extract_mileage_from_text(description)
-
-        if listing_year is None:
-            rejected_no_year += 1
-            continue
+            else:
+                listing_year = target_year
 
         year_diff = abs(listing_year - target_year)
 
         # Only enforce strict year tolerance AFTER we have enough samples
+        # Hard cap: never allow beyond 3 years
+        # Hard cap
+        if year_diff > 3:
+            rejected_year += 1
+            continue
+
+        # Strict tolerance only enforced after sample pool healthy
         if len(prices) >= MIN_SAMPLE_SIZE:
             if year_diff > year_tolerance:
                 rejected_year += 1
                 continue
-
         if listing_mileage is not None:
             mileage_diff = abs(listing_mileage - target_mileage)
 
