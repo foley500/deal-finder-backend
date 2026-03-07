@@ -51,17 +51,3 @@ def calculate_score(profit, risk_penalty, mileage):
         score -= 5
 
     return round(score, 2)
-```
-
----
-
-**For this specific Polo after Fix 1:**
-```
-market value:  £1,947
-asking price:  £1,295
-transport:       £100
-prep:            £200
-warranty:        £150
-risk penalty:    £382
-─────────────────────
-true profit:    +£-180
