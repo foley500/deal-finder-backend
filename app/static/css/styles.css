@@ -99,9 +99,16 @@ input {
     color: #ffffff !important;
 }
 
-/* Make all card text white */
 .card {
     color: #ffffff;
+}
+
+.card .text-success {
+    color: #22c55e !important;
+}
+
+.card .text-danger {
+    color: #ef4444 !important;
 }
 
 /* Ensure headings stay white */
