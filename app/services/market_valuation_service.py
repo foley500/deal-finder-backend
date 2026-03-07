@@ -18,7 +18,7 @@ redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 1800
 MAX_DETAIL_EXPANSIONS = 25
-MIN_SAMPLE_SIZE = 3
+MIN_SAMPLE_SIZE = 5
 
 
 # ---------------------------------------------------
@@ -190,9 +190,13 @@ def run_filter_layer(
             rejected_no_year += 1
             continue
 
-        if abs(listing_year - target_year) > year_tolerance:
-            rejected_year += 1
-            continue
+        year_diff = abs(listing_year - target_year)
+
+        # Only enforce strict year tolerance AFTER we have enough samples
+        if len(prices) >= MIN_SAMPLE_SIZE:
+            if year_diff > year_tolerance:
+                rejected_year += 1
+                continue
 
         if listing_mileage is not None:
             mileage_diff = abs(listing_mileage - target_mileage)
