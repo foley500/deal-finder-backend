@@ -52,18 +52,12 @@ def extract_mileage_from_text(text: str):
 
 
 def normalise_base_model(make: str, base_model: str) -> str:
-    """
-    Expands common DVSA shorthand model names into what sellers
-    typically write on eBay.
-    """
     make_lower = make.lower()
     model_lower = base_model.lower()
 
-    # BMW (3 → 3 Series)
     if make_lower == "bmw" and model_lower.isdigit():
         return f"{base_model} Series"
 
-    # Mercedes (C Class → C-Class)
     if make_lower in ["mercedes", "mercedes-benz"]:
         if "class" in model_lower and "-" not in model_lower:
             return model_lower.replace("class", "-class").title()
@@ -110,7 +104,7 @@ def get_sold_listings(query: str, limit: int = 100):
 # CORE FILTER ENGINE
 # ---------------------------------------------------
 
-def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mileage_tolerance):
+def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mileage_tolerance, adjust_mileage=True):
     prices = []
     rejected_no_year = 0
     rejected_year = 0
@@ -155,12 +149,14 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
         base_price = float(price_obj["value"])
         adjusted_price = base_price
 
-        if mileage_diff is not None:
+        if mileage_diff is not None and adjust_mileage:
             mileage_diffs.append(mileage_diff)
             blocks = min(abs_mileage_diff / 5000, 8)
             mileage_adjustment = base_price * 0.015 * blocks
             adjustments.append(mileage_adjustment)
             adjusted_price = base_price - mileage_adjustment if mileage_diff > 0 else base_price + mileage_adjustment
+        elif mileage_diff is not None:
+            mileage_diffs.append(mileage_diff)
 
         prices.append(adjusted_price)
         accepted += 1
@@ -175,7 +171,10 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
     if mileage_diffs:
         print("   Avg mileage diff:", round(statistics.mean(mileage_diffs), 0))
         print("   Max mileage diff:", round(max(abs(x) for x in mileage_diffs), 0))
-        print("   Avg price adjustment:", round(statistics.mean(adjustments), 2))
+        if adjustments:
+            print("   Avg price adjustment:", round(statistics.mean(adjustments), 2))
+        else:
+            print("   No price adjustment applied (layer 1)")
     else:
         print("   No mileage data available")
 
@@ -235,10 +234,6 @@ def get_market_price_from_sold(
         except:
             pass
 
-    # ---------------------------------
-    # CACHE — bucket mileage to nearest
-    # 10k to maximise hit rate
-    # ---------------------------------
     mileage_bucket = round(mileage / 10000) * 10000
     cache_key = f"sold_cache:{make}:{base_model}:{year}:{mileage_bucket}"
     cached = redis_client.get(cache_key)
@@ -247,14 +242,9 @@ def get_market_price_from_sold(
 
     year_range = range(year - 2, year + 3)
 
-    # ---------------------------------
-    # ENGINE EXTRACTION FROM TITLE
-    # Only runs if DVSA engine_size was missing
-    # ---------------------------------
     title_lower = listing_title.lower() if listing_title else ""
 
     if not engine_litre and listing_title:
-        # Pattern 1 — 2.0 / 1.6 / 3.0
         litre_match = re.search(r"\b(\d\.\d)\b", title_lower)
         if litre_match:
             try:
@@ -262,7 +252,6 @@ def get_market_price_from_sold(
             except:
                 pass
 
-        # Pattern 2 — 1998cc / 1998 cc
         if not engine_litre:
             cc_match = re.search(r"\b(\d{3,4})\s?cc\b", title_lower)
             if cc_match:
@@ -271,7 +260,6 @@ def get_market_price_from_sold(
                 except:
                     pass
 
-        # Pattern 3 — 320d / 118i / 20d (BMW-style badges)
         if not engine_litre:
             badge_match = re.search(r"\b(\d{2,3})([di])\b", title_lower)
             if badge_match:
@@ -281,7 +269,6 @@ def get_market_price_from_sold(
                 except:
                     pass
 
-    # Extract from structured aspects if still missing
     if listing_aspects:
         if not engine_litre:
             aspect_engine = listing_aspects.get("Engine Size")
@@ -293,11 +280,6 @@ def get_market_price_from_sold(
                 except:
                     pass
 
-    # ---------------------------------
-    # BUILD SEARCH QUERIES
-    # Layer 1 — base model only (broadest)
-    # Layer 2 — engine size (no trim — trim names are inconsistent on eBay)
-    # ---------------------------------
     search_queries = []
 
     for y in year_range:
@@ -307,9 +289,6 @@ def get_market_price_from_sold(
         for y in year_range:
             search_queries.append(f"{make} {base_model} {engine_litre} {y}")
 
-    # ---------------------------------
-    # SEARCH ONCE — deduplicated
-    # ---------------------------------
     all_summaries = []
     seen_ids = set()
 
@@ -326,23 +305,12 @@ def get_market_price_from_sold(
     if not all_summaries:
         return None
 
-    # ---------------------------------
-    # PRE-EXPAND DETAILS ONCE
-    # Only expand listings missing year
-    # or mileage in title
-    # Budget: MAX_DETAIL_EXPANSIONS total
-    # across ALL filter layers
-    # ---------------------------------
     enriched_summaries = _pre_expand_details(all_summaries)
 
-    # ---------------------------------
-    # FILTER LAYERS — reuse same data
-    # No more API calls after this point
-    # ---------------------------------
     for tolerance_config in [
-        {"year_tolerance": 2, "mileage_tolerance": 15000, "source": "layer_1_strict"},
-        {"year_tolerance": 2, "mileage_tolerance": 25000, "source": "layer_2_relaxed_mileage"},
-        {"year_tolerance": 3, "mileage_tolerance": 30000, "source": "layer_3_relaxed_year"},
+        {"year_tolerance": 2, "mileage_tolerance": 15000, "source": "layer_1_strict", "adjust_mileage": False},
+        {"year_tolerance": 2, "mileage_tolerance": 25000, "source": "layer_2_relaxed_mileage", "adjust_mileage": True},
+        {"year_tolerance": 3, "mileage_tolerance": 30000, "source": "layer_3_relaxed_year", "adjust_mileage": True},
     ]:
         result = run_filter_layer(
             enriched_summaries,
@@ -350,6 +318,7 @@ def get_market_price_from_sold(
             target_mileage=mileage,
             year_tolerance=tolerance_config["year_tolerance"],
             mileage_tolerance=tolerance_config["mileage_tolerance"],
+            adjust_mileage=tolerance_config["adjust_mileage"],
         )
         if result:
             result["source"] = tolerance_config["source"]
@@ -360,11 +329,6 @@ def get_market_price_from_sold(
 
 
 def _pre_expand_details(summaries: list) -> list:
-    """
-    Enriches summaries with year/mileage from eBay item detail API.
-    Called ONCE before filter layers — detail data is attached directly
-    to each summary dict so filter layers need zero additional API calls.
-    """
     expansions = 0
     enriched = []
 
