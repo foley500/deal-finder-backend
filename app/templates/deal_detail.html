@@ -31,7 +31,7 @@
 
             <div class="d-flex justify-content-between fs-4">
                 <span>True Profit</span>
-                <strong class="text-success">
+                <strong class="{% if report.financials.profit and report.financials.profit > 0 %}text-success{% else %}text-danger{% endif %}">
                     £{{ report.financials.profit or 0 }}
                 </strong>
             </div>
@@ -44,7 +44,7 @@
                 <div class="small mb-1">Profit Margin</div>
                 <div class="progress bg-dark" style="height: 8px;">
                     <div class="progress-bar bg-success"
-                         style="width: {{ margin }}%;">
+                         style="width: {{ [margin, 0]|max }}%;">
                     </div>
                 </div>
                 <div class="small mt-1">

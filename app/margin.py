@@ -26,7 +26,7 @@ def calculate_true_profit(
         transport = 200
 
     total_costs = asking_price + transport + prep + warranty + risk_penalty
-    return market_value - total_costs
+    return round(market_value - total_costs, 2)
 
 def calculate_score(profit, risk_penalty, mileage):
     score = 0
