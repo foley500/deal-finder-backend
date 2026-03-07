@@ -12,7 +12,7 @@ from app.services.ebay_browse_service import (
 )
 
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
-
+FINDING_API_URL = "https://svcs.ebay.com/services/search/FindingService/v1"
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
@@ -70,34 +70,67 @@ def normalise_base_model(make: str, base_model: str) -> str:
 # ---------------------------------------------------
 
 def get_sold_listings(query: str, limit: int = 100):
-
-    token = get_ebay_access_token()
-    if not token:
+    app_id = os.getenv("EBAY_CLIENT_ID")
+    if not app_id:
         return []
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
-    }
-
     params = {
-        "q": query,
-        "limit": limit,
-        "category_ids": "9801",
-        "filter": "soldItems:true,conditions:{USED}"
+        "OPERATION-NAME": "findCompletedItems",
+        "SERVICE-VERSION": "1.0.0",
+        "SECURITY-APPNAME": app_id,
+        "RESPONSE-DATA-FORMAT": "JSON",
+        "REST-PAYLOAD": "",
+        "keywords": query,
+        "categoryId": "9801",
+        "itemFilter(0).name": "SoldItemsOnly",
+        "itemFilter(0).value": "true",
+        "itemFilter(1).name": "Condition",
+        "itemFilter(1).value": "Used",
+        "itemFilter(2).name": "ListingType",
+        "itemFilter(2).value": "AuctionWithBIN",
+        "itemFilter(3).name": "ListingType",
+        "itemFilter(3).value[0]": "FixedPrice",
+        "paginationInput.entriesPerPage": min(limit, 100),
+        "sortOrder": "EndTimeSoonest",
     }
 
     throttle_ebay()
-    response = requests.get(SEARCH_URL, headers=headers, params=params)
-
-    if response.status_code == 429:
-        time.sleep(5)
-        return []
+    response = requests.get(FINDING_API_URL, params=params)
 
     if response.status_code != 200:
         return []
 
-    return response.json().get("itemSummaries", [])
+    try:
+        data = response.json()
+        search_result = (
+            data
+            .get("findCompletedItemsResponse", [{}])[0]
+            .get("searchResult", [{}])[0]
+        )
+        items = search_result.get("item", [])
+    except Exception:
+        return []
+
+    summaries = []
+    for item in items:
+        try:
+            price_val = float(
+                item.get("sellingStatus", [{}])[0]
+                    .get("currentPrice", [{}])[0]
+                    .get("__value__", 0)
+            )
+            title = item.get("title", [""])[0]
+            item_id = item.get("itemId", [""])[0]
+
+            summaries.append({
+                "itemId": item_id,
+                "title": title,
+                "price": {"value": str(price_val)},
+            })
+        except Exception:
+            continue
+
+    return summaries
 
 
 # ---------------------------------------------------

@@ -97,21 +97,20 @@ def scan_sniper(dealer_id: int):
 # ==========================================
 @celery.task
 def scan_value_sweep(dealer_id: int):
-
-
     return run_scan(
         dealer_id=dealer_id,
         sort="newlyListed",
         listings_to_pull=40,
         mode_name="value_sweep",
-        deep_sweep=True
+        deep_sweep=True,
+        sweep_start_offset=200
     )
 
 
 # ==========================================
 # SHARED SCAN ENGINE
 # ==========================================
-def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, deep_sweep=False):
+def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, deep_sweep=False, sweep_start_offset=0):
 
     lock_key = f"scan_lock_{dealer_id}_{mode_name}"
 
@@ -160,7 +159,7 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
             items = []
 
             if deep_sweep:
-                for page in range(0, 120, listings_to_pull):
+                for page in range(sweep_start_offset, sweep_start_offset + 200, listings_to_pull):
 
                     page_items = source.search(
                         keywords="car",
