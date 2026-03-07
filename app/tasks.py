@@ -163,7 +163,7 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
                 for page in range(0, 120, listings_to_pull):
 
                     page_items = source.search(
-                        keywords="cars",
+                        keywords="car",
                         entries=listings_to_pull,
                         min_price=None,
                         max_price=filters["max_price"],
@@ -176,7 +176,7 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
 
             else:
                 items = source.search(
-                    keywords="cars",
+                    keywords="car",
                     entries=listings_to_pull,
                     min_price=None,
                     max_price=filters["max_price"],
@@ -203,12 +203,20 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
                 if not rough_price:
                     continue
 
-                rough_estimated_value = rough_price * 1.15
-                rough_profit = rough_estimated_value - rough_price
+                if rough_price < 2000:
+                    rough_costs = 450
+                elif rough_price < 4000:
+                    rough_costs = 650
+                elif rough_price < 8000:
+                    rough_costs = 800
+                else:
+                    rough_costs = 1000
+
+                rough_estimated_value = rough_price * 1.20
+                rough_profit = rough_estimated_value - rough_price - rough_costs
 
                 if settings.min_profit and rough_profit < (settings.min_profit * 0.5):
                     continue
-
                 deal = process_listing(
                     item,
                     dealer.id,
