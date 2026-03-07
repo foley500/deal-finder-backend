@@ -98,10 +98,20 @@ def get_sold_listings(query: str, limit: int = 100):
     response = requests.get(FINDING_API_URL, params=params)
 
     if response.status_code != 200:
+        print(f"❌ Finding API error: {response.status_code} {response.text[:200]}")
         return []
 
     try:
         data = response.json()
+        print(f"🔍 Finding API raw keys: {list(data.keys())}")
+        search_result = (
+            data
+            .get("findCompletedItemsResponse", [{}])[0]
+            .get("searchResult", [{}])[0]
+        )
+        print(f"🔍 Search result count: {search_result.get('@count', 'N/A')}")
+        items = search_result.get("item", [])
+        print(f"🔍 Items returned: {len(items)}")
         search_result = (
             data
             .get("findCompletedItemsResponse", [{}])[0]
