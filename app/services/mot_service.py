@@ -63,7 +63,7 @@ def get_dvsa_token():
         return None
 
 
-def get_mot_data(registration: str):
+def get_mot_data(registration: str, asking_price: float = None):
 
     if not registration:
         return build_empty_response()
@@ -95,7 +95,7 @@ def get_mot_data(registration: str):
         print("🚗 DVSA MOT Status:", response.status_code)
 
         if response.status_code == 200:
-            result = parse_mot_trade_response(response.json())
+            result = parse_mot_trade_response(response.json(), asking_price=asking_price)
             redis_client.set(cache_key, json.dumps(result), ex=DVSA_CACHE_TTL)
             return result
         else:
@@ -107,7 +107,7 @@ def get_mot_data(registration: str):
     return build_empty_response()
 
 
-def parse_mot_trade_response(data):
+def parse_mot_trade_response(data, asking_price=None):
 
     if not data or not isinstance(data, dict):
         return build_empty_response()
@@ -178,7 +178,15 @@ def parse_mot_trade_response(data):
         age_factor = 0.55
 
     adjusted_penalty = raw_penalty * age_factor
-    final_penalty = min(adjusted_penalty, 2500)
+
+    # Cap penalty relative to vehicle value
+    # Never penalise more than 30% of asking price
+    if asking_price and asking_price > 0:
+        value_cap = asking_price * 0.30
+    else:
+        value_cap = 2500
+
+    final_penalty = min(adjusted_penalty, value_cap)
 
     return {
         "mot_summary": {

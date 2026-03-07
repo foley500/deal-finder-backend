@@ -267,7 +267,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
 
         if reg:
             try:
-                mot_response = get_mot_data(reg)
+                mot_response = get_mot_data(reg, asking_price=price)
 
                 if mot_response:
                     mot_summary = mot_response.get("mot_summary", {})
