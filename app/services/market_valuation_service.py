@@ -70,77 +70,70 @@ def normalise_base_model(make: str, base_model: str) -> str:
 # ---------------------------------------------------
 
 def get_sold_listings(query: str, limit: int = 100):
-    app_id = os.getenv("EBAY_CLIENT_ID")
-    if not app_id:
+    token = get_ebay_access_token()
+    if not token:
         return []
 
-    params = {
-        "OPERATION-NAME": "findCompletedItems",
-        "SERVICE-VERSION": "1.0.0",
-        "SECURITY-APPNAME": app_id,
-        "RESPONSE-DATA-FORMAT": "JSON",
-        "REST-PAYLOAD": "",
-        "keywords": query,
-        "categoryId": "9801",
-        "itemFilter(0).name": "SoldItemsOnly",
-        "itemFilter(0).value": "true",
-        "itemFilter(1).name": "Condition",
-        "itemFilter(1).value": "Used",
-        "itemFilter(2).name": "ListingType",
-        "itemFilter(2).value": "AuctionWithBIN",
-        "itemFilter(3).name": "ListingType",
-        "itemFilter(3).value[0]": "FixedPrice",
-        "paginationInput.entriesPerPage": min(limit, 100),
-        "sortOrder": "EndTimeSoonest",
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
     }
 
-    throttle_ebay()
-    response = requests.get(FINDING_API_URL, params=params)
+    all_items = []
+    seen_ids = set()
 
-    if response.status_code != 200:
-        print(f"❌ Finding API error: {response.status_code} {response.text[:200]}")
-        return []
+    searches = [
+        {
+            "filter": "soldItems:true,conditions:{USED}",
+            "sort": "newlyListed",
+            "label": "sold",
+            "limit": limit,
+        },
+        {
+            "filter": "buyingOptions:{FIXED_PRICE},conditions:{USED}",
+            "sort": "price",
+            "label": "active_cheap",
+            "limit": 50,
+        },
+        {
+            "filter": "buyingOptions:{FIXED_PRICE},conditions:{USED}",
+            "sort": "newlyListed",
+            "label": "active_new",
+            "limit": 50,
+        },
+    ]
 
-    try:
-        data = response.json()
-        print(f"🔍 Finding API raw keys: {list(data.keys())}")
-        search_result = (
-            data
-            .get("findCompletedItemsResponse", [{}])[0]
-            .get("searchResult", [{}])[0]
-        )
-        print(f"🔍 Search result count: {search_result.get('@count', 'N/A')}")
-        items = search_result.get("item", [])
-        print(f"🔍 Items returned: {len(items)}")
-        search_result = (
-            data
-            .get("findCompletedItemsResponse", [{}])[0]
-            .get("searchResult", [{}])[0]
-        )
-        items = search_result.get("item", [])
-    except Exception:
-        return []
+    for search in searches:
+        params = {
+            "q": query,
+            "limit": search["limit"],
+            "category_ids": "9801",
+            "filter": search["filter"],
+        }
+        if "sort" in search:
+            params["sort"] = search["sort"]
 
-    summaries = []
-    for item in items:
-        try:
-            price_val = float(
-                item.get("sellingStatus", [{}])[0]
-                    .get("currentPrice", [{}])[0]
-                    .get("__value__", 0)
-            )
-            title = item.get("title", [""])[0]
-            item_id = item.get("itemId", [""])[0]
+        throttle_ebay()
+        response = requests.get(SEARCH_URL, headers=headers, params=params)
 
-            summaries.append({
-                "itemId": item_id,
-                "title": title,
-                "price": {"value": str(price_val)},
-            })
-        except Exception:
+        if response.status_code == 429:
+            time.sleep(5)
             continue
 
-    return summaries
+        if response.status_code != 200:
+            print(f"❌ [{search['label']}] search error: {response.status_code}")
+            continue
+
+        items = response.json().get("itemSummaries", [])
+        print(f"✅ [{search['label']}] '{query[:35]}' → {len(items)} items")
+
+        for item in items:
+            item_id = item.get("itemId")
+            if item_id and item_id not in seen_ids:
+                seen_ids.add(item_id)
+                all_items.append(item)
+
+    return all_items
 
 
 # ---------------------------------------------------
