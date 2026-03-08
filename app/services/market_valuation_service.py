@@ -181,7 +181,7 @@ def get_sold_listings(query: str, limit: int = 100):
     }
 
     all_items = []
-    seen_ids = set()
+    combined_seen_ids = set()  # tracks IDs across both passes to avoid duplicates when combining
 
     def run_searches(seller_filter: str, label_suffix: str):
         searches = [
@@ -209,6 +209,7 @@ def get_sold_listings(query: str, limit: int = 100):
         ]
 
         results = []
+        local_seen = set()  # dedup within this pass only
         for search in searches:
             params = {
                 "q": query,
@@ -234,15 +235,18 @@ def get_sold_listings(query: str, limit: int = 100):
             print(f"✅ [{search['label']}] '{query[:35]}' → {len(items)} items")
 
             for item in items:
-                item_id = item.get("itemId")
-                if item_id and item_id not in seen_ids:
-                    seen_ids.add(item_id)
+                item_id = item.get("itemId") or item.get("epid") or item.get("title", "")[:60]
+                if item_id and item_id not in local_seen:
+                    local_seen.add(item_id)
                     item["_source_type"] = search["source_type"]
+                    item["_resolved_id"] = item_id
                     results.append(item)
 
         return results
 
     private_results = run_searches(",sellers:{PRIVATE}", "_private")
+    for item in private_results:
+        combined_seen_ids.add(item.get("_resolved_id", ""))
     all_items.extend(private_results)
 
     print(f"📦 Private-only results: {len(private_results)}")
@@ -251,9 +255,9 @@ def get_sold_listings(query: str, limit: int = 100):
         print(f"⚠️ Private results thin ({len(private_results)}) — falling back to all sellers")
         all_sellers_results = run_searches("", "_all")
         for item in all_sellers_results:
-            item_id = item.get("itemId")
-            if item_id and item_id not in seen_ids:
-                seen_ids.add(item_id)
+            item_id = item.get("_resolved_id", "")
+            if item_id and item_id not in combined_seen_ids:
+                combined_seen_ids.add(item_id)
                 all_items.append(item)
         print(f"📦 After all-seller fallback: {len(all_items)} total")
 
