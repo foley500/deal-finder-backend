@@ -115,6 +115,8 @@ def calculate_mileage_adjustment(base_price: float, listing_mileage: int, target
 # EBAY SOLD SEARCH — single broad query, 3 API calls
 # ---------------------------------------------------
 
+PRIVATE_FIRST_THRESHOLD = 20  # if private search returns fewer than this, fall back to all sellers
+
 def get_sold_listings(query: str, limit: int = 100):
     token = get_ebay_access_token()
     if not token:
@@ -128,61 +130,81 @@ def get_sold_listings(query: str, limit: int = 100):
     all_items = []
     seen_ids = set()
 
-    searches = [
-        {
-            "filter": "soldItems:true,conditions:{USED}",
-            "sort": "newlyListed",
-            "label": "sold",
-            "limit": limit,
-            "source_type": "sold",
-        },
-        {
-            "filter": "buyingOptions:{FIXED_PRICE},conditions:{USED}",
-            "sort": "price",
-            "label": "active_cheap",
-            "limit": 50,
-            "source_type": "active",
-        },
-        {
-            "filter": "buyingOptions:{FIXED_PRICE},conditions:{USED}",
-            "sort": "newlyListed",
-            "label": "active_new",
-            "limit": 50,
-            "source_type": "active",
-        },
-    ]
+    def run_searches(seller_filter: str, label_suffix: str):
+        searches = [
+            {
+                "filter": f"soldItems:true,conditions:{{USED}}{seller_filter}",
+                "sort": "newlyListed",
+                "label": f"sold{label_suffix}",
+                "limit": limit,
+                "source_type": "sold",
+            },
+            {
+                "filter": f"buyingOptions:{{FIXED_PRICE}},conditions:{{USED}}{seller_filter}",
+                "sort": "price",
+                "label": f"active_cheap{label_suffix}",
+                "limit": 50,
+                "source_type": "active",
+            },
+            {
+                "filter": f"buyingOptions:{{FIXED_PRICE}},conditions:{{USED}}{seller_filter}",
+                "sort": "newlyListed",
+                "label": f"active_new{label_suffix}",
+                "limit": 50,
+                "source_type": "active",
+            },
+        ]
 
-    for search in searches:
-        params = {
-            "q": query,
-            "limit": search["limit"],
-            "category_ids": "9801",
-            "filter": search["filter"],
-        }
-        if "sort" in search:
-            params["sort"] = search["sort"]
+        results = []
+        for search in searches:
+            params = {
+                "q": query,
+                "limit": search["limit"],
+                "category_ids": "9801",
+                "filter": search["filter"],
+            }
+            if "sort" in search:
+                params["sort"] = search["sort"]
 
-        throttle_ebay()
-        response = requests.get(SEARCH_URL, headers=headers, params=params)
+            throttle_ebay()
+            response = requests.get(SEARCH_URL, headers=headers, params=params)
 
-        if response.status_code == 429:
-            time.sleep(5)
-            continue
+            if response.status_code == 429:
+                time.sleep(5)
+                continue
 
-        if response.status_code != 200:
-            print(f"❌ [{search['label']}] search error: {response.status_code}")
-            continue
+            if response.status_code != 200:
+                print(f"❌ [{search['label']}] search error: {response.status_code}")
+                continue
 
-        items = response.json().get("itemSummaries", [])
-        print(f"✅ [{search['label']}] '{query[:35]}' → {len(items)} items")
+            items = response.json().get("itemSummaries", [])
+            print(f"✅ [{search['label']}] '{query[:35]}' → {len(items)} items")
 
-        for item in items:
+            for item in items:
+                item_id = item.get("itemId")
+                if item_id and item_id not in seen_ids:
+                    seen_ids.add(item_id)
+                    item["_source_type"] = search["source_type"]
+                    results.append(item)
+
+        return results
+
+    # Pass 1 — private sellers only
+    private_results = run_searches(",sellers:{PRIVATE}", "_private")
+    all_items.extend(private_results)
+
+    print(f"📦 Private-only results: {len(private_results)}")
+
+    # Pass 2 — fall back to all sellers if private is thin
+    if len(private_results) < PRIVATE_FIRST_THRESHOLD:
+        print(f"⚠️ Private results thin ({len(private_results)}) — falling back to all sellers")
+        all_sellers_results = run_searches("", "_all")
+        for item in all_sellers_results:
             item_id = item.get("itemId")
             if item_id and item_id not in seen_ids:
                 seen_ids.add(item_id)
-                # Tag each item with its source type so filter layer can weight it
-                item["_source_type"] = search["source_type"]
                 all_items.append(item)
+        print(f"📦 After all-seller fallback: {len(all_items)} total")
 
     return all_items
 

@@ -27,6 +27,21 @@ MAX_IMAGES_PER_LISTING = 5
 BOX_PADDING_RATIO = 0.15        # slightly increased padding
 
 
+BANNED_PLATE_STRINGS = {
+    "DEALER", "DEALERS", "REVIEWS", "REVIEW", "FORECOURT",
+    "APPROVED", "FINANCE", "WARRANTY", "AUTOTRADER", "MOTORS", 
+    "CARGURUS", "VEHICLE", "QUALITY", "CONTACT", "WEBSITE",
+    "FACEBOOK", "INSTAGRAM", "CERTIFIED", "RESERVE", "AUCTION",
+}
+
+def is_banned_plate(plate: str) -> bool:
+    if plate in BANNED_PLATE_STRINGS:
+        return True
+    # Real UK plates always have at least one digit
+    if plate.isalpha() and len(plate) >= 6:
+        return True
+    return False
+
 # ===============================
 # UK PLATE HELPERS
 # ===============================
@@ -202,6 +217,10 @@ def extract_plate_from_images(image_urls: list[str]):
                         plate = correct_common_ocr_errors(plate)
 
                         if len(plate) < 5 or len(plate) > 8:
+                            continue
+
+                        if is_banned_plate(plate):
+                            print(f"🚫 Banned plate string rejected: {plate}")
                             continue
 
                         print("🔍 OCR detected:", plate, "conf:", ocr_conf)
