@@ -12,8 +12,7 @@ from app.services.ebay_browse_service import (
 )
 
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
-FINDING_API_URL = "https://svcs.ebay.com/services/search/FindingService/v1"
-REDIS_URL = os.getenv("CELERY_BROKER_URL")
+
 redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 1800
