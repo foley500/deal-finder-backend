@@ -16,8 +16,9 @@ REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 1800
-MAX_DETAIL_EXPANSIONS = 25
+MAX_DETAIL_EXPANSIONS = 10
 MIN_SAMPLE_SIZE = 5
+MAX_ENRICHED_TARGET = 15
 
 
 # ---------------------------------------------------
@@ -65,7 +66,7 @@ def normalise_base_model(make: str, base_model: str) -> str:
 
 
 # ---------------------------------------------------
-# EBAY SOLD SEARCH
+# EBAY SOLD SEARCH — single broad query, 3 API calls
 # ---------------------------------------------------
 
 def get_sold_listings(query: str, limit: int = 100):
@@ -276,8 +277,6 @@ def get_market_price_from_sold(
     if cached:
         return json.loads(cached)
 
-    year_range = range(year - 2, year + 3)
-
     title_lower = listing_title.lower() if listing_title else ""
 
     if not engine_litre and listing_title:
@@ -316,34 +315,13 @@ def get_market_price_from_sold(
                 except:
                     pass
 
-    # Build search queries — broad first, year-specific as supplements
-    search_queries = []
+    # Single broad query — 3 API calls max per unique make/model
+    # Cache TTL 30min means repeat listings of same model cost zero calls
+    query = f"{make} {base_model}"
 
-    search_queries.append(f"{make} {base_model}")
+    print(f"🔎 Searching: make={make} base_model={base_model} engine={engine_litre} query='{query}'")
 
-    if engine_litre:
-        search_queries.append(f"{make} {base_model} {engine_litre}")
-
-    for y in year_range:
-        search_queries.append(f"{make} {base_model} {y}")
-
-    if engine_litre:
-        for y in year_range:
-            search_queries.append(f"{make} {base_model} {engine_litre} {y}")
-
-    print(f"🔎 Searching: make={make} base_model={base_model} engine={engine_litre} years={list(year_range)}")
-    print(f"📋 Queries: {search_queries}")
-
-    all_summaries = []
-    seen_ids = set()
-
-    for query in search_queries:
-        results = get_sold_listings(query)
-        for item in results:
-            item_id = item.get("itemId")
-            if item_id and item_id not in seen_ids:
-                seen_ids.add(item_id)
-                all_summaries.append(item)
+    all_summaries = get_sold_listings(query)
 
     print(f"📦 Total unique summaries collected: {len(all_summaries)}")
 
@@ -353,9 +331,10 @@ def get_market_price_from_sold(
     enriched_summaries = _pre_expand_details(all_summaries)
 
     for tolerance_config in [
-        {"year_tolerance": 2, "mileage_tolerance": 15000, "source": "layer_1_strict", "adjust_mileage": False},
+        {"year_tolerance": 2, "mileage_tolerance": 15000, "source": "layer_1_strict",          "adjust_mileage": False},
         {"year_tolerance": 2, "mileage_tolerance": 25000, "source": "layer_2_relaxed_mileage", "adjust_mileage": True},
-        {"year_tolerance": 3, "mileage_tolerance": 30000, "source": "layer_3_relaxed_year", "adjust_mileage": True},
+        {"year_tolerance": 3, "mileage_tolerance": 30000, "source": "layer_3_relaxed_year",    "adjust_mileage": True},
+        {"year_tolerance": 4, "mileage_tolerance": 40000, "source": "layer_4_wide",            "adjust_mileage": True},
     ]:
         result = run_filter_layer(
             enriched_summaries,
@@ -384,7 +363,9 @@ def _pre_expand_details(summaries: list) -> list:
         listing_year = extract_year_from_title(title)
         listing_mileage = extract_mileage_from_text(title)
 
-        if (listing_year is None or listing_mileage is None) and expansions < MAX_DETAIL_EXPANSIONS:
+        already_enriched = sum(1 for s in enriched if s.get("_year") is not None)
+
+        if (listing_year is None or listing_mileage is None) and expansions < MAX_DETAIL_EXPANSIONS and already_enriched < MAX_ENRICHED_TARGET:
             detail = get_item_detail(item_id)
             expansions += 1
 
