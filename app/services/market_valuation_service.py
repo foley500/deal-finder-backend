@@ -16,26 +16,43 @@ REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 1800
-MAX_DETAIL_EXPANSIONS = 10
+MAX_DETAIL_EXPANSIONS = 20
 MIN_SAMPLE_SIZE = 5
-MAX_ENRICHED_TARGET = 15
+MAX_ENRICHED_TARGET = 30
 
-# Active listings are asking prices, not sold prices.
-# Dealers typically achieve 82-88% of asking on eBay private sales.
-# We discount active listings to estimate what they'll actually sell for.
-ACTIVE_LISTING_DISCOUNT = 0.85  # assume 15% haircut on active BIN prices
+ACTIVE_LISTING_DISCOUNT = 0.85
 
-# Mileage adjustment: 1.5% per 5k miles, capped at 8 blocks (40k miles = 12%)
-# Beyond that we apply an exponential penalty for extreme mileage
 MILEAGE_BLOCK_SIZE = 5000
 MILEAGE_BLOCK_RATE = 0.015
 MAX_LINEAR_BLOCKS = 8
-EXTREME_MILEAGE_THRESHOLD = 120000  # above this, apply extra penalty per 10k miles
+EXTREME_MILEAGE_THRESHOLD = 120000
+
+MAX_ACCEPTABLE_IQR_RATIO = 0.40
+WIDE_SPREAD_DISCOUNT = 0.95
+
+# Mileage bands for dynamic layer_1 tolerance scaling.
+# Low mileage cars have plenty of comparables — keep tight.
+# High mileage cars have thin comparable pools — widen to compensate.
+# Format: (mileage_threshold, layer_1_tolerance, layer_2_tolerance)
+MILEAGE_TOLERANCE_BANDS = [
+    (60000,  15000, 25000),   # <60k miles  — tight, plenty of comparables
+    (100000, 18000, 28000),   # 60k-100k    — slightly wider
+    (140000, 25000, 35000),   # 100k-140k   — wider, pool is thinner
+    (float("inf"), 32000, 45000),  # 140k+  — wide, very thin pool at this mileage
+]
 
 
 # ---------------------------------------------------
 # HELPERS
 # ---------------------------------------------------
+
+def get_mileage_tolerances(target_mileage: int) -> tuple:
+    """Returns (layer_1_tolerance, layer_2_tolerance) based on target mileage."""
+    for threshold, l1, l2 in MILEAGE_TOLERANCE_BANDS:
+        if target_mileage < threshold:
+            return l1, l2
+    return 32000, 45000
+
 
 def extract_year_from_title(title: str):
     match = re.search(r"\b(19\d{2}|20\d{2})\b", title)
@@ -78,25 +95,15 @@ def normalise_base_model(make: str, base_model: str) -> str:
 
 
 def calculate_mileage_adjustment(base_price: float, listing_mileage: int, target_mileage: int) -> float:
-    """
-    Returns an adjusted price accounting for mileage difference.
-
-    - Linear adjustment up to 40k miles difference (1.5% per 5k block, max 8 blocks = 12%)
-    - Extra penalty if the listing itself has extreme mileage (>120k)
-    - Both directions: high mileage listing = lower adjusted price, low mileage = higher
-    """
     mileage_diff = listing_mileage - target_mileage
     abs_diff = abs(mileage_diff)
 
-    # Linear blocks capped at MAX_LINEAR_BLOCKS
     blocks = min(abs_diff / MILEAGE_BLOCK_SIZE, MAX_LINEAR_BLOCKS)
     linear_adjustment = base_price * MILEAGE_BLOCK_RATE * blocks
 
-    # Extra penalty if the listing itself has extreme mileage
     extreme_penalty = 0.0
     if listing_mileage > EXTREME_MILEAGE_THRESHOLD:
         excess = listing_mileage - EXTREME_MILEAGE_THRESHOLD
-        # 2% extra per 10k miles above threshold, capped at 30%
         extra_blocks = min(excess / 10000, 15)
         extreme_penalty = base_price * 0.02 * extra_blocks
         print(f"   ⚠️ Extreme mileage penalty: {listing_mileage}mi → −£{round(extreme_penalty, 2)}")
@@ -104,18 +111,64 @@ def calculate_mileage_adjustment(base_price: float, listing_mileage: int, target
     total_adjustment = linear_adjustment + extreme_penalty
 
     if mileage_diff > 0:
-        # listing has MORE miles than target → price down
         return base_price - total_adjustment
     else:
-        # listing has FEWER miles than target → price up (linear only, no extreme bonus)
         return base_price + linear_adjustment
 
 
+def mileage_proximity_weight(listing_mileage: int, target_mileage: int, tolerance: int) -> int:
+    """
+    Returns a repeat count (weight) for a comparable based on how close
+    its mileage is to the target. Closer = higher weight in the median pool.
+
+    Weight 3 = very close  (within 25% of tolerance)
+    Weight 2 = close       (within 60% of tolerance)
+    Weight 1 = acceptable  (within tolerance)
+
+    Cars with no mileage data get weight 1 (neutral).
+    """
+    if listing_mileage is None:
+        return 1
+
+    abs_diff = abs(listing_mileage - target_mileage)
+
+    if abs_diff <= tolerance * 0.25:
+        return 3
+    elif abs_diff <= tolerance * 0.60:
+        return 2
+    else:
+        return 1
+
+
+def check_spread(prices: list, label: str) -> float:
+    if len(prices) < 4:
+        return 1.0
+
+    sorted_p = sorted(prices)
+    mid = len(sorted_p) // 2
+    q1 = statistics.median(sorted_p[:mid])
+    q3 = statistics.median(sorted_p[mid:])
+    iqr = q3 - q1
+    median = statistics.median(sorted_p)
+
+    if median == 0:
+        return 1.0
+
+    iqr_ratio = iqr / median
+    print(f"   📐 IQR spread [{label}]: Q1=£{round(q1)}, Q3=£{round(q3)}, IQR=£{round(iqr)} ({round(iqr_ratio*100, 1)}% of median)")
+
+    if iqr_ratio > MAX_ACCEPTABLE_IQR_RATIO:
+        print(f"   ⚠️ Wide spread ({round(iqr_ratio*100,1)}% > {int(MAX_ACCEPTABLE_IQR_RATIO*100)}%) — applying {WIDE_SPREAD_DISCOUNT} conservatism discount")
+        return WIDE_SPREAD_DISCOUNT
+
+    return 1.0
+
+
 # ---------------------------------------------------
-# EBAY SOLD SEARCH — single broad query, 3 API calls
+# EBAY SOLD SEARCH — private-first, fallback to all
 # ---------------------------------------------------
 
-PRIVATE_FIRST_THRESHOLD = 20  # if private search returns fewer than this, fall back to all sellers
+PRIVATE_FIRST_THRESHOLD = 20
 
 def get_sold_listings(query: str, limit: int = 100):
     token = get_ebay_access_token()
@@ -189,13 +242,11 @@ def get_sold_listings(query: str, limit: int = 100):
 
         return results
 
-    # Pass 1 — private sellers only
     private_results = run_searches(",sellers:{PRIVATE}", "_private")
     all_items.extend(private_results)
 
     print(f"📦 Private-only results: {len(private_results)}")
 
-    # Pass 2 — fall back to all sellers if private is thin
     if len(private_results) < PRIVATE_FIRST_THRESHOLD:
         print(f"⚠️ Private results thin ({len(private_results)}) — falling back to all sellers")
         all_sellers_results = run_searches("", "_all")
@@ -246,7 +297,6 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
             continue
 
         mileage_diff = None
-        abs_mileage_diff = None
         if listing_mileage is not None:
             mileage_diff = listing_mileage - target_mileage
             abs_mileage_diff = abs(mileage_diff)
@@ -262,7 +312,6 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
 
         base_price = float(price_obj["value"])
 
-        # Active listings are asking prices — discount to estimate actual sale price
         if source_type == "active":
             base_price = base_price * ACTIVE_LISTING_DISCOUNT
 
@@ -275,15 +324,18 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
         elif mileage_diff is not None:
             mileage_diffs.append(mileage_diff)
 
+        # Weight by mileage proximity — closer comparables repeated more in pool
+        weight = mileage_proximity_weight(listing_mileage, target_mileage, mileage_tolerance)
+
         if source_type == "sold":
-            sold_prices.append(adjusted_price)
+            sold_prices.extend([adjusted_price] * weight)
             accepted_sold += 1
         else:
-            active_prices.append(adjusted_price)
+            active_prices.extend([adjusted_price] * weight)
             accepted_active += 1
 
     print(f"📊 FILTER DEBUG [{layer_name}]:")
-    print(f"   Sold accepted: {accepted_sold}, Active accepted: {accepted_active}")
+    print(f"   Sold accepted: {accepted_sold} ({len(sold_prices)} weighted), Active accepted: {accepted_active} ({len(active_prices)} weighted)")
     print(f"   Rejected (no year): {rejected_no_year}")
     print(f"   Rejected (year tolerance ±{year_tolerance}yr): {rejected_year}")
     print(f"   Rejected (mileage tolerance ±{mileage_tolerance}mi): {rejected_mileage}")
@@ -297,27 +349,20 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
     else:
         print("   No mileage data available")
 
-    # Build final price pool:
-    # Priority 1: sold listings alone — ground truth
-    # Priority 2: sold (weighted ×2) + discounted active blend if sold is thin
-    # Priority 3: active-only with extra caution discount (last resort)
-
     if len(sold_prices) >= MIN_SAMPLE_SIZE:
         final_prices = sold_prices
         source_label = "sold_only"
-        print(f"   ✅ Using sold-only prices ({len(sold_prices)} samples)")
+        print(f"   ✅ Using sold-only prices ({len(sold_prices)} weighted samples)")
 
     elif len(sold_prices) > 0 and (len(sold_prices) + len(active_prices)) >= MIN_SAMPLE_SIZE:
-        # Weight sold 2x by repeating them
         final_prices = (sold_prices * 2) + active_prices
         source_label = "sold_weighted_blend"
         print(f"   ⚠️ Blending: {len(sold_prices)} sold (×2 weight) + {len(active_prices)} active")
 
     elif len(active_prices) >= MIN_SAMPLE_SIZE and len(sold_prices) == 0:
-        # No sold data — use active with extra 5% caution discount on top of the 15%
         final_prices = [p * 0.95 for p in active_prices]
         source_label = "active_only_cautious"
-        print(f"   ⚠️ Active-only ({len(active_prices)} samples) — extra 5% caution discount applied")
+        print(f"   ⚠️ Active-only ({len(active_prices)} weighted samples) — extra 5% caution discount applied")
 
     else:
         print(f"❌ Failed — sold: {len(sold_prices)}, active: {len(active_prices)} (min required: {MIN_SAMPLE_SIZE})")
@@ -330,6 +375,8 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
     if cut > 0:
         final_prices = final_prices[cut:-cut]
 
+    spread_discount = check_spread(final_prices, layer_name)
+
     sample_count = len(final_prices)
 
     if sample_count >= 10:
@@ -339,7 +386,7 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
     else:
         confidence = "low"
 
-    market_price = round(statistics.median(final_prices), 2)
+    market_price = round(statistics.median(final_prices) * spread_discount, 2)
     print(f"   💰 Market price: £{market_price} ({confidence} confidence, pool: {source_label})")
 
     return {
@@ -425,12 +472,15 @@ def get_market_price_from_sold(
                 except:
                     pass
 
-    # Single broad query — 3 API calls max per unique make/model
-    # Cache TTL 30min means repeat listings of same model cost zero calls
     query = f"{make} {base_model}"
 
+    # Dynamically scale mileage tolerance based on target mileage.
+    # High mileage cars have thin comparable pools — widen tolerance to compensate.
+    # Low mileage cars stay tight — they have plenty of comparables already.
+    l1_tolerance, l2_tolerance = get_mileage_tolerances(mileage)
+
     print(f"🔎 Searching: make={make} base_model={base_model} engine={engine_litre} year={year} mileage={mileage}")
-    print(f"   Query: '{query}'")
+    print(f"   Query: '{query}' | Mileage tolerances: L1=±{l1_tolerance}, L2=±{l2_tolerance}")
 
     all_summaries = get_sold_listings(query)
 
@@ -442,10 +492,10 @@ def get_market_price_from_sold(
     enriched_summaries = _pre_expand_details(all_summaries)
 
     for tolerance_config in [
-        {"year_tolerance": 2, "mileage_tolerance": 15000, "source": "layer_1_strict",          "adjust_mileage": False},
-        {"year_tolerance": 2, "mileage_tolerance": 25000, "source": "layer_2_relaxed_mileage", "adjust_mileage": True},
-        {"year_tolerance": 3, "mileage_tolerance": 30000, "source": "layer_3_relaxed_year",    "adjust_mileage": True},
-        {"year_tolerance": 4, "mileage_tolerance": 40000, "source": "layer_4_wide",            "adjust_mileage": True},
+        {"year_tolerance": 2, "mileage_tolerance": l1_tolerance, "source": "layer_1_strict",          "adjust_mileage": True},
+        {"year_tolerance": 2, "mileage_tolerance": l2_tolerance, "source": "layer_2_relaxed_mileage", "adjust_mileage": True},
+        {"year_tolerance": 3, "mileage_tolerance": l2_tolerance + 5000,  "source": "layer_3_relaxed_year",    "adjust_mileage": True},
+        {"year_tolerance": 4, "mileage_tolerance": l2_tolerance + 15000, "source": "layer_4_wide",            "adjust_mileage": True},
     ]:
         result = run_filter_layer(
             enriched_summaries,
@@ -456,7 +506,19 @@ def get_market_price_from_sold(
             adjust_mileage=tolerance_config["adjust_mileage"],
             layer_name=tolerance_config["source"],
         )
+
         if result:
+            # Apply direct extreme mileage penalty to final market price.
+            # Corrects for when the target car itself has extreme mileage
+            # and comparables couldn't fully account for it.
+            if mileage > EXTREME_MILEAGE_THRESHOLD:
+                excess = mileage - EXTREME_MILEAGE_THRESHOLD
+                extra_blocks = min(excess / 10000, 15)
+                extreme_penalty_pct = min(0.025 * extra_blocks, 0.50)
+                original = result["market_price"]
+                result["market_price"] = round(original * (1 - extreme_penalty_pct), 2)
+                print(f"   🔻 Final extreme mileage penalty: {mileage}mi → −{round(extreme_penalty_pct*100,1)}% → £{result['market_price']} (was £{original})")
+
             result["source"] = tolerance_config["source"]
             redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
             return result

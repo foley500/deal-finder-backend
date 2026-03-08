@@ -222,6 +222,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         listing_url = raw_item.get("view_url")
         seller = raw_item.get("seller")
         location = raw_item.get("location")
+        image_urls = raw_item.get("image_urls", [])
+        primary_image = image_urls[0] if image_urls else None
 
         # ---------------------------------
         # Initial extraction from listing
@@ -312,7 +314,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
 
         if not mileage:
             mileage = extract_mileage_from_text(description)
-        
+
         if not mileage:
             mileage = 100000
 
@@ -407,6 +409,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 "seller": seller,
                 "location": location,
                 "listing_url": listing_url,
+                "primary_image": primary_image,
             }
         )
 
