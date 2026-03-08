@@ -71,43 +71,104 @@
             </div>
         </div>
 
+        <!-- OFFER CALCULATOR -->
+        <div class="card p-4 mb-4" style="border: 1px solid #334155;">
+            <h5 class="mb-3">💬 Offer Calculator</h5>
+            <p class="small text-secondary mb-3">Enter the offer price you'd send the seller to see your revised true profit.</p>
+
+            <div class="input-group mb-3">
+                <span class="input-group-text bg-dark text-light border-secondary">£</span>
+                <input
+                    type="number"
+                    id="offerInput"
+                    class="form-control bg-dark text-light border-secondary"
+                    placeholder="e.g. 1400"
+                    min="0"
+                    step="50"
+                    value="{{ report.financials.listing_price or 0 }}"
+                >
+            </div>
+
+            <div class="rounded p-3" style="background:#0f172a;">
+
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-secondary small">Your Offer</span>
+                    <strong id="offerDisplay">£—</strong>
+                </div>
+
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-secondary small">Market Value</span>
+                    <strong>£{{ report.financials.market_value or 0 }}</strong>
+                </div>
+
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-secondary small">Est. Costs (prep + transport + warranty)</span>
+                    <strong id="offerCosts">£—</strong>
+                </div>
+
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-secondary small">Risk Penalty</span>
+                    <strong>£{{ report.risk_breakdown.total_risk_penalty or 0 }}</strong>
+                </div>
+
+                <hr style="border-color:#334155;">
+
+                <div class="d-flex justify-content-between align-items-center">
+                    <span class="fw-bold">Profit at Offer Price</span>
+                    <strong id="offerProfit" class="fs-5">£—</strong>
+                </div>
+
+                <div class="mt-2">
+                    <div class="small text-secondary mb-1">Profit Margin</div>
+                    <div class="progress bg-dark" style="height:6px;">
+                        <div id="offerMarginBar" class="progress-bar bg-success" style="width:0%;"></div>
+                    </div>
+                    <div class="small mt-1" id="offerMarginLabel">—</div>
+                </div>
+
+                <div class="mt-3 small" id="offerSaving"></div>
+
+            </div>
+        </div>
+
         <!-- MARKET VALUATION -->
-        <!-- MARKET VALUATION -->
-<div class="card p-4 mb-4">
-    <h5 class="mb-3">Market Valuation (Sold Data Model)</h5>
+        <div class="card p-4 mb-4">
+            <h5 class="mb-3">Market Valuation (Sold Data Model)</h5>
 
-    {% if report.market_model and report.market_model.market_price %}
-        <div class="d-flex justify-content-between">
-            <span>Estimated Market Price</span>
-            <strong>£{{ report.market_model.market_price }}</strong>
+            {% if report.market_model and report.market_model.market_price %}
+                <div class="d-flex justify-content-between">
+                    <span>Estimated Market Price</span>
+                    <strong>£{{ report.market_model.market_price }}</strong>
+                </div>
+
+                <div class="small text-secondary mt-2">
+                    Sample Size: {{ report.market_model.sample_size or 0 }}
+                </div>
+
+                {% set conf = report.market_model.confidence or "low" %}
+                {% if conf == "high" %}
+                    <span class="badge bg-success mt-1">High Confidence</span>
+                {% elif conf == "medium" %}
+                    <span class="badge bg-warning text-dark mt-1">Medium Confidence</span>
+                {% else %}
+                    <span class="badge bg-danger mt-1">Low Confidence</span>
+                {% endif %}
+
+                <div class="small text-secondary mt-2">
+                    Source: {{ report.market_model.source }}
+                    {% if report.market_model.source_label %}
+                        · {{ report.market_model.source_label }}
+                    {% endif %}
+                </div>
+
+            {% else %}
+                <p class="text-danger mb-0">No sold data available</p>
+                <div class="small text-secondary mt-1">
+                    Market model returned: {{ report.market_model or "None" }}
+                </div>
+            {% endif %}
         </div>
 
-        <div class="small text-secondary mt-2">
-            Sample Size: {{ report.market_model.sample_size or 0 }}
-        </div>
-
-        <!-- confidence badge so you can see quality at a glance -->
-        {% set conf = report.market_model.confidence or "low" %}
-        {% if conf == "high" %}
-            <span class="badge bg-success mt-1">High Confidence</span>
-        {% elif conf == "medium" %}
-            <span class="badge bg-warning text-dark mt-1">Medium Confidence</span>
-        {% else %}
-            <span class="badge bg-danger mt-1">Low Confidence</span>
-        {% endif %}
-
-        <div class="small text-secondary mt-2">
-            Source: {{ report.market_model.source }}
-        </div>
-
-    {% else %}
-        <p class="text-danger mb-0">No sold data available</p>
-        <!-- shows you what data was actually passed -->
-        <div class="small text-secondary mt-1">
-            Market model returned: {{ report.market_model or "None" }}
-        </div>
-    {% endif %}
-</div>
         <!-- RISK BREAKDOWN -->
         <div class="card p-4 mb-4">
             <h5 class="mb-3">Risk Analysis</h5>
@@ -246,5 +307,75 @@
         <p>No MOT history available</p>
     {% endif %}
 </div>
+
+<!-- OFFER CALCULATOR SCRIPT -->
+<script>
+    const MARKET_VALUE = {{ report.financials.market_value or 0 }};
+    const RISK_PENALTY = {{ report.risk_breakdown.total_risk_penalty or 0 }};
+
+    function getCosts(offerPrice) {
+        // Mirrors calculate_true_profit() bracket logic exactly
+        if (offerPrice < 2000)      return { prep: 200, warranty: 150, transport: 100 };
+        else if (offerPrice < 4000) return { prep: 300, warranty: 200, transport: 150 };
+        else if (offerPrice < 8000) return { prep: 400, warranty: 250, transport: 150 };
+        else                        return { prep: 500, warranty: 300, transport: 200 };
+    }
+
+    function recalculate() {
+        const offerPrice = parseFloat(document.getElementById('offerInput').value);
+
+        if (isNaN(offerPrice) || offerPrice <= 0) {
+            document.getElementById('offerDisplay').textContent = '£—';
+            document.getElementById('offerCosts').textContent = '£—';
+            document.getElementById('offerProfit').textContent = '£—';
+            document.getElementById('offerMarginLabel').textContent = '—';
+            document.getElementById('offerSaving').textContent = '';
+            return;
+        }
+
+        const costs = getCosts(offerPrice);
+        const totalCosts = costs.prep + costs.warranty + costs.transport;
+        const profit = MARKET_VALUE - offerPrice - totalCosts - RISK_PENALTY;
+        const margin = MARKET_VALUE > 0 ? (profit / MARKET_VALUE * 100) : 0;
+
+        // Saving vs listing price
+        const listingPrice = {{ report.financials.listing_price or 0 }};
+        const saving = listingPrice - offerPrice;
+        const originalProfit = {{ report.financials.profit or 0 }};
+        const profitGain = profit - originalProfit;
+
+        // Update display
+        document.getElementById('offerDisplay').textContent = '£' + offerPrice.toLocaleString();
+        document.getElementById('offerCosts').textContent = '£' + totalCosts.toLocaleString();
+
+        const profitEl = document.getElementById('offerProfit');
+        profitEl.textContent = '£' + profit.toFixed(2);
+        profitEl.className = 'fs-5 ' + (profit > 0 ? 'text-success' : 'text-danger');
+
+        const clampedMargin = Math.max(margin, 0);
+        document.getElementById('offerMarginBar').style.width = Math.min(clampedMargin, 100) + '%';
+        document.getElementById('offerMarginLabel').textContent = margin.toFixed(1) + '%';
+
+        // Saving callout
+        const savingEl = document.getElementById('offerSaving');
+        if (saving > 0) {
+            savingEl.innerHTML = `
+                <span class="text-success">↓ £${saving.toLocaleString()} below asking</span>
+                &nbsp;·&nbsp;
+                <span class="${profitGain >= 0 ? 'text-success' : 'text-danger'}">
+                    ${profitGain >= 0 ? '+' : ''}£${profitGain.toFixed(0)} vs original profit
+                </span>`;
+        } else if (saving < 0) {
+            savingEl.innerHTML = `<span class="text-danger">↑ £${Math.abs(saving).toLocaleString()} above asking price</span>`;
+        } else {
+            savingEl.innerHTML = `<span class="text-secondary">Offer matches asking price</span>`;
+        }
+    }
+
+    document.getElementById('offerInput').addEventListener('input', recalculate);
+
+    // Run on load so it shows current listing price figures immediately
+    recalculate();
+</script>
 
 {% endblock %}

@@ -126,9 +126,9 @@ def notify_deal(deal_id: int):
 
 # ==========================================
 # PREWARM VALUATION CACHE
-# Runs nightly at 3am — fills Redis with
-# market prices for all common UK cars so
-# scan tasks hit cache instead of eBay API
+# Runs nightly — fills Redis with market
+# prices for common UK cars so scan tasks
+# hit cache instead of burning eBay API calls
 # ==========================================
 @celery.task
 def prewarm_valuation_cache():
@@ -296,19 +296,17 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
                 if not rough_price:
                     continue
 
-                if rough_price < 2000:
-                    rough_costs = 450
-                elif rough_price < 4000:
-                    rough_costs = 650
-                elif rough_price < 8000:
-                    rough_costs = 800
-                else:
-                    rough_costs = 1000
-
-                rough_estimated_value = rough_price * 1.20
-                rough_profit = rough_estimated_value - rough_price - rough_costs
-
-                if settings.min_profit and rough_profit < (settings.min_profit * 0.5):
+                # -------------------------------------------------------
+                # PRE-SCREEN: only hard limits we actually know right now.
+                #
+                # The old rough profit estimate (listing_price * 1.20) was
+                # rejecting genuinely undervalued cars because it assumed
+                # only 20% upside. Finding cars priced FAR below market is
+                # the entire point of this platform — the valuation engine
+                # decides profitability, not a naive guess here.
+                # -------------------------------------------------------
+                if rough_price > filters["max_price"]:
+                    print(f"⛔ Pre-screen: £{rough_price} exceeds max £{filters['max_price']} — skipping")
                     continue
 
                 deal = process_listing(

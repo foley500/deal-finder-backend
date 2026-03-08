@@ -107,6 +107,25 @@ def get_mot_data(registration: str, asking_price: float = None):
     return build_empty_response()
 
 
+def is_same_day_retest(mot_tests: list, failed_test: dict) -> bool:
+    """
+    Returns True if a FAILED test was retested and PASSED on the same date.
+    This is a normal same-day retest — the failure was resolved immediately
+    and should not be penalised as a real risk.
+    """
+    fail_date = failed_test.get("completedDate", "")[:10]  # YYYY-MM-DD
+
+    for test in mot_tests:
+        if test is failed_test:
+            continue
+        if test.get("testResult") == "PASSED":
+            pass_date = test.get("completedDate", "")[:10]
+            if pass_date == fail_date:
+                return True
+
+    return False
+
+
 def parse_mot_trade_response(data, asking_price=None):
 
     if not data or not isinstance(data, dict):
@@ -134,6 +153,22 @@ def parse_mot_trade_response(data, asking_price=None):
     medium_fails = 0
     medium_advisories = 0
 
+    # Advisory penalty per item scales down with vehicle age.
+    # A 14-year-old car with 18 advisories is normal wear — not risk.
+    # A 3-year-old car with 5 advisories is genuinely concerning.
+    if vehicle_age <= 5:
+        advisory_rate_recent = 20
+        advisory_rate_medium = 8
+    elif vehicle_age <= 10:
+        advisory_rate_recent = 12
+        advisory_rate_medium = 5
+    elif vehicle_age <= 15:
+        advisory_rate_recent = 7
+        advisory_rate_medium = 3
+    else:
+        advisory_rate_recent = 4
+        advisory_rate_medium = 2
+
     for test in mot_tests:
 
         test_date = test.get("completedDate")
@@ -155,38 +190,55 @@ def parse_mot_trade_response(data, asking_price=None):
 
         if years_ago <= recent_window_years:
             if is_failed:
-                recent_fails += 1
+                # Only penalise if this wasn't a same-day retest that passed
+                if is_same_day_retest(mot_tests, test):
+                    print(f"   ℹ️ MOT fail on {test_date[:10]} was same-day retest — not penalised")
+                else:
+                    recent_fails += 1
             recent_advisories += advisory_count_this_test
 
         elif years_ago <= medium_window_years:
             if is_failed:
-                medium_fails += 1
+                if is_same_day_retest(mot_tests, test):
+                    print(f"   ℹ️ MOT fail on {test_date[:10]} was same-day retest — not penalised")
+                else:
+                    medium_fails += 1
             medium_advisories += advisory_count_this_test
 
     fail_penalty = (recent_fails * 200) + (medium_fails * 100)
-    advisory_penalty = (recent_advisories * 15) + (medium_advisories * 5)
-    advisory_penalty = min(advisory_penalty, 700)
+    advisory_penalty = (recent_advisories * advisory_rate_recent) + (medium_advisories * advisory_rate_medium)
+
+    # Cap advisories — even on a new car, advisory penalty shouldn't dominate
+    advisory_penalty = min(advisory_penalty, 500)
+
     raw_penalty = fail_penalty + advisory_penalty
 
+    # Age factor: older cars get a further overall reduction
+    # because some risk is already priced in at the purchase price
     if vehicle_age <= 5:
         age_factor = 1.0
     elif vehicle_age <= 10:
         age_factor = 0.85
     elif vehicle_age <= 15:
-        age_factor = 0.7
+        age_factor = 0.65
     else:
-        age_factor = 0.55
+        age_factor = 0.45
 
     adjusted_penalty = raw_penalty * age_factor
 
-    # Cap penalty relative to vehicle value
-    # Never penalise more than 30% of asking price
+    # Cap penalty relative to vehicle value — never more than 25% of asking
+    # (was 30% — reduced because the per-advisory rates are now more accurate)
     if asking_price and asking_price > 0:
-        value_cap = asking_price * 0.30
+        value_cap = asking_price * 0.25
     else:
-        value_cap = 2500
+        value_cap = 2000
 
     final_penalty = min(adjusted_penalty, value_cap)
+
+    print(f"   🔧 MOT penalty calc: age={vehicle_age}yr, recent_fails={recent_fails}, medium_fails={medium_fails}")
+    print(f"   🔧 recent_advisories={recent_advisories}, medium_advisories={medium_advisories}")
+    print(f"   🔧 fail_penalty=£{fail_penalty}, advisory_penalty=£{round(advisory_penalty,2)}, age_factor={age_factor}")
+    print(f"   🔧 raw=£{round(raw_penalty,2)}, adjusted=£{round(adjusted_penalty,2)}, final=£{round(final_penalty,2)}")
 
     return {
         "mot_summary": {
