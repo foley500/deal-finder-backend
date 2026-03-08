@@ -15,7 +15,7 @@ SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
-CACHE_TTL = 1800
+CACHE_TTL = 21600          # 6 hours — prices don't change hourly
 MAX_DETAIL_EXPANSIONS = 20
 MIN_SAMPLE_SIZE = 5
 MAX_ENRICHED_TARGET = 30
@@ -408,8 +408,12 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
 def get_market_price_from_sold(
     make, model, year, mileage,
     engine_size=None, listing_title=None, listing_aspects=None,
+    cache_only=False,
 ):
-
+    """
+    cache_only=True: return cached result or None, never burn eBay API calls.
+    Used during scan tasks. Only the prewarm job calls with cache_only=False.
+    """
     if not make or not model or not year:
         return None
 
@@ -437,6 +441,12 @@ def get_market_price_from_sold(
     cached = redis_client.get(cache_key)
     if cached:
         return json.loads(cached)
+
+    # During scan tasks, never fall through to live eBay calls.
+    # Cache miss = no valuation. Prewarm fills the cache.
+    if cache_only:
+        print(f"   ⚡ Cache miss (cache_only) — skipping: {make} {base_model} {year} {mileage_bucket}mi")
+        return None
 
     title_lower = listing_title.lower() if listing_title else ""
 

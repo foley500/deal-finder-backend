@@ -23,62 +23,72 @@ VALUE_SWEEP_LIMIT = 150
 
 # ==========================================
 # COMMON UK CARS FOR CACHE PREWARM
-# Format: (make, model, years, mileage_buckets)
-# Covers ~90% of what appears on eBay UK
+#
+# Format: (make, base_model, years, mileage_buckets)
+#
+# IMPORTANT: one eBay search per (make, base_model) entry — NOT per
+# year/mileage combination. The prewarm fetches all results for that
+# model once, then the valuation engine filters and caches results
+# across every year/mileage bucket from that single fetch.
+#
+# API budget: ~51 models × 6 calls = ~306 calls per full prewarm cycle.
+# With 6hr TTL and skip-if-cached logic, typical refresh cost is far lower.
 # ==========================================
 PREWARM_TARGETS = [
-    ("Ford",       "Fiesta",    [2014, 2015, 2016, 2017, 2018, 2019], [20000, 40000, 60000, 80000, 100000]),
-    ("Ford",       "Focus",     [2014, 2015, 2016, 2017, 2018, 2019], [20000, 40000, 60000, 80000, 100000]),
-    ("Ford",       "Ka",        [2012, 2013, 2014, 2015, 2016],       [30000, 50000, 70000, 90000]),
-    ("Ford",       "Kuga",      [2015, 2016, 2017, 2018, 2019],       [30000, 50000, 70000, 90000]),
-    ("Ford",       "Mondeo",    [2014, 2015, 2016, 2017, 2018],       [40000, 60000, 80000, 100000]),
-    ("Vauxhall",   "Corsa",     [2014, 2015, 2016, 2017, 2018, 2019], [20000, 40000, 60000, 80000, 100000]),
-    ("Vauxhall",   "Astra",     [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Vauxhall",   "Insignia",  [2014, 2015, 2016, 2017, 2018],       [40000, 60000, 80000, 100000]),
-    ("Vauxhall",   "Mokka",     [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Volkswagen", "Golf",      [2014, 2015, 2016, 2017, 2018, 2019], [20000, 40000, 60000, 80000, 100000]),
-    ("Volkswagen", "Polo",      [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
-    ("Volkswagen", "Passat",    [2014, 2015, 2016, 2017, 2018],       [40000, 60000, 80000, 100000]),
-    ("Volkswagen", "Tiguan",    [2015, 2016, 2017, 2018, 2019],       [30000, 50000, 70000, 90000]),
-    ("Audi",       "A1",        [2013, 2014, 2015, 2016, 2017, 2018], [20000, 40000, 60000, 80000]),
-    ("Audi",       "A3",        [2014, 2015, 2016, 2017, 2018, 2019], [20000, 40000, 60000, 80000, 100000]),
-    ("Audi",       "A4",        [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Audi",       "Q3",        [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("BMW",        "1 Series",  [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
-    ("BMW",        "3 Series",  [2013, 2014, 2015, 2016, 2017, 2018], [30000, 50000, 70000, 90000]),
-    ("BMW",        "5 Series",  [2013, 2014, 2015, 2016, 2017],       [40000, 60000, 80000, 100000]),
-    ("Mercedes-Benz", "A-Class",[2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
-    ("Mercedes-Benz", "C-Class",[2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Toyota",     "Yaris",     [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
-    ("Toyota",     "Auris",     [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Toyota",     "Corolla",   [2015, 2016, 2017, 2018, 2019],       [20000, 40000, 60000, 80000]),
-    ("Nissan",     "Micra",     [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
-    ("Nissan",     "Juke",      [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Nissan",     "Qashqai",   [2014, 2015, 2016, 2017, 2018, 2019], [30000, 50000, 70000, 90000]),
-    ("Honda",      "Civic",     [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Honda",      "Jazz",      [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
-    ("Hyundai",    "I20",       [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
-    ("Hyundai",    "I30",       [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Kia",        "Rio",       [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
-    ("Kia",        "Ceed",      [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Kia",        "Sportage",  [2015, 2016, 2017, 2018, 2019],       [30000, 50000, 70000, 90000]),
-    ("Seat",       "Ibiza",     [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
-    ("Seat",       "Leon",      [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Skoda",      "Fabia",     [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
-    ("Skoda",      "Octavia",   [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Fiat",       "500",       [2013, 2014, 2015, 2016, 2017, 2018], [20000, 40000, 60000, 80000]),
-    ("Mini",       "Hatch",     [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
-    ("Mini",       "Clubman",   [2015, 2016, 2017, 2018, 2019],       [20000, 40000, 60000, 80000]),
-    ("Peugeot",    "208",       [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
-    ("Peugeot",    "308",       [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Renault",    "Clio",      [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
-    ("Renault",    "Megane",    [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Citroen",    "C3",        [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
-    ("Mazda",      "Mazda3",    [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Volvo",      "V40",       [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
-    ("Land Rover", "Discovery", [2014, 2015, 2016, 2017, 2018],       [40000, 60000, 80000, 100000]),
-    ("Land Rover", "Freelander",[2012, 2013, 2014, 2015],             [40000, 60000, 80000, 100000]),
-    ("Jeep",       "Renegade",  [2015, 2016, 2017, 2018],             [30000, 50000, 70000, 90000]),
+    # (make, base_model, years_to_cache, mileage_buckets_to_cache)
+    ("Ford",          "Fiesta",     [2014, 2015, 2016, 2017, 2018, 2019], [20000, 40000, 60000, 80000, 100000]),
+    ("Ford",          "Focus",      [2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019], [20000, 40000, 60000, 80000, 100000, 120000, 140000, 160000, 180000]),
+    ("Ford",          "Ka",         [2012, 2013, 2014, 2015, 2016],       [30000, 50000, 70000, 90000]),
+    ("Ford",          "Kuga",       [2015, 2016, 2017, 2018, 2019],       [30000, 50000, 70000, 90000]),
+    ("Ford",          "Mondeo",     [2014, 2015, 2016, 2017, 2018],       [40000, 60000, 80000, 100000]),
+    ("Vauxhall",      "Corsa",      [2014, 2015, 2016, 2017, 2018, 2019], [20000, 40000, 60000, 80000, 100000]),
+    ("Vauxhall",      "Astra",      [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Vauxhall",      "Insignia",   [2014, 2015, 2016, 2017, 2018],       [40000, 60000, 80000, 100000]),
+    ("Vauxhall",      "Mokka",      [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Volkswagen",    "Golf",       [2014, 2015, 2016, 2017, 2018, 2019], [20000, 40000, 60000, 80000, 100000]),
+    ("Volkswagen",    "Polo",       [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
+    ("Volkswagen",    "Passat",     [2014, 2015, 2016, 2017, 2018],       [40000, 60000, 80000, 100000]),
+    ("Volkswagen",    "Tiguan",     [2015, 2016, 2017, 2018, 2019],       [30000, 50000, 70000, 90000]),
+    ("Volkswagen",    "Up",         [2013, 2014, 2015, 2016, 2017, 2018], [20000, 40000, 60000, 80000]),
+    ("Audi",          "A1",         [2013, 2014, 2015, 2016, 2017, 2018], [20000, 40000, 60000, 80000]),
+    ("Audi",          "A3",         [2014, 2015, 2016, 2017, 2018, 2019], [20000, 40000, 60000, 80000, 100000]),
+    ("Audi",          "A4",         [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Audi",          "Q3",         [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Bmw",           "1 Series",   [2012, 2013, 2014, 2015, 2016, 2017, 2018], [20000, 40000, 60000, 80000, 100000, 120000]),
+    ("Bmw",           "3 Series",   [2013, 2014, 2015, 2016, 2017, 2018], [30000, 50000, 70000, 90000]),
+    ("Bmw",           "5 Series",   [2013, 2014, 2015, 2016, 2017],       [40000, 60000, 80000, 100000]),
+    ("Mercedes-Benz", "A-Class",    [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
+    ("Mercedes-Benz", "C-Class",    [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Toyota",        "Yaris",      [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
+    ("Toyota",        "Auris",      [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Toyota",        "Corolla",    [2015, 2016, 2017, 2018, 2019],       [20000, 40000, 60000, 80000]),
+    ("Nissan",        "Micra",      [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
+    ("Nissan",        "Juke",       [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Nissan",        "Qashqai",    [2014, 2015, 2016, 2017, 2018, 2019], [30000, 50000, 70000, 90000]),
+    ("Honda",         "Civic",      [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Honda",         "Jazz",       [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
+    ("Hyundai",       "I20",        [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
+    ("Hyundai",       "I30",        [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Kia",           "Rio",        [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
+    ("Kia",           "Ceed",       [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Kia",           "Sportage",   [2015, 2016, 2017, 2018, 2019],       [30000, 50000, 70000, 90000]),
+    ("Seat",          "Ibiza",      [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
+    ("Seat",          "Leon",       [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Skoda",         "Fabia",      [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
+    ("Skoda",         "Octavia",    [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Fiat",          "500",        [2013, 2014, 2015, 2016, 2017, 2018], [20000, 40000, 60000, 80000]),
+    ("Mini",          "Hatch",      [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
+    ("Mini",          "Clubman",    [2015, 2016, 2017, 2018, 2019],       [20000, 40000, 60000, 80000]),
+    ("Peugeot",       "208",        [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
+    ("Peugeot",       "308",        [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Renault",       "Clio",       [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
+    ("Renault",       "Megane",     [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Citroen",       "C3",         [2014, 2015, 2016, 2017, 2018],       [20000, 40000, 60000, 80000]),
+    ("Mazda",         "Mazda3",     [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Volvo",         "V40",        [2014, 2015, 2016, 2017, 2018],       [30000, 50000, 70000, 90000]),
+    ("Land Rover",    "Discovery",  [2014, 2015, 2016, 2017, 2018],       [40000, 60000, 80000, 100000]),
+    ("Land Rover",    "Freelander", [2012, 2013, 2014, 2015],             [40000, 60000, 80000, 100000]),
+    ("Jeep",          "Renegade",   [2015, 2016, 2017, 2018],             [30000, 50000, 70000, 90000]),
 ]
 
 
@@ -126,53 +136,138 @@ def notify_deal(deal_id: int):
 
 # ==========================================
 # PREWARM VALUATION CACHE
-# Runs nightly — fills Redis with market
-# prices for common UK cars so scan tasks
-# hit cache instead of burning eBay API calls
+#
+# KEY DESIGN: one eBay search per (make, base_model) only.
+# The valuation engine is called once per (make, model, year, mileage)
+# combination but reuses the same eBay search results via the shared
+# enriched summaries — no additional API calls per year/mileage bucket.
+#
+# API budget: ~53 models × 6 calls = ~318 calls per full prewarm.
+# With 6hr TTL and skip-if-any-cached logic, daily cost ~636 calls (2×/day).
+# Leaves ~4,300 calls/day for scanning.
 # ==========================================
 @celery.task
 def prewarm_valuation_cache():
-    from app.services.market_valuation_service import get_market_price_from_sold
+    from app.services.market_valuation_service import (
+        get_market_price_from_sold,
+        get_sold_listings,
+        _pre_expand_details,
+        run_filter_layer,
+        normalise_base_model,
+        get_mileage_tolerances,
+        EXTREME_MILEAGE_THRESHOLD,
+        CACHE_TTL,
+        redis_client as mvc_redis,
+    )
+    import json
 
-    total = 0
-    hits = 0
-    skipped = 0
+    total_searches = 0
+    total_cached = 0
+    total_skipped = 0
 
     print("🔥 Starting valuation cache prewarm...")
 
-    for make, model, years, mileage_buckets in PREWARM_TARGETS:
+    for make, base_model, years, mileage_buckets in PREWARM_TARGETS:
+
+        make_title = make.strip().title()
+        base_model_title = normalise_base_model(make_title, base_model.strip().title())
+
+        # Check if ALL buckets for this model are already cached.
+        # If most are warm, skip the whole model to save API calls.
+        cached_count = 0
+        total_buckets = len(years) * len(mileage_buckets)
+        for year in years:
+            for mileage in mileage_buckets:
+                ck = f"sold_cache:{make_title}:{base_model_title}:{year}:{mileage}"
+                if mvc_redis.get(ck):
+                    cached_count += 1
+
+        if cached_count >= total_buckets:
+            total_skipped += total_buckets
+            print(f"⏭️  {make_title} {base_model_title} — all {total_buckets} buckets cached, skipping")
+            continue
+
+        warm_ratio = cached_count / total_buckets if total_buckets > 0 else 0
+        if warm_ratio > 0.7:
+            total_skipped += cached_count
+            print(f"⏭️  {make_title} {base_model_title} — {cached_count}/{total_buckets} warm (>70%), skipping")
+            continue
+
+        print(f"🔎 Fetching: {make_title} {base_model_title} ({cached_count}/{total_buckets} already cached)")
+
+        # ONE eBay search for this make/model — shared across all year/mileage combos
+        query = f"{make_title} {base_model_title}"
+        try:
+            all_summaries = get_sold_listings(query)
+            total_searches += 1
+        except Exception as e:
+            print(f"❌ Search failed for {query}: {e}")
+            continue
+
+        if not all_summaries:
+            print(f"⚠️  No results for {query}")
+            continue
+
+        # Enrich summaries once — reused across all year/mileage combinations below
+        try:
+            enriched_summaries = _pre_expand_details(all_summaries)
+        except Exception as e:
+            print(f"❌ Expansion failed for {query}: {e}")
+            continue
+
+        # Fan out: run filter layers for every year/mileage bucket combination
+        # No additional API calls — just filtering the already-fetched summaries
         for year in years:
             for mileage in mileage_buckets:
 
-                # Check if already cached — don't burn API calls unnecessarily
-                cache_key = f"sold_cache:{make.title()}:{model.title()}:{year}:{mileage}"
-                if redis_client.get(cache_key):
-                    skipped += 1
+                cache_key = f"sold_cache:{make_title}:{base_model_title}:{year}:{mileage}"
+
+                if mvc_redis.get(cache_key):
+                    total_skipped += 1
                     continue
 
-                try:
-                    result = get_market_price_from_sold(
-                        make=make,
-                        model=model,
-                        year=year,
-                        mileage=mileage,
+                l1_tolerance, l2_tolerance = get_mileage_tolerances(mileage)
+
+                result = None
+                for tolerance_config in [
+                    {"year_tolerance": 2, "mileage_tolerance": l1_tolerance,          "source": "layer_1_strict",          "adjust_mileage": True},
+                    {"year_tolerance": 2, "mileage_tolerance": l2_tolerance,          "source": "layer_2_relaxed_mileage", "adjust_mileage": True},
+                    {"year_tolerance": 3, "mileage_tolerance": l2_tolerance + 5000,   "source": "layer_3_relaxed_year",    "adjust_mileage": True},
+                    {"year_tolerance": 4, "mileage_tolerance": l2_tolerance + 15000,  "source": "layer_4_wide",            "adjust_mileage": True},
+                ]:
+                    result = run_filter_layer(
+                        enriched_summaries,
+                        target_year=year,
+                        target_mileage=mileage,
+                        year_tolerance=tolerance_config["year_tolerance"],
+                        mileage_tolerance=tolerance_config["mileage_tolerance"],
+                        adjust_mileage=tolerance_config["adjust_mileage"],
+                        layer_name=tolerance_config["source"],
                     )
-                    total += 1
                     if result:
-                        hits += 1
-                        print(f"✅ {make} {model} {year} {mileage}mi → £{result['market_price']}")
-                    else:
-                        print(f"⚠️ {make} {model} {year} {mileage}mi → no data")
+                        # Apply extreme mileage output penalty
+                        if mileage > EXTREME_MILEAGE_THRESHOLD:
+                            excess = mileage - EXTREME_MILEAGE_THRESHOLD
+                            extra_blocks = min(excess / 10000, 15)
+                            extreme_penalty_pct = min(0.025 * extra_blocks, 0.50)
+                            original = result["market_price"]
+                            result["market_price"] = round(original * (1 - extreme_penalty_pct), 2)
+                            print(f"   🔻 Extreme mileage penalty: {mileage}mi → −{round(extreme_penalty_pct*100,1)}% → £{result['market_price']}")
 
-                    # Small pause between valuations to avoid hammering eBay
-                    time.sleep(2)
+                        result["source"] = tolerance_config["source"]
+                        mvc_redis.set(cache_key, json.dumps(result), ex=CACHE_TTL)
+                        total_cached += 1
+                        print(f"   ✅ Cached: {make_title} {base_model_title} {year} {mileage}mi → £{result['market_price']}")
+                        break
 
-                except Exception as e:
-                    print(f"❌ {make} {model} {year}: {e}")
-                    continue
+                if not result:
+                    print(f"   ⚠️  No result: {make_title} {base_model_title} {year} {mileage}mi")
 
-    print(f"🔥 Prewarm complete: {hits}/{total} valued, {skipped} already cached")
-    return {"valued": hits, "total": total, "skipped": skipped}
+        # Pause between models to respect rate limiter
+        time.sleep(3)
+
+    print(f"🔥 Prewarm complete: {total_searches} searches, {total_cached} buckets cached, {total_skipped} skipped")
+    return {"searches": total_searches, "cached": total_cached, "skipped": total_skipped}
 
 
 # ==========================================
@@ -296,15 +391,6 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
                 if not rough_price:
                     continue
 
-                # -------------------------------------------------------
-                # PRE-SCREEN: only hard limits we actually know right now.
-                #
-                # The old rough profit estimate (listing_price * 1.20) was
-                # rejecting genuinely undervalued cars because it assumed
-                # only 20% upside. Finding cars priced FAR below market is
-                # the entire point of this platform — the valuation engine
-                # decides profitability, not a naive guess here.
-                # -------------------------------------------------------
                 if rough_price > filters["max_price"]:
                     print(f"⛔ Pre-screen: £{rough_price} exceeds max £{filters['max_price']} — skipping")
                     continue
