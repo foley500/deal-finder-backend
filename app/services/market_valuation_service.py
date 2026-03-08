@@ -318,12 +318,17 @@ def get_market_price_from_sold(
 
     search_queries = []
 
-    for y in year_range:
-        search_queries.append(f"{make} {base_model} {y}")
+    search_queries = []
+
+    # Broad queries without year — filter layer handles year matching
+    search_queries.append(f"{make} {base_model}")
 
     if engine_litre:
-        for y in year_range:
-            search_queries.append(f"{make} {base_model} {engine_litre} {y}")
+    search_queries.append(f"{make} {base_model} {engine_litre}")
+
+    # Year-specific queries as supplements for popular models
+    for y in year_range:
+    search_queries.append(f"{make} {base_model} {y}")
 
     print(f"🔎 Searching: make={make} base_model={base_model} engine={engine_litre} years={list(year_range)}")
     print(f"📋 Queries: {search_queries}")
