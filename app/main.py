@@ -133,6 +133,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
             "high_confidence": high_confidence,
             "last_scan_time": last_scan_time,
             "settings": settings,   # 🔥 THIS IS CRITICAL
+            "nav_counts": get_nav_counts(db),
         }
     )
 
