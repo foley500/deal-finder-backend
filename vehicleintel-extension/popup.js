@@ -70,22 +70,42 @@ document.getElementById("sendBtn").addEventListener("click", async () => {
             let location = null;
 
             const pageText = document.body.innerText;
+            const lines = pageText.split("\n").map(l => l.trim()).filter(Boolean);
 
-            const elements = Array.from(document.querySelectorAll("*"))
-              .filter(el => el.offsetParent !== null);
-
-            for (let el of elements) {
-              const text = el.innerText?.trim();
-              if (!text) continue;
-              if (/^\d{4}\s/.test(text)) {
-                const lines = text.split("\n").filter(Boolean);
-                title = lines.slice(0, 3).join(" / ");
-                const priceMatch = text.match(/£\s?([\d,]+)/);
-                if (priceMatch) price = parseFloat(priceMatch[1].replace(/,/g, ""));
-                location = lines[2] || null;
+            // Find title: line starting with a year (e.g. "2012 Kia optima")
+            for (let i = 0; i < lines.length; i++) {
+              if (/^\d{4}\s/.test(lines[i])) {
+                title = lines[i];
+                // Price is usually the next £ line after the title
+                for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+                  const priceMatch = lines[j].match(/^£\s?([\d,]+)/);
+                  if (priceMatch) {
+                    price = parseFloat(priceMatch[1].replace(/,/g, ""));
+                    break;
+                  }
+                }
                 break;
               }
             }
+
+            // Fallback 1: target the known Facebook price span class directly
+            if (!price) {
+              const priceSpan = document.querySelector("span.x193iq5w.xeuugli.x13faqbe.x1vvkbs");
+              if (priceSpan) {
+                const priceMatch = priceSpan.innerText.match(/£\s?([\d,]+)/);
+                if (priceMatch) price = parseFloat(priceMatch[1].replace(/,/g, ""));
+              }
+            }
+
+            // Fallback 2: find any £ price in the page
+            if (!price) {
+              const priceMatch = pageText.match(/£\s?([\d,]+)/);
+              if (priceMatch) price = parseFloat(priceMatch[1].replace(/,/g, ""));
+            }
+
+            // Location: "Listed X ago in LOCATION"
+            const locationMatch = pageText.match(/Listed .+ in ([^\n]+)/);
+            if (locationMatch) location = locationMatch[1].trim();
 
             const mileageMatch = pageText.match(/Driven\s+([\d,]+)/i);
             if (mileageMatch) mileage = parseInt(mileageMatch[1].replace(/,/g, ""));
