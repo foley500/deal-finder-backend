@@ -274,6 +274,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                         upgrade_image_resolution(img["imageUrl"])
                     )
 
+            # Fallback to summary thumbnail if detail returned no images
+            if not image_urls and raw_item.get("image_url"):
+                image_urls.append(upgrade_image_resolution(raw_item["image_url"]))
+
             seen = set()
             cleaned = []
             for url in image_urls:
