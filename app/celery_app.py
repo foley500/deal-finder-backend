@@ -28,17 +28,17 @@ celery.conf.beat_schedule = {
         "schedule": timedelta(minutes=10),
         "args": (1,),
     },
-    "value-sweep-every-30-minutes": {
+    # Value sweep runs every 4 hours — catches listings where
+    # the seller dropped the price after the sniper passed over them.
+    "value-sweep-every-4-hours": {
         "task": "app.tasks.scan_value_sweep",
-        "schedule": timedelta(minutes=30),
+        "schedule": timedelta(hours=4),
         "args": (1,),
-        "options": {"expires": 1800},
+        "options": {"expires": 3600},
     },
 
     # ==========================================
-    # CACHE PREWARM — runs at 3am UTC daily
-    # Fills Redis with market prices for all
-    # common UK cars before morning scans run
+    # CACHE PREWARM — every 5 hours
     # ==========================================
     "prewarm-valuation-cache": {
         "task": "app.tasks.prewarm_valuation_cache",
