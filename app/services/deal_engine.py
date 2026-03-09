@@ -332,7 +332,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 engine_size=vehicle_data.get("engine_size"),
                 listing_title=title,
                 listing_aspects=aspects,
-                cache_only=True,
+                cache_only=False,
             )
 
         if valuation_result:
