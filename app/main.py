@@ -278,6 +278,53 @@ def test_ebay_browse():
 
 
 # =====================================================
+# SETTINGS API — used by Chrome extension
+# =====================================================
+
+@app.get("/dealer/{dealer_id}/settings/json")
+def get_settings_json(dealer_id: int, db: Session = Depends(get_db)):
+    settings = db.query(DealerSettings).filter(
+        DealerSettings.dealer_id == dealer_id
+    ).first()
+    if not settings:
+        return {}
+    return {
+        "min_year": settings.min_year,
+        "max_year": settings.max_year,
+        "max_price": settings.max_price,
+        "max_mileage": settings.max_mileage,
+        "min_profit": settings.min_profit,
+        "min_score": settings.min_score,
+    }
+
+
+@app.post("/dealer/{dealer_id}/settings/json")
+def save_settings_json(dealer_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
+    settings = db.query(DealerSettings).filter(
+        DealerSettings.dealer_id == dealer_id
+    ).first()
+    if not settings:
+        settings = DealerSettings(dealer_id=dealer_id)
+        db.add(settings)
+
+    if data.get("min_year") is not None:
+        settings.min_year = int(data["min_year"])
+    if data.get("max_year") is not None:
+        settings.max_year = int(data["max_year"])
+    if data.get("max_price") is not None:
+        settings.max_price = float(data["max_price"])
+    if data.get("max_mileage") is not None:
+        settings.max_mileage = int(data["max_mileage"])
+    if data.get("min_profit") is not None:
+        settings.min_profit = float(data["min_profit"])
+    if data.get("min_score") is not None:
+        settings.min_score = float(data["min_score"])
+
+    db.commit()
+    return {"status": "saved"}
+
+
+# =====================================================
 # FACEBOOK INGESTION — uses YOLO + EasyOCR (same as engine)
 # =====================================================
 
@@ -301,13 +348,50 @@ def ingest_facebook(
     if detected_plate:
         data["registration"] = detected_plate
 
+    # Get dealer settings so we can return filter reasons
+    settings = db.query(DealerSettings).filter(
+        DealerSettings.dealer_id == dealer_id
+    ).first()
+
+    price = float(data.get("price", 0) or 0)
+    title = data.get("title", "") or ""
+
+    # Pre-screen checks before running full pipeline
+    if not price:
+        return {"status": "filtered", "reason": "No price found on listing"}
+
+    if price < 500:
+        return {"status": "filtered", "reason": f"Price £{price} is below minimum £500"}
+
+    if settings and settings.max_price and price > settings.max_price:
+        return {"status": "filtered", "reason": f"Price £{price} exceeds your max price filter of £{settings.max_price}"}
+
     deal = process_listing(
         raw_item=data,
         dealer_id=dealer_id,
         source="facebook_extension",
     )
 
-    return {"status": "processed" if deal else "filtered"}
+    if deal:
+        return {
+            "status": "accepted",
+            "deal_id": deal.id,
+            "profit": deal.profit,
+            "score": deal.score,
+            "market_value": deal.market_value,
+            "reg": deal.reg or "Not detected",
+        }
+
+    # Deal was filtered by the engine — work out most likely reason
+    if not detected_plate:
+        plate_msg = "No plate detected — "
+    else:
+        plate_msg = f"Plate {detected_plate} — "
+
+    return {
+        "status": "filtered",
+        "reason": f"{plate_msg}filtered by profit or score thresholds (min profit: £{settings.min_profit or 0}, min score: {settings.min_score or 0})"
+    }
 
 
 # =====================================================
