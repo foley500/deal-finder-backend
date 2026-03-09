@@ -22,6 +22,8 @@ from app.models import Base, Dealer, DealerSettings, Deal, ScanRun
 from app.tasks import notify_deal, scan_sniper, scan_value_sweep
 from app.services.deal_engine import process_listing
 from app.services.ebay_browse_service import search_ebay_browse
+from app.services.ocr_service import extract_plate_from_base64
+from app.services.ocr_service import extract_plate_from_base64
 
 # =====================================================
 # APP SETUP
@@ -53,6 +55,21 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+# =====================================================
+# NAV COUNTS — used by sidebar badges on every page
+# =====================================================
+
+def get_nav_counts(db: Session) -> dict:
+    all_deals = db.query(Deal).count()
+    ebay_deals = db.query(Deal).filter(Deal.source == "ebay_browse").count()
+    facebook_deals = db.query(Deal).filter(Deal.source == "facebook_extension").count()
+    return {
+        "all_deals": all_deals,
+        "ebay_deals": ebay_deals,
+        "facebook_deals": facebook_deals,
+    }
 
 
 # =====================================================
@@ -129,10 +146,14 @@ def all_deals(
     request: Request,
     sort: str | None = Query(None),
     confidence: str | None = Query(None),
+    source: str | None = Query(None),
     db: Session = Depends(get_db)
 ):
 
     query = db.query(Deal)
+
+    if source:
+        query = query.filter(Deal.source == source)
 
     if confidence:
         query = query.filter(Deal.status == confidence)
@@ -150,7 +171,12 @@ def all_deals(
 
     return templates.TemplateResponse(
         "all_deals.html",
-        {"request": request, "deals": deals},
+        {
+            "request": request,
+            "deals": deals,
+            "nav_counts": get_nav_counts(db),
+            "active_source": source,
+        },
     )
 
 
@@ -220,6 +246,7 @@ def deal_detail(
         "listing_url": raw_report.get("listing_url"),
         "seller": raw_report.get("seller"),
         "location": raw_report.get("location"),
+        "primary_image": raw_report.get("primary_image"),
     }
 
     return templates.TemplateResponse(
@@ -228,10 +255,9 @@ def deal_detail(
             "request": request,
             "deal": deal,
             "report": normalized_report,
+            "nav_counts": get_nav_counts(db),
         },
     )
-
-    
 
 
 # =====================================================
@@ -252,7 +278,7 @@ def test_ebay_browse():
 
 
 # =====================================================
-# FACEBOOK INGESTION
+# FACEBOOK INGESTION — uses YOLO + EasyOCR (same as engine)
 # =====================================================
 
 @app.post("/ingest/facebook")
@@ -265,30 +291,12 @@ def ingest_facebook(
     detected_plate = None
 
     image_base64 = data.get("image_base64")
-    PLATE_API_KEY = os.getenv("PLATE_API_KEY")
 
-    if image_base64 and PLATE_API_KEY:
+    if image_base64:
         try:
-            header, encoded = image_base64.split(",", 1)
-            image_bytes = base64.b64decode(encoded)
-
-            response = requests.post(
-                "https://api.platerecognizer.com/v1/plate-reader/",
-                headers={"Authorization": f"Token {PLATE_API_KEY}"},
-                files={"upload": ("image.jpg", image_bytes)},
-                data={"regions": ["gb"]},
-                timeout=20,
-            )
-
-            result = response.json()
-
-            if result.get("results"):
-                raw_plate = result["results"][0]["plate"].upper()
-                if is_valid_uk_plate(raw_plate):
-                    detected_plate = raw_plate
-
-        except Exception:
-            pass
+            detected_plate = extract_plate_from_base64(image_base64)
+        except Exception as e:
+            print("Facebook OCR error:", e)
 
     if detected_plate:
         data["registration"] = detected_plate
@@ -355,6 +363,7 @@ async def ebay_marketplace_deletion(request: Request):
 
     return JSONResponse({"status": "received"})
 
+
 @app.post("/ingest/ebay")
 def ingest_ebay(db: Session = Depends(get_db)):
 
@@ -390,21 +399,25 @@ def ingest_ebay(db: Session = Depends(get_db)):
         "saved": saved
     }
 
+
 @app.get("/test-ebay-scan")
 def test_ebay_scan():
     scan_sniper.delay(1)
     scan_value_sweep.delay(1)
     return {"status": "Both scans triggered"}
 
+
 @app.post("/dealer/{dealer_id}/scan")
 def run_market_scan(dealer_id: int):
     scan_sniper.delay(dealer_id)
     return RedirectResponse(url="/", status_code=303)
 
+
 @app.post("/dealer/{dealer_id}/value-sweep")
 def run_value_sweep(dealer_id: int):
     scan_value_sweep.delay(dealer_id)
     return RedirectResponse(url="/", status_code=303)
+
 
 @app.get("/create-test-dealer")
 def create_test_dealer():
@@ -420,16 +433,11 @@ def create_test_dealer():
         dealer = Dealer(
             name="Test Dealer"
         )
-
         db.add(dealer)
         db.commit()
         db.refresh(dealer)
 
-        # Create default settings
-        settings = DealerSettings(
-            dealer_id=dealer.id
-        )
-
+        settings = DealerSettings(dealer_id=dealer.id)
         db.add(settings)
         db.commit()
 

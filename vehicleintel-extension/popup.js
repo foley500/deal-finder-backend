@@ -154,7 +154,7 @@ document.getElementById("send").addEventListener("click", async () => {
 
             console.log("📦 Sending to backend...");
 
-            const backendResponse = await fetch("http://localhost:8000/ingest/facebook", {
+            const backendResponse = await fetch("https://deal-finder-backend-mhrj.onrender.com/ingest/facebook", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(payload)
