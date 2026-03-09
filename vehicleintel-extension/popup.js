@@ -84,7 +84,7 @@ document.getElementById("sendBtn").addEventListener("click", async () => {
                 const lines = text.split("\n").filter(Boolean);
                 title = lines[0];
 
-                const priceMatch = text.match(/£\s?([\d,]+)/);
+                const priceMatch = text.match(/[\u00a3£]\s?([\d,]+)/);
                 if (priceMatch) {
                   price = parseFloat(priceMatch[1].replace(/,/g, ""));
                 }
@@ -96,7 +96,7 @@ document.getElementById("sendBtn").addEventListener("click", async () => {
 
             // Fallback: scan page text for £ price if element approach missed it
             if (!price) {
-              const priceMatch = pageText.match(/£\s?([\d,]+)/);
+              const priceMatch = pageText.match(/[\u00a3£]\s?([\d,]+)/);
               if (priceMatch) price = parseFloat(priceMatch[1].replace(/,/g, ""));
             }
 
