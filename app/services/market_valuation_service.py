@@ -27,8 +27,8 @@ MILEAGE_BLOCK_RATE = 0.015
 MAX_LINEAR_BLOCKS = 8
 EXTREME_MILEAGE_THRESHOLD = 120000
 
-MAX_ACCEPTABLE_IQR_RATIO = 0.40
-WIDE_SPREAD_DISCOUNT = 0.95
+MAX_ACCEPTABLE_IQR_RATIO = 0.55
+WIDE_SPREAD_DISCOUNT = 0.97
 
 # Mileage bands for dynamic layer_1 tolerance scaling.
 # Low mileage cars have plenty of comparables — keep tight.
