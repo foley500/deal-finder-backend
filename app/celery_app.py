@@ -19,6 +19,10 @@ celery.conf.update(
 )
 
 celery.conf.beat_schedule = {
+
+    # ==========================================
+    # SCAN TASKS
+    # ==========================================
     "sniper-scan-every-10-minutes": {
         "task": "app.tasks.scan_sniper",
         "schedule": timedelta(minutes=10),
@@ -30,14 +34,17 @@ celery.conf.beat_schedule = {
         "args": (1,),
         "options": {"expires": 1800},
     },
-    "prewarm-valuation-cache-nightly": {
+
+    # ==========================================
+    # CACHE PREWARM — runs at 3am UTC daily
+    # Fills Redis with market prices for all
+    # common UK cars before morning scans run
+    # ==========================================
+    "prewarm-valuation-cache": {
         "task": "app.tasks.prewarm_valuation_cache",
-        "schedule": timedelta(hours=24),
+        "schedule": timedelta(hours=5),
         "options": {"expires": 7200},
     },
 }
 
-def setup_tasks():
-    import app.tasks  # noqa
-
-setup_tasks()
+import app.tasks
