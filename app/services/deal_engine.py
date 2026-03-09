@@ -345,6 +345,20 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             try:
                 mot_response = get_mot_data(reg, asking_price=price)
 
+                # If exact plate fails DVSA, try fuzzy variants
+                if mot_response and not mot_response.get("vehicle_data"):
+                    from app.services.ocr_service import generate_fuzzy_variants, is_valid_uk_plate
+                    variants = generate_fuzzy_variants(reg)
+                    for variant in variants:
+                        if not is_valid_uk_plate(variant):
+                            continue
+                        print(f"   🔁 Trying fuzzy DVSA variant: {variant}")
+                        fuzzy_response = get_mot_data(variant, asking_price=price)
+                        if fuzzy_response and fuzzy_response.get("vehicle_data"):
+                            print(f"   ✅ Fuzzy DVSA match: {variant}")
+                            mot_response = fuzzy_response
+                            break
+
                 if mot_response:
                     mot_summary = mot_response.get("mot_summary", {})
                     mot_full_data = mot_response.get("mot_full_data", [])
