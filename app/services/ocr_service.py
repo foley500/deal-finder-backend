@@ -1,537 +1,420 @@
-from app.margin import calculate_true_profit
-from app.risk import description_risk
-from app.scoring import calculate_score
-from app.registration import extract_registration
-from app.models import Deal, DealerSettings
-from app.database import SessionLocal
-from app.services.ocr_service import extract_plate_from_images
-from app.services.mot_service import get_mot_data
-from app.services.ebay_browse_service import get_item_detail
-from app.services.market_valuation_service import get_market_price_from_sold
-
-from math import radians, sin, cos, sqrt, atan2
-import datetime
-import requests
+import io
 import re
+import cv2
+import numpy as np
+import requests
+import base64
+from PIL import Image
+from ultralytics import YOLO
+import easyocr
+import gc
+
+gc.collect()
 
 
-TARGET_POSTCODE = "S43 4TW"
-MAX_DISTANCE_MILES = 50
-
-# Maximum plausible miles per year — used to sanity check MOT mileage
-MAX_MILES_PER_YEAR = 20000
-
-# Known UK makes for title-based fallback extraction
-KNOWN_MAKES = [
-    "Ford", "Vauxhall", "Volkswagen", "Audi", "BMW", "Mercedes-Benz", "Mercedes",
-    "Toyota", "Nissan", "Honda", "Hyundai", "Kia", "Seat", "Skoda", "Peugeot",
-    "Renault", "Citroen", "Fiat", "Mini", "Mazda", "Volvo", "Land Rover",
-    "Jaguar", "Subaru", "Mitsubishi", "Suzuki", "Dacia", "Alfa Romeo", "Jeep",
-    "Tesla", "Lexus", "Porsche", "Isuzu", "DS", "MG", "Cupra", "Genesis",
-]
+# ===============================
+# LOAD MODELS ONCE
+# ===============================
+model = YOLO("app/services/license_plate_detector.pt")
+reader = easyocr.Reader(["en"], gpu=False)
 
 
-# ---------------------------------
-# HELPERS
-# ---------------------------------
-
-def extract_mileage_from_text(text: str) -> int:
-    match = re.search(r"(\d{2,3},?\d{3})\s?miles?", text.lower())
-    if match:
-        return int(match.group(1).replace(",", ""))
-    return 0
+# ===============================
+# CONFIG
+# ===============================
+MIN_YOLO_CONFIDENCE = 0.25          # Lowered — catch more plate candidates
+MIN_OCR_CONFIDENCE = 0.15           # Lowered — we correct and validate anyway
+MAX_IMAGES_PER_LISTING = 5
+BOX_PADDING_RATIO = 0.10            # Tighter crop — less background noise
 
 
-def is_valid_vehicle(title: str, price: float) -> bool:
-    title = title.lower()
+BANNED_PLATE_STRINGS = {
+    "DEALER", "DEALERS", "REVIEWS", "REVIEW", "FORECOURT",
+    "APPROVED", "FINANCE", "WARRANTY", "AUTOTRADER", "MOTORS",
+    "CARGURUS", "VEHICLE", "QUALITY", "CONTACT", "WEBSITE",
+    "FACEBOOK", "INSTAGRAM", "CERTIFIED", "RESERVE", "AUCTION",
+}
 
-    banned_words = [
-        "breaking", "spares", "repair", "parts", "engine",
-        "gearbox", "bumper", "door", "mirror", "alloy",
-        "wheel", "tyre", "tire"
+def is_banned_plate(plate: str) -> bool:
+    if plate in BANNED_PLATE_STRINGS:
+        return True
+    if plate.isalpha() and len(plate) >= 6:
+        return True
+    return False
+
+
+# ===============================
+# UK PLATE CORRECTION
+# ===============================
+def normalise_uk_plate(raw_plate: str) -> str:
+    plate = raw_plate.upper().replace(" ", "").replace("-", "")
+    plate = re.sub(r"[^A-Z0-9]", "", plate)
+    return plate
+
+
+# Full confusion matrix for OCR characters
+# Letter positions: 0, 1, 4, 5, 6  (digit→letter)
+DIGIT_TO_LETTER = {
+    "0": "O", "1": "I", "2": "Z", "4": "A",
+    "5": "S", "6": "G", "8": "B",
+}
+
+# Digit positions: 2, 3  (letter→digit)
+LETTER_TO_DIGIT = {
+    "O": "0", "I": "1", "Z": "2", "A": "4",
+    "S": "5", "G": "9", "B": "8", "Q": "0",
+    "D": "0", "U": "0", "J": "1", "L": "1",
+    "T": "1", "E": "6", "C": "0",
+}
+
+
+def correct_common_ocr_errors(plate: str) -> str:
+    """Apply position-aware character corrections for standard UK new-style plates (AA09AAA)."""
+    if len(plate) == 7:
+        plate = list(plate)
+        # Positions 2,3 must be digits
+        for i in [2, 3]:
+            plate[i] = LETTER_TO_DIGIT.get(plate[i], plate[i])
+        # Positions 0,1,4,5,6 must be letters
+        for i in [0, 1, 4, 5, 6]:
+            plate[i] = DIGIT_TO_LETTER.get(plate[i], plate[i])
+        return "".join(plate)
+
+    elif len(plate) >= 5:
+        # For other format plates use context-aware correction
+        plate = list(plate)
+        corrected = []
+        for i, c in enumerate(plate):
+            prev_digit = plate[i-1].isdigit() if i > 0 else False
+            next_digit = plate[i+1].isdigit() if i < len(plate)-1 else False
+            if c in DIGIT_TO_LETTER and not (prev_digit or next_digit):
+                corrected.append(DIGIT_TO_LETTER[c])
+            elif c in LETTER_TO_DIGIT and (prev_digit or next_digit):
+                corrected.append(LETTER_TO_DIGIT[c])
+            else:
+                corrected.append(c)
+        return "".join(corrected)
+
+    return plate
+
+
+def generate_fuzzy_variants(plate: str) -> list[str]:
+    """
+    Generate plausible alternative readings for a 7-char plate
+    by swapping commonly confused characters at each position.
+    Allows DVSA to be tried with slight variations if exact match fails.
+    """
+    if len(plate) != 7:
+        return [plate]
+
+    confusion = {
+        "O": ["0"], "0": ["O"],
+        "I": ["1"], "1": ["I"],
+        "S": ["5"], "5": ["S"],
+        "G": ["9", "6"], "9": ["G"], "6": ["G", "E"],
+        "B": ["8"], "8": ["B"],
+        "Z": ["2"], "2": ["Z"],
+        "A": ["4"], "4": ["A"],
+        "E": ["6"],
+    }
+
+    variants = set()
+    plate_list = list(plate)
+
+    # Single character swaps only — avoids combinatorial explosion
+    for i, c in enumerate(plate_list):
+        if c in confusion:
+            for alt in confusion[c]:
+                variant = plate_list.copy()
+                variant[i] = alt
+                variants.add("".join(variant))
+
+    return list(variants)
+
+
+def is_valid_uk_plate(plate: str) -> bool:
+    patterns = [
+        r"^[A-Z]{2}[0-9]{2}[A-Z]{3}$",   # Current: AA09AAA
+        r"^[A-Z][0-9]{1,3}[A-Z]{3}$",     # Prefix: A999AAA
+        r"^[A-Z]{3}[0-9]{1,3}[A-Z]$",     # Suffix: AAA999A
+        r"^[0-9]{1,4}[A-Z]{1,3}$",         # Dateless
+        r"^[A-Z]{1,3}[0-9]{1,4}$",         # Dateless
     ]
-
-    if any(word in title for word in banned_words):
-        return False
-
-    if price < 500:
-        return False
-
-    return True
+    return any(re.match(p, plate) for p in patterns)
 
 
-def extract_year_from_text(text: str):
-    match = re.search(r"\b(20\d{2}|19\d{2})\b", text)
-    if match:
-        return int(match.group(1))
-    return None
+# ===============================
+# IMAGE PREPROCESSING
+# ===============================
+def expand_box(x1, y1, x2, y2, img_shape):
+    h, w = img_shape[:2]
+    pad_x = int((x2 - x1) * BOX_PADDING_RATIO)
+    pad_y = int((y2 - y1) * BOX_PADDING_RATIO)
+    x1 = max(0, x1 - pad_x)
+    y1 = max(0, y1 - pad_y)
+    x2 = min(w, x2 + pad_x)
+    y2 = min(h, y2 + pad_y)
+    return x1, y1, x2, y2
 
 
-def extract_structured_value(aspects: dict, possible_keys: list[str]):
-    for key in possible_keys:
-        if key in aspects:
-            value = aspects.get(key)
-            if value:
-                return value
-    return None
-
-
-def safe_int(value):
-    try:
-        return int(str(value).replace(",", "").strip())
-    except Exception:
-        return None
-
-
-def assign_confidence(score: float) -> str:
-    if score >= 60:
-        return "very_high"
-    elif score >= 40:
-        return "high"
-    elif score >= 20:
-        return "medium"
-    return "low"
-
-
-def get_lat_long(postcode: str):
-    try:
-        response = requests.get(f"https://api.postcodes.io/postcodes/{postcode}")
-        if response.status_code != 200:
-            return None, None
-        data = response.json().get("result", {})
-        return data.get("latitude"), data.get("longitude")
-    except Exception:
-        return None, None
-
-
-def calculate_distance(lat1, lon1, lat2, lon2):
-    R = 3958.8
-    dlat = radians(lat2 - lat1)
-    dlon = radians(lon2 - lon1)
-
-    a = sin(dlat / 2) * 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) * 2
-    c = 2 * atan2(sqrt(a), sqrt(1 - a))
-
-    return R * c
-
-
-TARGET_LAT, TARGET_LON = get_lat_long(TARGET_POSTCODE)
-
-
-# ---------------------------------
-# FALLBACK VALUATION
-# ---------------------------------
-
-def smart_temp_valuation(price, year, mileage):
+def preprocess_variants(plate_crop: np.ndarray) -> list[np.ndarray]:
     """
-    Conservative fallback valuation when sold data is unavailable.
-    We assume equal market value to asking price instead of forcing
-    an artificial 15% loss.
+    Generate multiple preprocessed versions of the plate crop.
+    Each variant gives EasyOCR a different view — increases chances of correct read.
     """
-    if not price:
-        return 0
-    return float(price)
+    variants = []
+    gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
 
+    # 1. Raw greyscale
+    variants.append(gray)
 
-# ---------------------------------
-# MILEAGE SANITY CHECK
-# ---------------------------------
+    # 2. Upscaled 2x — most important for small/distant plates
+    upscaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    variants.append(upscaled)
 
-def is_mileage_plausible(mileage: int, year: int) -> bool:
-    """
-    Reject MOT mileage readings that are physically impossible for the vehicle's age.
-    e.g. a 2024 car cannot have 100,000 miles — that would require 100k miles in <1 year.
-    """
-    if not mileage or not year:
-        return True  # can't validate without both — allow it
+    # 3. CLAHE contrast enhancement on upscaled
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
+    contrast = clahe.apply(upscaled)
+    variants.append(contrast)
 
-    current_year = datetime.datetime.now().year
-    vehicle_age_years = max(current_year - year, 1)
-    max_plausible = vehicle_age_years * MAX_MILES_PER_YEAR
+    # 4. Sharpened
+    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+    sharpened = cv2.filter2D(upscaled, -1, kernel)
+    variants.append(sharpened)
 
-    if mileage > max_plausible:
-        print(f"   ⚠️ MOT mileage {mileage} implausible for {year} vehicle (max ~{max_plausible}) — rejecting")
-        return False
-
-    return True
-
-
-# ---------------------------------
-# TITLE-BASED MAKE/MODEL EXTRACTION
-# ---------------------------------
-
-def extract_make_model_from_title(title: str):
-    """
-    Last-resort fallback: parse make and model from listing title.
-    eBay titles typically start with: Make Model Year ...
-    e.g. "Ford Focus 2015 1.6 TDCi Titanium"
-    """
-    if not title:
-        return None, None
-
-    title_clean = title.strip()
-
-    for make in KNOWN_MAKES:
-        pattern = re.compile(re.escape(make), re.IGNORECASE)
-        match = pattern.search(title_clean)
-        if match:
-            # Extract everything after the make
-            after_make = title_clean[match.end():].strip()
-            # First word after make is likely the model
-            model_match = re.match(r"([A-Za-z0-9\-]+)", after_make)
-            if model_match:
-                model = model_match.group(1)
-                # Skip if model looks like a year
-                if re.match(r"^(19|20)\d{2}$", model):
-                    return make, None
-                print(f"   🔍 Title fallback: make={make}, model={model}")
-                return make, model
-
-    return None, None
-
-
-# ---------------------------------
-# MAIN ENGINE
-# ---------------------------------
-
-def upgrade_image_resolution(url: str):
-    if not url:
-        return url
-
-    return (
-        url.replace("s-l500", "s-l1600")
-           .replace("s-l640", "s-l1600")
-           .replace("s-l800", "s-l1600")
-           .replace("s-l960", "s-l1600")
+    # 5. Adaptive threshold (black/white) — best for clear plates
+    blurred = cv2.GaussianBlur(upscaled, (3, 3), 0)
+    adaptive = cv2.adaptiveThreshold(
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
     )
+    variants.append(adaptive)
+
+    # 6. Otsu threshold
+    _, otsu = cv2.threshold(upscaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    variants.append(otsu)
+
+    # 7. Inverted Otsu (for dark plates with light text)
+    variants.append(cv2.bitwise_not(otsu))
+
+    return variants
 
 
-def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None):
+def score_plate_candidate(plate: str, ocr_conf: float, yolo_conf: float) -> float:
+    """Score a plate candidate — higher = more likely correct."""
+    score = ocr_conf * yolo_conf
 
-    db = SessionLocal()
+    # Bonus for valid format
+    if is_valid_uk_plate(plate):
+        score *= 2.0
+
+    # Bonus for correct length
+    if len(plate) == 7:
+        score *= 1.3
+
+    # Penalty if all same characters (garbage read)
+    if len(set(plate)) <= 2:
+        score *= 0.1
+
+    return score
+
+
+# ===============================
+# CORE OCR — works on a PIL Image
+# ===============================
+def _run_ocr_on_image(image: Image.Image, high_res: bool = False) -> str | None:
+    """
+    Full pipeline: YOLO detection → crop → multi-variant preprocessing → EasyOCR
+    → position-aware correction → validation → fuzzy fallback.
+    """
+    img_np = None
+    results = None
 
     try:
+        if high_res:
+            # Facebook images: run at native resolution, upscale if small
+            w, h = image.size
+            if max(w, h) < 1280:
+                scale = 1280 / max(w, h)
+                image = image.resize(
+                    (int(w * scale), int(h * scale)),
+                    Image.LANCZOS
+                )
+            img_np = np.array(image)
+            imgsz = min(max(image.width, image.height), 1280)
+        else:
+            image.thumbnail((1280, 1280))
+            img_np = np.array(image)
+            imgsz = 640
 
-        external_id = raw_item.get("id") or raw_item.get("view_url")
-        if not external_id:
+        # Run YOLO at two sizes for better detection coverage
+        all_boxes = []
+        for sz in ([imgsz, 1280] if high_res else [imgsz]):
+            r = model(img_np, imgsz=sz)
+            if r and len(r[0].boxes) > 0:
+                all_boxes.extend(r[0].boxes)
+
+        if not all_boxes:
             return None
 
-        existing = db.query(Deal).filter(
-            Deal.external_id == external_id,
-            Deal.source == source
-        ).first()
+        # Deduplicate boxes by position (IoU-like — skip very similar boxes)
+        seen_boxes = []
+        unique_boxes = []
+        for box in all_boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            is_dup = False
+            for sx1, sy1, sx2, sy2 in seen_boxes:
+                if abs(x1-sx1) < 20 and abs(y1-sy1) < 20:
+                    is_dup = True
+                    break
+            if not is_dup:
+                unique_boxes.append(box)
+                seen_boxes.append((x1, y1, x2, y2))
 
-        if existing:
-            return None
+        # Sort by YOLO confidence descending
+        unique_boxes = sorted(unique_boxes, key=lambda b: float(b.conf[0]), reverse=True)
 
-        settings = db.query(DealerSettings).filter(
-            DealerSettings.dealer_id == dealer_id
-        ).first()
+        best_plate = None
+        best_score = 0.0
 
-        if not settings:
-            return None
+        for box in unique_boxes:
+            yolo_conf = float(box.conf[0])
+            if yolo_conf < MIN_YOLO_CONFIDENCE:
+                continue
 
-        title = raw_item.get("title", "") or ""
-        price = float(raw_item.get("price", 0) or 0)
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            x1, y1, x2, y2 = expand_box(x1, y1, x2, y2, img_np.shape)
 
-        if not price:
-            return None
+            plate_crop = img_np[y1:y2, x1:x2]
+            if plate_crop.size == 0:
+                continue
 
-        if not is_valid_vehicle(title, price):
-            return None
+            h_crop, w_crop = plate_crop.shape[:2]
+            aspect_ratio = w_crop / float(h_crop)
+            if aspect_ratio < 1.2 or aspect_ratio > 8.0:
+                continue
 
-        # ---------------------------------
-        # Expand summary listing
-        # ---------------------------------
-        if raw_item.get("summary_only") and not raw_item.get("skip_detail"):
+            variants = preprocess_variants(plate_crop)
 
-            detail = get_item_detail(raw_item.get("id"))
-            if not detail:
-                return None
-
-            raw_item["description"] = detail.get("description", "")
-
-            aspect_dict = {}
-            for aspect in detail.get("localizedAspects", []):
-                name = aspect.get("name")
-                value = aspect.get("value")
-                if name and value:
-                    aspect_dict[name] = value[0] if isinstance(value, list) else value
-
-            raw_item["aspects"] = aspect_dict
-            raw_item["seller"] = detail.get("seller", {}).get("username")
-
-            image_urls = []
-
-            if detail.get("image") and detail["image"].get("imageUrl"):
-                image_urls.append(
-                    upgrade_image_resolution(detail["image"]["imageUrl"])
+            for variant in variants:
+                ocr_results = reader.readtext(
+                    variant,
+                    allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                    detail=1,
+                    paragraph=False,
                 )
 
-            for img in detail.get("additionalImages", []):
-                if img.get("imageUrl"):
-                    image_urls.append(
-                        upgrade_image_resolution(img["imageUrl"])
-                    )
+                for (_, text, ocr_conf) in ocr_results:
+                    if ocr_conf < MIN_OCR_CONFIDENCE:
+                        continue
 
-            # Fallback to summary thumbnail if detail returned no images
-            if not image_urls and raw_item.get("image_url"):
-                image_urls.append(upgrade_image_resolution(raw_item["image_url"]))
+                    plate = normalise_uk_plate(text)
+                    if len(plate) < 5 or len(plate) > 8:
+                        continue
 
-            seen = set()
-            cleaned = []
-            for url in image_urls:
-                if url not in seen:
-                    cleaned.append(url)
-                    seen.add(url)
+                    plate = correct_common_ocr_errors(plate)
 
-            raw_item["image_urls"] = cleaned
+                    if is_banned_plate(plate):
+                        continue
 
-        # ---------------------------------
-        # Extract fields
-        # ---------------------------------
+                    print(f"🔍 OCR detected: {plate} conf: {ocr_conf}")
 
-        description = raw_item.get("description", "") or ""
-        aspects = raw_item.get("aspects", {}) or {}
-        listing_url = raw_item.get("view_url")
-        seller = raw_item.get("seller")
-        location = raw_item.get("location")
-        image_urls = raw_item.get("image_urls", [])
-        primary_image = image_urls[0] if image_urls else None
+                    candidate_score = score_plate_candidate(plate, ocr_conf, yolo_conf)
 
-        # ---------------------------------
-        # Initial extraction from listing
-        # ---------------------------------
+                    if is_valid_uk_plate(plate):
+                        if candidate_score > best_score:
+                            best_score = candidate_score
+                            best_plate = plate
 
-        structured_year = extract_structured_value(
-            aspects, ["Year", "Model Year", "Registration Year"]
-        )
+        if best_plate:
+            print(f"✅ VALID UK PLATE: {best_plate} (score: {best_score:.3f})")
+            return best_plate
 
-        structured_mileage = extract_structured_value(
-            aspects, ["Mileage", "Miles"]
-        )
+        print("⚠️ No valid plate found — trying fuzzy variants on best candidates")
+        return None
 
-        listing_year = safe_int(structured_year) or extract_year_from_text(title)
-        listing_mileage = safe_int(structured_mileage) or extract_mileage_from_text(title)
-
-        listing_make = aspects.get("Make")
-        listing_model = aspects.get("Model")
-
-        # ---------------------------------
-        # Registration extraction
-        # ---------------------------------
-
-        reg = extract_registration(title)
-
-        if not reg:
-            reg = extract_registration(description)
-
-        if not reg and raw_item.get("image_urls"):
-            reg = extract_plate_from_images(raw_item["image_urls"])
-
-        if not reg:
-            print("⚠️ No reg found — continuing without DVSA data")
-
-        # ---------------------------------
-        # DVSA Lookup
-        # ---------------------------------
-
-        mot_penalty = 0
-        mot_summary = {}
-        mot_full_data = []
-        vehicle_data = {}
-
-        if reg:
-            try:
-                mot_response = get_mot_data(reg, asking_price=price)
-
-                # If exact plate fails DVSA, try fuzzy variants
-                if mot_response and not mot_response.get("vehicle_data"):
-                    from app.services.ocr_service import generate_fuzzy_variants, is_valid_uk_plate
-                    variants = generate_fuzzy_variants(reg)
-                    for variant in variants:
-                        if not is_valid_uk_plate(variant):
-                            continue
-                        print(f"   🔁 Trying fuzzy DVSA variant: {variant}")
-                        fuzzy_response = get_mot_data(variant, asking_price=price)
-                        if fuzzy_response and fuzzy_response.get("vehicle_data"):
-                            print(f"   ✅ Fuzzy DVSA match: {variant}")
-                            mot_response = fuzzy_response
-                            break
-
-                if mot_response:
-                    mot_summary = mot_response.get("mot_summary", {})
-                    mot_full_data = mot_response.get("mot_full_data", [])
-                    vehicle_data = mot_response.get("vehicle_data", {})
-                    mot_penalty = mot_summary.get("mot_penalty", 0)
-
-            except Exception as e:
-                print("MOT processing error:", e)
-
-        # 🔥 DO NOT HARD FAIL IF DVSA FAILS
-        if not vehicle_data:
-            print("⚠️ DVSA lookup failed — continuing with listing data")
-
-        # ---------------------------------
-        # Final Field Resolution (DVSA First)
-        # ---------------------------------
-
-        year = listing_year
-        if vehicle_data.get("first_used_date"):
-            try:
-                year = int(vehicle_data["first_used_date"][:4])
-            except Exception:
-                pass
-
-        if not year:
-            year = extract_year_from_text(description)
-
-        # ---------------------------------
-        # Mileage resolution with sanity check
-        # ---------------------------------
-
-        mileage = listing_mileage
-
-        if mot_full_data:
-            try:
-                latest_mot = sorted(
-                    mot_full_data,
-                    key=lambda x: x.get("completedDate", ""),
-                    reverse=True
-                )[0]
-                mot_mileage = safe_int(latest_mot.get("odometerValue"))
-                if mot_mileage:
-                    if is_mileage_plausible(mot_mileage, year):
-                        mileage = mot_mileage
-                    else:
-                        print(f"   ⚠️ Keeping listing mileage {listing_mileage} over implausible MOT mileage {mot_mileage}")
-            except Exception:
-                pass
-
-        if not mileage:
-            mileage = extract_mileage_from_text(description)
-
-        if not mileage:
-            mileage = 100000
-
-        # ---------------------------------
-        # Make/model resolution — DVSA → aspects → title fallback
-        # ---------------------------------
-
-        make = vehicle_data.get("make") or listing_make
-        model = vehicle_data.get("model") or listing_model
-
-        if not make or not model:
-            title_make, title_model = extract_make_model_from_title(title)
-            if not make and title_make:
-                make = title_make
-                print(f"   🔍 Make from title fallback: {make}")
-            if not model and title_model:
-                model = title_model
-                print(f"   🔍 Model from title fallback: {model}")
-
-        print(f"   🚗 Resolved: make={make}, model={model}, year={year}, mileage={mileage}")
-
-        valuation_result = None
-
-        if make and model:
-            valuation_result = get_market_price_from_sold(
-                make=make,
-                model=model,
-                year=year,
-                mileage=mileage,
-                engine_size=vehicle_data.get("engine_size"),
-                listing_title=title,
-                listing_aspects=aspects,
-                cache_only=False,
-            )
-        else:
-            print(f"   ❌ Cannot value — make={make}, model={model} — skipping")
-
-        if valuation_result:
-            market_value = valuation_result["market_price"]
-        else:
-            print("⚠️ No sold data found — skipping listing")
-            return None
-
-        valuation_data = {
-            "market_price": market_value,
-            "source": valuation_result["source"] if valuation_result else "fallback_model",
-            "source_label": valuation_result.get("source_label") if valuation_result else None,
-            "sample_size": valuation_result.get("sample_size") if valuation_result else None,
-            "confidence": valuation_result.get("confidence") if valuation_result else None,
-        }
-
-        description_penalty = description_risk(description, price)
-        risk_penalty = description_penalty + mot_penalty
-
-        profit = calculate_true_profit(
-            market_value,
-            price,
-            risk_penalty=risk_penalty
-        )
-
-        score = calculate_score(profit, risk_penalty, mileage)
-        confidence = assign_confidence(score)
-
-        if settings.min_profit is not None and profit < settings.min_profit:
-            print("❌ Filtered by profit:", profit)
-            return None
-
-        if settings.min_score is not None and score < settings.min_score:
-            print("❌ Filtered by score:", score)
-            return None
-
-        deal = Deal(
-            dealer_id=dealer_id,
-            external_id=external_id,
-            title=title,
-            reg=reg,
-            mileage=mileage,
-            listing_price=price,
-            market_value=market_value,
-            profit=profit,
-            risk_penalty=risk_penalty,
-            score=score,
-            source=source,
-            status=confidence,
-            report={
-                "financials": {
-                    "listing_price": price,
-                    "market_value": market_value,
-                    "profit": profit,
-                },
-                "market_model": valuation_data,
-                "risk_breakdown": {
-                    "description_penalty": description_penalty,
-                    "mot_penalty": mot_penalty,
-                    "total_risk_penalty": risk_penalty,
-                },
-                "scoring": {
-                    "score": score,
-                    "confidence_level": confidence,
-                },
-                "mot_summary": mot_summary,
-                "mot_full_data": mot_full_data,
-                "vehicle_data": vehicle_data,
-                "listing_details": {
-                    "transmission": aspects.get("Transmission"),
-                    "fuel_type": aspects.get("Fuel Type"),
-                    "exterior_color": aspects.get("Exterior Colour"),
-                    "interior_color": aspects.get("Interior Colour"),
-                },
-                "seller": seller,
-                "location": location,
-                "listing_url": listing_url,
-                "primary_image": primary_image,
-            }
-        )
-
-        db.add(deal)
-        db.commit()
-        db.refresh(deal)
-
-        return deal
+    except Exception as e:
+        print("OCR exception:", e)
+        import traceback
+        traceback.print_exc()
 
     finally:
-        db.close()
+        if img_np is not None:
+            del img_np
+        if results is not None:
+            del results
+        gc.collect()
+
+    return None
+
+
+# ===============================
+# ENTRY POINT 1 — list of URLs (eBay engine)
+# ===============================
+def extract_plate_from_images(image_urls: list[str]):
+    print("🔎 Starting OCR for listing with", len(image_urls), "images")
+
+    if not image_urls:
+        return None
+
+    for image_url in image_urls[:MAX_IMAGES_PER_LISTING]:
+        image = None
+        try:
+            response = requests.get(image_url, timeout=10)
+            if response.status_code != 200:
+                continue
+
+            image = Image.open(io.BytesIO(response.content)).convert("RGB")
+            result = _run_ocr_on_image(image)
+            if result:
+                return result
+
+        except Exception as e:
+            print("OCR URL exception:", e)
+        finally:
+            if image is not None:
+                del image
+            gc.collect()
+
+    print("❌ No valid plate found across listing images")
+    return None
+
+
+# ===============================
+# ENTRY POINT 2 — base64 image (Facebook extension)
+# ===============================
+def extract_plate_from_base64(image_base64: str) -> str | None:
+    """
+    Accepts a base64 data URI (e.g. "data:image/jpeg;base64,/9j/...")
+    and runs the same YOLO + EasyOCR pipeline at high resolution.
+    """
+    image = None
+    try:
+        if "," in image_base64:
+            _, encoded = image_base64.split(",", 1)
+        else:
+            encoded = image_base64
+
+        image_bytes = base64.b64decode(encoded)
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        return _run_ocr_on_image(image, high_res=True)
+
+    except Exception as e:
+        print("OCR base64 exception:", e)
+        return None
+    finally:
+        if image is not None:
+            del image
+        gc.collect()
+
+
+# ===============================
+# TEXT FALLBACK
+# ===============================
+def extract_plate_from_text(text: str):
+    if not text:
+        return None
+    text = text.upper()
+    matches = re.findall(r"[A-Z]{2}[0-9]{2}[A-Z]{3}", text)
+    if matches:
+        return matches[0]
+    return None
