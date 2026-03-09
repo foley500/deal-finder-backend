@@ -10,12 +10,25 @@ from app.services.ebay_browse_service import get_item_detail
 from app.services.market_valuation_service import get_market_price_from_sold
 
 from math import radians, sin, cos, sqrt, atan2
+import datetime
 import requests
 import re
 
 
 TARGET_POSTCODE = "S43 4TW"
 MAX_DISTANCE_MILES = 50
+
+# Maximum plausible miles per year — used to sanity check MOT mileage
+MAX_MILES_PER_YEAR = 20000
+
+# Known UK makes for title-based fallback extraction
+KNOWN_MAKES = [
+    "Ford", "Vauxhall", "Volkswagen", "Audi", "BMW", "Mercedes-Benz", "Mercedes",
+    "Toyota", "Nissan", "Honda", "Hyundai", "Kia", "Seat", "Skoda", "Peugeot",
+    "Renault", "Citroen", "Fiat", "Mini", "Mazda", "Volvo", "Land Rover",
+    "Jaguar", "Subaru", "Mitsubishi", "Suzuki", "Dacia", "Alfa Romeo", "Jeep",
+    "Tesla", "Lexus", "Porsche", "Isuzu", "DS", "MG", "Cupra", "Genesis",
+]
 
 
 # ---------------------------------
@@ -118,6 +131,63 @@ def smart_temp_valuation(price, year, mileage):
     if not price:
         return 0
     return float(price)
+
+
+# ---------------------------------
+# MILEAGE SANITY CHECK
+# ---------------------------------
+
+def is_mileage_plausible(mileage: int, year: int) -> bool:
+    """
+    Reject MOT mileage readings that are physically impossible for the vehicle's age.
+    e.g. a 2024 car cannot have 100,000 miles — that would require 100k miles in <1 year.
+    """
+    if not mileage or not year:
+        return True  # can't validate without both — allow it
+
+    current_year = datetime.datetime.now().year
+    vehicle_age_years = max(current_year - year, 1)
+    max_plausible = vehicle_age_years * MAX_MILES_PER_YEAR
+
+    if mileage > max_plausible:
+        print(f"   ⚠️ MOT mileage {mileage} implausible for {year} vehicle (max ~{max_plausible}) — rejecting")
+        return False
+
+    return True
+
+
+# ---------------------------------
+# TITLE-BASED MAKE/MODEL EXTRACTION
+# ---------------------------------
+
+def extract_make_model_from_title(title: str):
+    """
+    Last-resort fallback: parse make and model from listing title.
+    eBay titles typically start with: Make Model Year ...
+    e.g. "Ford Focus 2015 1.6 TDCi Titanium"
+    """
+    if not title:
+        return None, None
+
+    title_clean = title.strip()
+
+    for make in KNOWN_MAKES:
+        pattern = re.compile(re.escape(make), re.IGNORECASE)
+        match = pattern.search(title_clean)
+        if match:
+            # Extract everything after the make
+            after_make = title_clean[match.end():].strip()
+            # First word after make is likely the model
+            model_match = re.match(r"([A-Za-z0-9\-]+)", after_make)
+            if model_match:
+                model = model_match.group(1)
+                # Skip if model looks like a year
+                if re.match(r"^(19|20)\d{2}$", model):
+                    return make, None
+                print(f"   🔍 Title fallback: make={make}, model={model}")
+                return make, model
+
+    return None, None
 
 
 # ---------------------------------
@@ -298,7 +368,12 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if not year:
             year = extract_year_from_text(description)
 
+        # ---------------------------------
+        # Mileage resolution with sanity check
+        # ---------------------------------
+
         mileage = listing_mileage
+
         if mot_full_data:
             try:
                 latest_mot = sorted(
@@ -308,7 +383,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 )[0]
                 mot_mileage = safe_int(latest_mot.get("odometerValue"))
                 if mot_mileage:
-                    mileage = mot_mileage
+                    if is_mileage_plausible(mot_mileage, year):
+                        mileage = mot_mileage
+                    else:
+                        print(f"   ⚠️ Keeping listing mileage {listing_mileage} over implausible MOT mileage {mot_mileage}")
             except Exception:
                 pass
 
@@ -318,8 +396,23 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if not mileage:
             mileage = 100000
 
+        # ---------------------------------
+        # Make/model resolution — DVSA → aspects → title fallback
+        # ---------------------------------
+
         make = vehicle_data.get("make") or listing_make
         model = vehicle_data.get("model") or listing_model
+
+        if not make or not model:
+            title_make, title_model = extract_make_model_from_title(title)
+            if not make and title_make:
+                make = title_make
+                print(f"   🔍 Make from title fallback: {make}")
+            if not model and title_model:
+                model = title_model
+                print(f"   🔍 Model from title fallback: {model}")
+
+        print(f"   🚗 Resolved: make={make}, model={model}, year={year}, mileage={mileage}")
 
         valuation_result = None
 
@@ -334,6 +427,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 listing_aspects=aspects,
                 cache_only=False,
             )
+        else:
+            print(f"   ❌ Cannot value — make={make}, model={model} — skipping")
 
         if valuation_result:
             market_value = valuation_result["market_price"]
