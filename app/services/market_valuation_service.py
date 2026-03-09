@@ -436,8 +436,9 @@ def get_market_price_from_sold(
         except:
             pass
 
-    mileage_bucket = round(mileage / 10000) * 10000
+    mileage_bucket = round(mileage / 20000) * 20000
     cache_key = f"sold_cache:{make}:{base_model}:{year}:{mileage_bucket}"
+    print(f"   🔑 Cache key: {cache_key}")
     cached = redis_client.get(cache_key)
     if cached:
         return json.loads(cached)
