@@ -16,6 +16,9 @@ celery.conf.update(
     accept_content=["json"],
     result_serializer="json",
     timezone="UTC",
+    worker_pool="solo",          # Single-process, no forking — critical for low-memory deploys.
+                                 # Prefork spawns child processes that each load the OCR model
+                                 # independently, blowing past the 2GB limit.
 )
 
 celery.conf.beat_schedule = {
