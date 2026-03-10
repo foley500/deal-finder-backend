@@ -18,8 +18,37 @@ SOURCES = ["ebay_browse"]
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
-SNIPER_LIMIT = 20
-VALUE_SWEEP_LIMIT = 150
+SNIPER_LIMIT = 15
+DAILY_API_BUDGET = 4000          # Hard ceiling — leaves 1,000 buffer
+DAILY_BUDGET_KEY = "ebay_daily_calls"
+VALUE_SWEEP_LIMIT = 30
+
+# ==========================================
+# SCAN ROTATION QUERIES
+#
+# Both scans rotate through these make groups on each run rather than
+# using the static keyword "car". This ensures every scan sees a fresh
+# slice of eBay inventory — eBay caches and stabilises results for
+# broad generic queries, so "newlyListed" with keyword "car" returns
+# the same ~20 cars every 10 minutes.
+#
+# Sniper: picks the next group in sequence on each run (Redis pointer).
+# Value sweep: scans ALL groups per run (runs every 4hrs, has the budget).
+#
+# Group sizes kept small so eBay returns tight, relevant results.
+# ==========================================
+SCAN_QUERY_GROUPS = [
+    "Ford Vauxhall",
+    "Volkswagen Audi Skoda Seat",
+    "BMW Mercedes",
+    "Toyota Honda Nissan",
+    "Hyundai Kia Mazda",
+    "Land Rover Jaguar Volvo",
+    "Peugeot Renault Citroen",
+    "Mini Fiat Dacia Suzuki",
+]
+
+SNIPER_ROTATION_KEY = "sniper_query_rotation_idx"
 
 # ==========================================
 # FULL UK MARKET PREWARM TARGETS
@@ -478,40 +507,91 @@ def prewarm_valuation_cache():
 # ==========================================
 @celery.task
 def scan_sniper(dealer_id: int):
+    # Rotate through make groups — each 10-min cycle scans a fresh slice
+    idx = int(redis_client.incr(SNIPER_ROTATION_KEY) - 1) % len(SCAN_QUERY_GROUPS)
+    query = SCAN_QUERY_GROUPS[idx]
+    print(f"🎯 Sniper rotation [{idx+1}/{len(SCAN_QUERY_GROUPS)}]: '{query}'")
     return run_scan(
         dealer_id=dealer_id,
-        sort="newlyListed",
+        mode_name="sniper",
         listings_to_pull=20,
-        mode_name="sniper"
+        keywords=query,
+        sort="newlyListed",
     )
 
 
 # ==========================================
 # VALUE SWEEP
+# Dual-strategy bulk scan — runs every 4hrs.
+# Catches two distinct populations the sniper misses:
+#
+# Strategy A — sort=price, offset=100, 2 pages (80 listings per group)
+#   Targets cars priced below market that have been sitting on eBay
+#   for days/weeks. Offset 100 skips the obvious front-page cheap cars
+#   everyone sees, landing in the overlooked mid-tier. Price-ascending
+#   means genuinely cheap stock floats to the top.
+#
+# Strategy B — sort=bestMatch, offset=0, 1 page (40 listings per group)
+#   Targets recently price-dropped or relisted cars. eBay's bestMatch
+#   algorithm boosts listings where the seller has recently modified
+#   the price or relisted — these never appear in newlyListed (not a
+#   new listing) but are exactly the motivated sellers we want.
+#
+# Both strategies feed into the same deduped item pool per run.
+# Budget: 8 groups × 3 searches = 24 search calls per sweep run.
 # ==========================================
 @celery.task
 def scan_value_sweep(dealer_id: int):
     return run_scan(
         dealer_id=dealer_id,
-        sort="newlyListed",
-        listings_to_pull=40,
         mode_name="value_sweep",
-        deep_sweep=True,
-        sweep_start_offset=200
+        listings_to_pull=40,
+        keywords=None,  # None = all 8 make groups
     )
+
+
+
+# ==========================================
+# DAILY API BUDGET GUARD
+# Tracks eBay API calls in Redis with a 24hr TTL.
+# Stops all scans once DAILY_API_BUDGET is reached.
+# Resets automatically at midnight UTC when key expires.
+# ==========================================
+def _check_budget(calls_needed: int = 1) -> bool:
+    """Returns True if budget allows, increments counter. False = stop scanning."""
+    pipe = redis_client.pipeline()
+    pipe.incrby(DAILY_BUDGET_KEY, calls_needed)
+    pipe.ttl(DAILY_BUDGET_KEY)
+    result = pipe.execute()
+    current_count = result[0]
+    ttl = result[1]
+
+    # Set 24hr expiry on first write
+    if ttl == -1:
+        redis_client.expire(DAILY_BUDGET_KEY, 86400)
+
+    if current_count > DAILY_API_BUDGET:
+        print(f"🛑 Daily budget exceeded: {current_count}/{DAILY_API_BUDGET} calls used")
+        return False
+
+    return True
 
 
 # ==========================================
 # SHARED SCAN ENGINE
 # ==========================================
-def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, deep_sweep=False, sweep_start_offset=0):
+def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=None, sort="newlyListed"):
+    """
+    Unified scan engine.
+
+    Sniper:      single make group, sort=newlyListed, offset=0 — freshest listings.
+    Value sweep: all make groups, dual strategy per group:
+                   A) sort=price, offset=100 + 40 — stale cheap stock
+                   B) sort=bestMatch, offset=0    — recently price-dropped/relisted
+    """
 
     lock_key = f"scan_lock_{dealer_id}_{mode_name}"
-
-    if mode_name == "value_sweep":
-        max_expansions = VALUE_SWEEP_LIMIT
-    else:
-        max_expansions = SNIPER_LIMIT
+    max_expansions = VALUE_SWEEP_LIMIT if mode_name == "value_sweep" else SNIPER_LIMIT
 
     if redis_client.get(lock_key):
         print("⚠️ Scan already running — skipping")
@@ -542,6 +622,8 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
             "min_score": settings.min_score,
         }
 
+        query_groups = [keywords] if keywords is not None else SCAN_QUERY_GROUPS
+
         total_listings = 0
         total_deals = 0
         processed_ids = set()
@@ -552,29 +634,63 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
             source = get_listing_source(source_name)
             items = []
 
-            if deep_sweep:
-                for page in range(sweep_start_offset, sweep_start_offset + 200, listings_to_pull):
+            for query in query_groups:
+                print(f"🔍 [{mode_name}] Searching: '{query}'")
+
+                if mode_name == "value_sweep":
+                    # -------------------------------------------------------
+                    # Strategy A: price-ascending, offset 100 then 140
+                    # Lands in stale/overlooked cheap stock beyond page 1.
+                    # Two pages gives 80 listings per make group.
+                    # -------------------------------------------------------
+                    for offset in [100, 140]:
+                        if not _check_budget(1):
+                            print("🛑 Daily API budget reached — stopping sweep (strategy A)")
+                            break
+                        page_items = source.search(
+                            keywords=query,
+                            entries=listings_to_pull,
+                            min_price=None,
+                            max_price=filters["max_price"],
+                            sort="price",
+                            offset=offset,
+                        )
+                        items.extend(page_items)
+
+                    # -------------------------------------------------------
+                    # Strategy B: bestMatch, offset 0
+                    # eBay boosts recently price-dropped or relisted cars.
+                    # Catches motivated sellers that newlyListed won't show.
+                    # -------------------------------------------------------
+                    if not _check_budget(1):
+                        print("🛑 Daily API budget reached — stopping sweep (strategy B)")
+                        break
                     page_items = source.search(
-                        keywords="car",
+                        keywords=query,
                         entries=listings_to_pull,
                         min_price=None,
                         max_price=filters["max_price"],
-                        min_year=filters["min_year"],
-                        max_year=filters["max_year"],
-                        sort=sort,
-                        offset=page
+                        sort="bestMatch",
+                        offset=0,
                     )
                     items.extend(page_items)
-            else:
-                items = source.search(
-                    keywords="car",
-                    entries=listings_to_pull,
-                    min_price=None,
-                    max_price=filters["max_price"],
-                    min_year=filters["min_year"],
-                    max_year=filters["max_year"],
-                    sort=sort
-                )
+
+                else:
+                    # -------------------------------------------------------
+                    # Sniper: single fetch, newest listings first
+                    # -------------------------------------------------------
+                    if not _check_budget(1):
+                        print("🛑 Daily API budget reached — stopping sniper")
+                        break
+                    page_items = source.search(
+                        keywords=query,
+                        entries=listings_to_pull,
+                        min_price=None,
+                        max_price=filters["max_price"],
+                        sort=sort,
+                        offset=0,
+                    )
+                    items.extend(page_items)
 
             total_listings += len(items)
 
@@ -597,6 +713,10 @@ def run_scan(dealer_id: int, sort: str, listings_to_pull: int, mode_name: str, d
                 if rough_price > filters["max_price"]:
                     print(f"⛔ Pre-screen: £{rough_price} exceeds max £{filters['max_price']} — skipping")
                     continue
+
+                if not _check_budget(1):
+                    print("🛑 Daily API budget reached — stopping expansions")
+                    break
 
                 deal = process_listing(
                     item,
