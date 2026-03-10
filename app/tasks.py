@@ -38,14 +38,26 @@ VALUE_SWEEP_LIMIT = 30
 # Group sizes kept small so eBay returns tight, relevant results.
 # ==========================================
 SCAN_QUERY_GROUPS = [
-    "Ford Vauxhall",
-    "Volkswagen Audi Skoda Seat",
-    "BMW Mercedes",
-    "Toyota Honda Nissan",
-    "Hyundai Kia Mazda",
-    "Land Rover Jaguar Volvo",
-    "Peugeot Renault Citroen",
-    "Mini Fiat Dacia Suzuki",
+    "Ford",
+    "Vauxhall",
+    "Volkswagen",
+    "Audi",
+    "BMW",
+    "Mercedes",
+    "Toyota",
+    "Nissan",
+    "Honda",
+    "Hyundai",
+    "Kia",
+    "Land Rover",
+    "Peugeot",
+    "Renault",
+    "Skoda",
+    "Seat",
+    "Mazda",
+    "Volvo",
+    "Mini",
+    "Citroen",
 ]
 
 SNIPER_ROTATION_KEY = "sniper_query_rotation_idx"
@@ -546,7 +558,7 @@ def scan_value_sweep(dealer_id: int):
         dealer_id=dealer_id,
         mode_name="value_sweep",
         listings_to_pull=40,
-        keywords=None,  # None = all 8 make groups
+        keywords=None,  # None = all 20 make groups
     )
 
 
@@ -638,14 +650,16 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                 print(f"🔍 [{mode_name}] Searching: '{query}'")
 
                 if mode_name == "value_sweep":
+                    budget_ok = True
                     # -------------------------------------------------------
                     # Strategy A: price-ascending, offset 80 then 120
                     # Lands in stale/overlooked cheap stock beyond page 1.
-                    # Must be multiples of limit (40). Two pages = 80 listings per group.
+                    # Offsets must be multiples of limit (40) per eBay API.
                     # -------------------------------------------------------
                     for offset in [80, 120]:
                         if not _check_budget(1):
                             print("🛑 Daily API budget reached — stopping sweep (strategy A)")
+                            budget_ok = False
                             break
                         page_items = source.search(
                             keywords=query,
@@ -662,18 +676,20 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     # eBay boosts recently price-dropped or relisted cars.
                     # Catches motivated sellers that newlyListed won't show.
                     # -------------------------------------------------------
-                    if not _check_budget(1):
-                        print("🛑 Daily API budget reached — stopping sweep (strategy B)")
-                        break
-                    page_items = source.search(
-                        keywords=query,
-                        entries=listings_to_pull,
-                        min_price=None,
-                        max_price=filters["max_price"],
-                        sort="bestMatch",
-                        offset=0,
-                    )
-                    items.extend(page_items)
+                    if budget_ok:
+                        if not _check_budget(1):
+                            print("🛑 Daily API budget reached — stopping sweep (strategy B)")
+                        else:
+                            page_items = source.search(
+                                keywords=query,
+                                entries=listings_to_pull,
+                                min_price=None,
+                                max_price=filters["max_price"],
+                                sort="bestMatch",
+                                offset=0,
+                            )
+                            items.extend(page_items)
+
 
                 else:
                     # -------------------------------------------------------
