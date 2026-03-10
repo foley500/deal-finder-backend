@@ -45,10 +45,19 @@ def extract_mileage_from_text(text: str) -> int:
 def is_valid_vehicle(title: str, price: float) -> bool:
     title = title.lower()
 
+    # Phrase-based filters only — single words like "door", "mirror", "wheel"
+    # appear in legitimate full-car listings ("5 door hatchback", "alloy wheels
+    # included") and would silently discard large portions of real inventory.
     banned_words = [
-        "breaking", "spares", "repair", "parts", "engine",
-        "gearbox", "bumper", "door", "mirror", "alloy",
-        "wheel", "tyre", "tire"
+        "breaking",
+        "spares only",
+        "parts only",
+        "gearbox only",
+        "bumper only",
+        "for parts",
+        "for spares",
+        "not running",
+        "no engine",
     ]
 
     if any(word in title for word in banned_words):
@@ -368,7 +377,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
             except Exception as e:
                 print("MOT processing error:", e)
 
-        # 🔥 DO NOT HARD FAIL IF DVSA FAILS
+        # DO NOT HARD FAIL IF DVSA FAILS
         if not vehicle_data:
             print("⚠️ DVSA lookup failed — continuing with listing data")
 
@@ -443,7 +452,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 engine_size=vehicle_data.get("engine_size"),
                 listing_title=title,
                 listing_aspects=aspects,
-                cache_only=False,
+                cache_only=False,  # Try cache first (fast, free). On miss, fires live eBay valuation
             )
         else:
             print(f"   ❌ Cannot value — make={make}, model={model} — skipping")
@@ -451,7 +460,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
         if valuation_result:
             market_value = valuation_result["market_price"]
         else:
-            print("⚠️ No sold data found — skipping listing")
+            print("⚠️ No cached valuation found — skipping listing (prewarm will fill cache)")
             return None
 
         valuation_data = {
