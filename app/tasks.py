@@ -525,11 +525,11 @@ def scan_sniper(dealer_id: int):
 # Dual-strategy bulk scan — runs every 4hrs.
 # Catches two distinct populations the sniper misses:
 #
-# Strategy A — sort=price, offset=100, 2 pages (80 listings per group)
+# Strategy A — sort=price, offset=80 then 120, 2 pages (80 listings per group)
 #   Targets cars priced below market that have been sitting on eBay
-#   for days/weeks. Offset 100 skips the obvious front-page cheap cars
-#   everyone sees, landing in the overlooked mid-tier. Price-ascending
-#   means genuinely cheap stock floats to the top.
+#   for days/weeks. Offsets 80 & 120 skip the obvious front-page cheap cars
+#   everyone sees, landing in the overlooked mid-tier. Must be multiples
+#   of limit (40) per eBay Browse API requirement.
 #
 # Strategy B — sort=bestMatch, offset=0, 1 page (40 listings per group)
 #   Targets recently price-dropped or relisted cars. eBay's bestMatch
@@ -639,11 +639,11 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
 
                 if mode_name == "value_sweep":
                     # -------------------------------------------------------
-                    # Strategy A: price-ascending, offset 100 then 140
+                    # Strategy A: price-ascending, offset 80 then 120
                     # Lands in stale/overlooked cheap stock beyond page 1.
-                    # Two pages gives 80 listings per make group.
+                    # Must be multiples of limit (40). Two pages = 80 listings per group.
                     # -------------------------------------------------------
-                    for offset in [100, 140]:
+                    for offset in [80, 120]:
                         if not _check_budget(1):
                             print("🛑 Daily API budget reached — stopping sweep (strategy A)")
                             break
