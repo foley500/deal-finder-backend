@@ -96,10 +96,19 @@ def search_ebay_browse(
 
     listings = []
 
+    # Only filter listings that are clearly parts/spares, not whole cars.
+    # IMPORTANT: do NOT include "door", "mirror", "wheel", "parts", "repair" here —
+    # these appear in legitimate full-car listings ("5 door hatchback", "alloy wheels
+    # included", etc.) and would silently discard a large portion of real inventory.
     banned_words = [
-        "breaking", "spares", "repair", "parts",
-        "gearbox", "bumper", "door", "mirror",
-        "alloy", "wheel", "tyre", "tire"
+        "breaking",
+        "spares only",
+        "parts only",
+        "gearbox only",
+        "bumper only",
+        "for parts",
+        "for spares",
+        "not running",
     ]
 
     for summary in summaries:
