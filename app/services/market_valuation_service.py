@@ -170,7 +170,16 @@ def check_spread(prices: list, label: str) -> float:
 
 PRIVATE_FIRST_THRESHOLD = 20
 
-def get_sold_listings(query: str, limit: int = 100):
+def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
+    """
+    Fetches sold + active listings for valuation.
+
+    budget_fn: optional callable(n_calls: int) -> bool
+      If provided, called before EACH search request. Returns False = budget
+      exhausted, abort immediately. Each search = 1 call counted.
+      Private pass = up to 3 calls. All-seller fallback = up to 3 more.
+      No-category retry = up to 3 more. Max 9 calls total per invocation.
+    """
     token = get_ebay_access_token()
     if not token:
         return []
@@ -181,9 +190,9 @@ def get_sold_listings(query: str, limit: int = 100):
     }
 
     all_items = []
-    combined_seen_ids = set()  # tracks IDs across both passes to avoid duplicates when combining
+    combined_seen_ids = set()
 
-    def run_searches(seller_filter: str, label_suffix: str):
+    def run_searches(seller_filter: str, label_suffix: str, use_category: bool = True):
         searches = [
             {
                 "filter": f"soldItems:true,conditions:{{USED}}{seller_filter}",
@@ -209,14 +218,20 @@ def get_sold_listings(query: str, limit: int = 100):
         ]
 
         results = []
-        local_seen = set()  # dedup within this pass only
+        local_seen = set()
         for search in searches:
+            # Check budget before each individual search call
+            if budget_fn and not budget_fn(1):
+                print(f"🛑 Budget exhausted — stopping valuation search [{search['label']}]")
+                break
+
             params = {
                 "q": query,
                 "limit": search["limit"],
-                "category_ids": "9801",
                 "filter": search["filter"],
             }
+            if use_category:
+                params["category_ids"] = "9801"
             if "sort" in search:
                 params["sort"] = search["sort"]
 
@@ -244,7 +259,7 @@ def get_sold_listings(query: str, limit: int = 100):
 
         return results
 
-    private_results = run_searches(",sellers:{PRIVATE}", "_private")
+    private_results = run_searches(",sellers:{PRIVATE}", "_private", use_category=True)
     for item in private_results:
         combined_seen_ids.add(item.get("_resolved_id", ""))
     all_items.extend(private_results)
@@ -253,13 +268,24 @@ def get_sold_listings(query: str, limit: int = 100):
 
     if len(private_results) < PRIVATE_FIRST_THRESHOLD:
         print(f"⚠️ Private results thin ({len(private_results)}) — falling back to all sellers")
-        all_sellers_results = run_searches("", "_all")
+        all_sellers_results = run_searches("", "_all", use_category=True)
         for item in all_sellers_results:
             item_id = item.get("_resolved_id", "")
             if item_id and item_id not in combined_seen_ids:
                 combined_seen_ids.add(item_id)
                 all_items.append(item)
         print(f"📦 After all-seller fallback: {len(all_items)} total")
+
+    # If still empty, retry without category filter
+    if not all_items:
+        print(f"⚠️ Zero results with category filter — retrying without category_ids")
+        no_cat_results = run_searches("", "_no_cat", use_category=False)
+        for item in no_cat_results:
+            item_id = item.get("_resolved_id", "")
+            if item_id and item_id not in combined_seen_ids:
+                combined_seen_ids.add(item_id)
+                all_items.append(item)
+        print(f"📦 After no-category fallback: {len(all_items)} total")
 
     return all_items
 
@@ -408,11 +434,14 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
 def get_market_price_from_sold(
     make, model, year, mileage,
     engine_size=None, listing_title=None, listing_aspects=None,
-    cache_only=False,
+    cache_only=False, budget_fn=None,
 ):
     """
-    cache_only=True: return cached result or None, never burn eBay API calls.
-    Used during scan tasks. Only the prewarm job calls with cache_only=False.
+    cache_only=True  → return cached result or None, never burn eBay API calls.
+    budget_fn        → optional callable(n: int) -> bool, called before each eBay
+                       request inside this function. Returns False = stop immediately.
+                       Pass tasks._check_budget to route all valuation calls through
+                       the shared daily budget guard.
     """
     if not make or not model or not year:
         return None
@@ -497,14 +526,14 @@ def get_market_price_from_sold(
     print(f"🔎 Searching: make={make} base_model={base_model} engine={engine_litre} year={year} mileage={mileage}")
     print(f"   Query: '{query}' | Mileage tolerances: L1=±{l1_tolerance}, L2=±{l2_tolerance}")
 
-    all_summaries = get_sold_listings(query)
+    all_summaries = get_sold_listings(query, budget_fn=budget_fn)
 
     print(f"📦 Total unique summaries collected: {len(all_summaries)}")
 
     if not all_summaries:
         return None
 
-    enriched_summaries = _pre_expand_details(all_summaries)
+    enriched_summaries = _pre_expand_details(all_summaries, budget_fn=budget_fn)
 
     for tolerance_config in [
         {"year_tolerance": 2, "mileage_tolerance": l1_tolerance, "source": "layer_1_strict",          "adjust_mileage": True},
@@ -541,7 +570,7 @@ def get_market_price_from_sold(
     return None
 
 
-def _pre_expand_details(summaries: list) -> list:
+def _pre_expand_details(summaries: list, budget_fn=None) -> list:
     expansions = 0
     enriched = []
 
@@ -555,6 +584,12 @@ def _pre_expand_details(summaries: list) -> list:
         already_enriched = sum(1 for s in enriched if s.get("_year") is not None)
 
         if (listing_year is None or listing_mileage is None) and expansions < MAX_DETAIL_EXPANSIONS and already_enriched < MAX_ENRICHED_TARGET:
+            if budget_fn and not budget_fn(1):
+                print("🛑 Budget exhausted — stopping detail expansions in valuation")
+                summary["_year"] = listing_year
+                summary["_mileage"] = listing_mileage
+                enriched.append(summary)
+                continue
             detail = get_item_detail(item_id)
             expansions += 1
 

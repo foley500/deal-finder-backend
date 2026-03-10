@@ -215,7 +215,7 @@ def upgrade_image_resolution(url: str):
     )
 
 
-def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None):
+def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None, budget_fn=None):
 
     db = SessionLocal()
 
@@ -452,7 +452,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None)
                 engine_size=vehicle_data.get("engine_size"),
                 listing_title=title,
                 listing_aspects=aspects,
-                cache_only=False,  # Try cache first (fast, free). On miss, fires live eBay valuation
+                cache_only=False,
+                budget_fn=budget_fn,  # Routes all valuation eBay calls through daily budget guard
             )
         else:
             print(f"   ❌ Cannot value — make={make}, model={model} — skipping")

@@ -1,3 +1,4 @@
+import gc
 import os
 import redis
 import time
@@ -18,10 +19,37 @@ SOURCES = ["ebay_browse"]
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
-SNIPER_LIMIT = 15
-DAILY_API_BUDGET = 4000          # Hard ceiling — leaves 1,000 buffer
+# ==========================================
+# API BUDGET — REAL CALL COSTS
+#
+# Each scan expansion (process_listing) can cost up to:
+#   1  listing detail call
+#   6  valuation search calls (3 private + 3 all-seller)
+#   up to 20 valuation detail calls (_pre_expand_details)
+#   = up to 27 calls per expansion on a cold cache
+#
+# With a warm cache (prewarm running every 5hrs), valuation hits
+# Redis and costs 0 eBay calls. We target ~80% cache hit rate.
+#
+# Sniper: 48 runs/day (every 30 mins) × 1 search call = 48 search calls/day
+#   + up to 8 expansions/run = 384 expansion slots/day
+#   At 80% cache hit: 384 × 0.2 × 7 avg calls = ~538 valuation calls
+#   Total sniper: ~586 calls/day
+#
+# Value sweep: 4 runs/day × 20 makes × 3 searches = 240 search calls/day
+#   + up to 60 expansions/run = 240 expansion slots/day
+#   At 80% cache hit: 240 × 0.2 × 7 avg = ~336 valuation calls
+#   Total sweep: ~576 calls/day
+#
+# Prewarm: ~200-300 calls/day (skips already-warm buckets)
+#
+# Grand total estimate: ~1,462 calls/day vs 5,000 limit ✅
+# All valuation calls now route through _check_budget via budget_fn.
+# ==========================================
+SNIPER_LIMIT = 8         # Expansions per sniper run (48 runs/day = 384 slots)
+DAILY_API_BUDGET = 4500  # Hard ceiling — 500 buffer vs 5,000 eBay limit
 DAILY_BUDGET_KEY = "ebay_daily_calls"
-VALUE_SWEEP_LIMIT = 30
+VALUE_SWEEP_LIMIT = 60   # Expansions per sweep run (4 runs/day = 240 slots)
 
 # ==========================================
 # SCAN ROTATION QUERIES
@@ -526,7 +554,7 @@ def scan_sniper(dealer_id: int):
     return run_scan(
         dealer_id=dealer_id,
         mode_name="sniper",
-        listings_to_pull=20,
+        listings_to_pull=50,
         keywords=query,
         sort="newlyListed",
     )
@@ -738,10 +766,12 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     item,
                     dealer.id,
                     source=source_name,
-                    filters=filters
+                    filters=filters,
+                    budget_fn=_check_budget,  # Routes all valuation eBay calls through daily budget guard
                 )
 
                 detail_expansions += 1
+                gc.collect()  # Free image/OCR memory between expansions
 
                 if not deal:
                     continue

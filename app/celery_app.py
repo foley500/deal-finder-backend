@@ -26,9 +26,9 @@ celery.conf.beat_schedule = {
     # ==========================================
     # SCAN TASKS
     # ==========================================
-    "sniper-scan-every-10-minutes": {
+    "sniper-scan-every-30-minutes": {
         "task": "app.tasks.scan_sniper",
-        "schedule": timedelta(minutes=10),
+        "schedule": timedelta(minutes=30),
         "args": (1,),
     },
     # Value sweep runs every 4 hours — catches listings where
