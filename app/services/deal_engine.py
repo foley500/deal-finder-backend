@@ -550,7 +550,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 "primary_image": primary_image,
             }
         )
-
+        
         db.add(deal)
         db.commit()
         db.refresh(deal)

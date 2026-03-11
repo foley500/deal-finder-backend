@@ -92,7 +92,6 @@ def normalise_base_model(make: str, base_model: str) -> str:
                 return f"{series_num} Series"
             return f"{base_model} Series"
         # Handle variants like "118d", "320i" etc
-        import re
         m = re.match(r'^([1-9])\d{2}', model_lower)
         if m:
             return f"{m.group(1)} Series"
@@ -192,8 +191,6 @@ def check_spread(prices: list, label: str) -> float:
 # ---------------------------------------------------
 # EBAY SOLD SEARCH — private-first, fallback to all
 # ---------------------------------------------------
-
-PRIVATE_FIRST_THRESHOLD = 20
 
 def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
     """
@@ -301,16 +298,18 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
 
     print(f"📦 Private-only results: {len(private_results)}")
 
-    if len(private_results) < PRIVATE_FIRST_THRESHOLD:
-        print(f"⚠️ Private results thin ({len(private_results)}) — falling back to all sellers")
-        all_sellers_results = run_searches("", "_all", use_category=True)
-        for item in all_sellers_results:
-            item_id = item.get("_resolved_id", "")
-            if item_id and item_id not in combined_seen_ids:
-                combined_seen_ids.add(item_id)
-                item["_seller_pool"] = "all"
-                all_items.append(item)
-        print(f"📦 After all-seller fallback: {len(all_items)} total")
+    # Always fetch all-seller results too — private pool is small on eBay UK.
+    # Private results are tagged and used at face value.
+    # All-seller results are tagged and get 15% discount in the filter layer.
+    # Both are blended together giving us a much larger comparable pool.
+    all_sellers_results = run_searches("", "_all", use_category=True)
+    for item in all_sellers_results:
+        item_id = item.get("_resolved_id", "")
+        if item_id and item_id not in combined_seen_ids:
+            combined_seen_ids.add(item_id)
+            item["_seller_pool"] = "all"
+            all_items.append(item)
+    print(f"📦 After blending private + all-seller: {len(all_items)} total")
 
     # If still empty, retry without category filter
     if not all_items:
@@ -378,6 +377,10 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
 
         base_price = float(price_obj["value"])
 
+        # Reject junk listings — parts, scams, placeholder prices
+        if base_price < 200:
+            continue
+
         if source_type == "active":
             base_price = base_price * ACTIVE_LISTING_DISCOUNT
 
@@ -394,11 +397,10 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
         weight = mileage_proximity_weight(listing_mileage, target_mileage, mileage_tolerance)
 
         if source_type == "sold":
-            # Dealer-sold prices run ~15% above private market — discount them
+            # Private sold results are the most accurate comparables — weight them higher
             seller_pool = summary.get("_seller_pool", "all")
-            if seller_pool == "all":
-                adjusted_price = round(adjusted_price * 0.85, 2)
-            sold_prices.extend([adjusted_price] * weight)
+            pool_weight = 2 if seller_pool == "private" else 1
+            sold_prices.extend([adjusted_price] * (weight * pool_weight))
             accepted_sold += 1
         else:
             active_prices.extend([adjusted_price] * weight)
