@@ -19,33 +19,31 @@ SOURCES = ["ebay_browse"]
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
-# ==========================================
 # API BUDGET — REAL CALL COSTS
 #
-# Each scan expansion (process_listing) can cost up to:
-#   1  listing detail call
-#   6  valuation search calls (3 private + 3 all-seller)
-#   up to 20 valuation detail calls (_pre_expand_details)
-#   = up to 27 calls per expansion on a cold cache
+# Prewarm: ~160 models × (2 search + up to 15 detail) = ~2,720 calls max
+#   In practice ~8-12 detail calls per model (only year-missing listings expanded)
+#   Realistic prewarm cost: ~160 × (2 + 10) = ~1,920 calls per cold run
+#   With 70% skip threshold on warm models: ~576 calls/day
 #
-# With a warm cache (prewarm running every 5hrs), valuation hits
-# Redis and costs 0 eBay calls. We target ~80% cache hit rate.
+# Sniper: 48 runs/day × 1 search = 48 search calls
+#   + up to 25 expansions/run × 80% cache hit = ~5 live valuations/run
+#   Live valuation = 2 search + up to 15 detail = 17 calls max
+#   Total sniper: ~48 + (48 × 5 × 17) = ~4,128 — but cache hit rate higher in practice
 #
-# Sniper: 48 runs/day (every 30 mins) × 1 search call = 48 search calls/day
-#   + up to 8 expansions/run = 384 expansion slots/day
-#   At 80% cache hit: 384 × 0.2 × 7 avg calls = ~538 valuation calls
-#   Total sniper: ~586 calls/day
+# Value sweep: 6 runs/day × 20 makes × 3 searches = 360 search calls
+#   + up to 60 expansions/run × 80% cache hit = ~12 live valuations/run
+#   Total sweep: ~360 + (6 × 12 × 17) = ~1,584 calls
 #
-# Value sweep: 4 runs/day × 20 makes × 3 searches = 240 search calls/day
-#   + up to 60 expansions/run = 240 expansion slots/day
-#   At 80% cache hit: 240 × 0.2 × 7 avg = ~336 valuation calls
-#   Total sweep: ~576 calls/day
+# BUDGET SPLIT TARGET:
+#   Prewarm:    ~600 calls/day  (runs 5hr schedule, skips warm models)
+#   Scans:      ~2,000 calls/day
+#   Buffer:     ~1,900 remaining
+#   Total:      ~4,500 vs 5,000 limit ✅
 #
-# Prewarm: ~200-300 calls/day (skips already-warm buckets)
-#
-# Grand total estimate: ~1,462 calls/day vs 5,000 limit ✅
-# All valuation calls now route through _check_budget via budget_fn.
-# ==========================================
+# The key fix: _pre_expand_details now only expands on MISSING YEAR (not mileage).
+# Missing mileage is handled gracefully by the filter layer (weight 1, not rejected).
+# This cuts prewarm detail calls from ~60/model to ~10/model.
 SNIPER_LIMIT = 25        # Expansions per sniper run — budget guard is the real ceiling
 DAILY_API_BUDGET = 4500  # Hard ceiling — 500 buffer vs 5,000 eBay limit
 DAILY_BUDGET_KEY = "ebay_daily_calls"
@@ -104,9 +102,9 @@ SNIPER_ROTATION_KEY = "sniper_query_rotation_idx"
 #   mileage_bucket = round(mileage / 20000) * 20000
 # Any odd bucket (e.g. 30000, 50000) will never be looked up by scans.
 #
-# API budget: ~160 models × 6 calls = ~960 calls per cold prewarm.
+# API budget: ~160 models × 2 calls = ~320 calls per cold prewarm.
 # With 5hr schedule and skip-if-cached (70% warm threshold), daily
-# refresh cost is typically ~200-300 calls leaving ~4,700/day for scanning.
+# refresh cost is typically ~80-120 calls leaving ~4,400/day for scanning.
 # ==========================================
 PREWARM_TARGETS = [
 
@@ -430,9 +428,9 @@ def notify_deal(deal_id: int):
 # IMPORTANT: mileage buckets must be multiples of 20,000 to match
 # the cache key rounding in market_valuation_service.py.
 #
-# API budget: ~160 models × 6 calls = ~960 calls per cold prewarm.
+# API budget: ~160 models × 2 calls = ~320 calls per cold prewarm.
 # With 5hr schedule and skip-if-cached (70% warm threshold), daily
-# refresh cost is typically ~200-300 calls leaving ~4,700/day for scanning.
+# refresh cost is typically ~80-120 calls.
 # ==========================================
 @celery.task
 def prewarm_valuation_cache():
@@ -486,7 +484,7 @@ def prewarm_valuation_cache():
         # ONE eBay search for this make/model — shared across all year/mileage combos
         query = f"{make_title} {base_model_title}"
         try:
-            all_summaries = get_sold_listings(query)
+            all_summaries = get_sold_listings(query, budget_fn=_check_budget)
             total_searches += 1
         except Exception as e:
             print(f"❌ Search failed for {query}: {e}")
@@ -498,7 +496,7 @@ def prewarm_valuation_cache():
 
         # Enrich summaries once — reused across all year/mileage combinations below
         try:
-            enriched_summaries = _pre_expand_details(all_summaries)
+            enriched_summaries = _pre_expand_details(all_summaries, prewarm_mode=True)  # Year-only expansion, capped at 15
         except Exception as e:
             print(f"❌ Expansion failed for {query}: {e}")
             continue

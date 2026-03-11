@@ -16,9 +16,10 @@ REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 21600          # 6 hours — prices don't change hourly
-MAX_DETAIL_EXPANSIONS = 60  # Expand up to 60 items to extract year/mileage from aspects
+MAX_DETAIL_EXPANSIONS = 60  # Scan-time expansion cap (live valuations on cache miss)
+MAX_PREWARM_EXPANSIONS = 15 # Prewarm cap — year-only, missing mileage does NOT trigger expansion
 MIN_SAMPLE_SIZE = 5
-MAX_ENRICHED_TARGET = 80    # Stop once 80 items have full year+mileage data
+MAX_ENRICHED_TARGET = 80    # Stop once 80 items have full year data
 
 
 MILEAGE_BLOCK_SIZE = 5000
@@ -523,7 +524,7 @@ def get_market_price_from_sold(
     if not all_summaries:
         return None
 
-    enriched_summaries = _pre_expand_details(all_summaries, budget_fn=budget_fn)
+    enriched_summaries = _pre_expand_details(all_summaries, budget_fn=budget_fn, prewarm_mode=False)
 
     for tolerance_config in [
         {"year_tolerance": 2, "mileage_tolerance": l1_tolerance,         "source": "layer_1_strict",          "adjust_mileage": True},
@@ -561,9 +562,35 @@ def get_market_price_from_sold(
     return None
 
 
-def _pre_expand_details(summaries: list, budget_fn=None) -> list:
+def _pre_expand_details(summaries: list, budget_fn=None, prewarm_mode: bool = False) -> list:
+    """
+    Enriches sold listing summaries with year and mileage data.
+
+    KEY RULE: Only expand a detail call if YEAR is missing from the title.
+      - Missing mileage alone does NOT trigger a detail call.
+      - The filter layer handles mileage-less listings gracefully (weight 1).
+      - Year missing = listing gets rejected entirely = worth 1 API call to fix.
+      - While we have the detail open, we grab mileage too at zero extra cost.
+
+    prewarm_mode=True:  cap = MAX_PREWARM_EXPANSIONS (15 per model)
+    prewarm_mode=False: cap = MAX_DETAIL_EXPANSIONS  (60, live scan cache miss)
+
+    Models returning fewer than 8 results skip expansion entirely —
+    not enough data to be useful regardless of enrichment.
+    """
     expansions = 0
+    cap = MAX_PREWARM_EXPANSIONS if prewarm_mode else MAX_DETAIL_EXPANSIONS
     enriched = []
+
+    # Skip expansion entirely for thin result sets — not worth the API calls
+    if len(summaries) < 8:
+        for summary in summaries:
+            title = summary.get("title", "")
+            summary["_year"] = extract_year_from_title(title)
+            summary["_mileage"] = extract_mileage_from_text(title)
+            enriched.append(summary)
+        print(f"🔍 Pre-expansion skipped: only {len(summaries)} results (min 8 required)")
+        return enriched
 
     for summary in summaries:
         title = summary.get("title", "")
@@ -572,15 +599,17 @@ def _pre_expand_details(summaries: list, budget_fn=None) -> list:
         listing_year = extract_year_from_title(title)
         listing_mileage = extract_mileage_from_text(title)
 
+        # Only expand if YEAR is missing — mileage alone doesn't justify a detail call
         already_enriched = sum(1 for s in enriched if s.get("_year") is not None)
 
-        if (listing_year is None or listing_mileage is None) and expansions < MAX_DETAIL_EXPANSIONS and already_enriched < MAX_ENRICHED_TARGET:
+        if listing_year is None and expansions < cap and already_enriched < MAX_ENRICHED_TARGET:
             if budget_fn and not budget_fn(1):
-                print("🛑 Budget exhausted — stopping detail expansions in valuation")
+                print("🛑 Budget exhausted — stopping detail expansions")
                 summary["_year"] = listing_year
                 summary["_mileage"] = listing_mileage
                 enriched.append(summary)
                 continue
+
             detail = get_item_detail(item_id)
             expansions += 1
 
@@ -598,6 +627,7 @@ def _pre_expand_details(summaries: list, budget_fn=None) -> list:
                         if match:
                             listing_year = int(match.group(1))
 
+                    # Grab mileage too while we have the detail open — free since we already called
                     if listing_mileage is None and any(k in name for k in ["mileage", "miles", "odometer"]):
                         try:
                             listing_mileage = int(val.replace(",", "").replace(" ", "").split(".")[0])
@@ -608,5 +638,8 @@ def _pre_expand_details(summaries: list, budget_fn=None) -> list:
         summary["_mileage"] = listing_mileage
         enriched.append(summary)
 
-    print(f"🔍 Pre-expansion complete: {expansions} detail calls used")
+    has_year = sum(1 for s in enriched if s.get("_year") is not None)
+    has_mileage = sum(1 for s in enriched if s.get("_mileage") is not None)
+    mode_label = "prewarm" if prewarm_mode else "live"
+    print(f"🔍 Pre-expansion complete: {expansions} detail calls used ({mode_label}, cap={cap}) — {has_year}/{len(enriched)} have year, {has_mileage}/{len(enriched)} have mileage")
     return enriched
