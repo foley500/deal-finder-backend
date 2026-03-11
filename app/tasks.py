@@ -813,3 +813,41 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
     finally:
         redis_client.delete(lock_key)
         db.close()
+
+
+# ==========================================
+# FACEBOOK LISTING PROCESSOR
+# Runs OCR + DVSA + valuation off the backend process.
+# Backend never loads EasyOCR — queues this task instead.
+# ==========================================
+@celery.task
+def process_facebook_listing(data: dict, dealer_id: int = 1):
+    from app.services.ocr_service import extract_plate_from_base64
+
+    image_base64 = data.get("image_base64")
+    if image_base64:
+        try:
+            detected_plate = extract_plate_from_base64(image_base64)
+            if detected_plate:
+                data["registration"] = detected_plate
+        except Exception as e:
+            print(f"Facebook OCR error: {e}")
+
+    deal = process_listing(
+        raw_item=data,
+        dealer_id=dealer_id,
+        source="facebook_extension",
+    )
+
+    if deal:
+        notify_deal.delay(deal.id)
+        return {
+            "status": "accepted",
+            "deal_id": deal.id,
+            "profit": deal.profit,
+            "score": deal.score,
+            "market_value": deal.market_value,
+            "reg": deal.reg or "Not detected",
+        }
+
+    return {"status": "filtered"}

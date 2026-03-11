@@ -16,11 +16,10 @@ REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 21600          # 6 hours — prices don't change hourly
-MAX_DETAIL_EXPANSIONS = 20
+MAX_DETAIL_EXPANSIONS = 60  # Expand up to 60 items to extract year/mileage from aspects
 MIN_SAMPLE_SIZE = 5
-MAX_ENRICHED_TARGET = 30
+MAX_ENRICHED_TARGET = 80    # Stop once 80 items have full year+mileage data
 
-ACTIVE_LISTING_DISCOUNT = 0.85
 
 MILEAGE_BLOCK_SIZE = 5000
 MILEAGE_BLOCK_RATE = 0.015
@@ -189,18 +188,21 @@ def check_spread(prices: list, label: str) -> float:
 
 
 # ---------------------------------------------------
-# EBAY SOLD SEARCH — private-first, fallback to all
+# EBAY SOLD SEARCH
 # ---------------------------------------------------
 
 def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
     """
-    Fetches sold + active listings for valuation.
+    Fetches sold listings only — active listings are NOT included.
+    Asking prices are not comparable sale prices and skew valuations high.
+
+    Two passes:
+      1. Private sellers (INDIVIDUAL) — used at face value, weighted ×2 in filter layer
+      2. All sellers — deduped, fills out the pool where private data is thin
 
     budget_fn: optional callable(n_calls: int) -> bool
-      If provided, called before EACH search request. Returns False = budget
-      exhausted, abort immediately. Each search = 1 call counted.
-      Private pass = up to 3 calls. All-seller fallback = up to 3 more.
-      No-category retry = up to 3 more. Max 9 calls total per invocation.
+      Called before each eBay request. Returns False = stop immediately.
+      Max 2 eBay calls per invocation (1 private + 1 all-seller).
     """
     token = get_ebay_access_token()
     if not token:
@@ -214,113 +216,76 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
     all_items = []
     combined_seen_ids = set()
 
-    def run_searches(seller_filter: str, label_suffix: str, use_category: bool = True):
-        searches = [
-            {
-                "filter": f"soldItems:true,conditions:{{USED}}{seller_filter}",
-                "sort": "newlyListed",
-                "label": f"sold{label_suffix}",
-                "limit": limit,
-                "source_type": "sold",
-            },
-            {
-                "filter": f"buyingOptions:{{FIXED_PRICE}},conditions:{{USED}}{seller_filter}",
-                "sort": "price",
-                "label": f"active_cheap{label_suffix}",
-                "limit": 50,
-                "source_type": "active",
-            },
-            {
-                "filter": f"buyingOptions:{{FIXED_PRICE}},conditions:{{USED}}{seller_filter}",
-                "sort": "newlyListed",
-                "label": f"active_new{label_suffix}",
-                "limit": 50,
-                "source_type": "active",
-            },
-        ]
+    def run_sold_search(seller_filter: str, label: str, use_category: bool = True):
+        if budget_fn and not budget_fn(1):
+            print(f"🛑 Budget exhausted — skipping [{label}]")
+            return []
 
-        results = []
-        local_seen = set()
-        for search in searches:
-            # Check budget before each individual search call
-            if budget_fn and not budget_fn(1):
-                print(f"🛑 Budget exhausted — stopping valuation search [{search['label']}]")
+        params = {
+            "q": query,
+            "limit": limit,
+            "filter": f"soldItems:true,conditions:{{USED}}{seller_filter}",
+            "sort": "newlyListed",
+        }
+        if use_category:
+            params["category_ids"] = "9801"
+
+        throttle_ebay()
+        response = None
+        for attempt in range(3):
+            response = requests.get(SEARCH_URL, headers=headers, params=params)
+            if response.status_code == 429:
+                wait = 15 * (2 ** attempt)
+                print(f"⏳ [{label}] Rate limited — waiting {wait}s (attempt {attempt+1}/3)")
+                time.sleep(wait)
+            else:
                 break
 
-            params = {
-                "q": query,
-                "limit": search["limit"],
-                "filter": search["filter"],
-            }
-            if use_category:
-                params["category_ids"] = "9801"
-            if "sort" in search:
-                params["sort"] = search["sort"]
+        if response.status_code == 429:
+            print(f"❌ [{label}] Rate limited after 3 retries — skipping")
+            return []
+        if response.status_code != 200:
+            print(f"❌ [{label}] search error: {response.status_code}")
+            return []
 
-            throttle_ebay()
-            # Retry up to 3 times on 429 with exponential backoff
-            response = None
-            for attempt in range(3):
-                response = requests.get(SEARCH_URL, headers=headers, params=params)
-                if response.status_code == 429:
-                    wait = 15 * (2 ** attempt)  # 15s, 30s, 60s
-                    print(f"⏳ [{search['label']}] Rate limited — waiting {wait}s (attempt {attempt+1}/3)")
-                    time.sleep(wait)
-                else:
-                    break
+        items = response.json().get("itemSummaries", [])
+        print(f"✅ [{label}] '{query[:35]}' → {len(items)} items")
+        return items
 
-            if response.status_code == 429:
-                print(f"❌ [{search['label']}] Rate limited after 3 retries — skipping")
-                continue
-
-            if response.status_code != 200:
-                print(f"❌ [{search['label']}] search error: {response.status_code}")
-                continue
-
-            items = response.json().get("itemSummaries", [])
-            print(f"✅ [{search['label']}] '{query[:35]}' → {len(items)} items")
-
-            for item in items:
-                item_id = item.get("itemId") or item.get("epid") or item.get("title", "")[:60]
-                if item_id and item_id not in local_seen:
-                    local_seen.add(item_id)
-                    item["_source_type"] = search["source_type"]
-                    item["_resolved_id"] = item_id
-                    results.append(item)
-
-        return results
-
-    private_results = run_searches(",sellerAccountTypes:{INDIVIDUAL}", "_private", use_category=True)
-    for item in private_results:
-        item["_seller_pool"] = "private"
-        combined_seen_ids.add(item.get("_resolved_id", ""))
-    all_items.extend(private_results)
-
-    print(f"📦 Private-only results: {len(private_results)}")
-
-    # Always fetch all-seller results too — private pool is small on eBay UK.
-    # Private results are tagged and used at face value.
-    # All-seller results are tagged and get 15% discount in the filter layer.
-    # Both are blended together giving us a much larger comparable pool.
-    all_sellers_results = run_searches("", "_all", use_category=True)
-    for item in all_sellers_results:
-        item_id = item.get("_resolved_id", "")
-        if item_id and item_id not in combined_seen_ids:
+    # Pass 1: private sold listings — most accurate price signal
+    for item in run_sold_search(",sellerAccountTypes:{INDIVIDUAL}", "sold_private"):
+        item_id = item.get("itemId") or item.get("title", "")[:60]
+        if item_id:
+            item["_source_type"] = "sold"
+            item["_seller_pool"] = "private"
+            item["_resolved_id"] = item_id
             combined_seen_ids.add(item_id)
-            item["_seller_pool"] = "all"
             all_items.append(item)
-    print(f"📦 After blending private + all-seller: {len(all_items)} total")
+    print(f"📦 Private sold: {sum(1 for i in all_items if i['_seller_pool'] == 'private')}")
 
-    # If still empty, retry without category filter
+    # Pass 2: all-seller sold listings — deduped, adds volume
+    for item in run_sold_search("", "sold_all"):
+        item_id = item.get("itemId") or item.get("title", "")[:60]
+        if item_id and item_id not in combined_seen_ids:
+            item["_source_type"] = "sold"
+            item["_seller_pool"] = "all"
+            item["_resolved_id"] = item_id
+            combined_seen_ids.add(item_id)
+            all_items.append(item)
+    print(f"📦 Total blended sold: {len(all_items)}")
+
+    # Fallback: if zero results (very rare model), retry without category filter
     if not all_items:
         print(f"⚠️ Zero results with category filter — retrying without category_ids")
-        no_cat_results = run_searches("", "_no_cat", use_category=False)
-        for item in no_cat_results:
-            item_id = item.get("_resolved_id", "")
+        for item in run_sold_search("", "sold_all_nocat", use_category=False):
+            item_id = item.get("itemId") or item.get("title", "")[:60]
             if item_id and item_id not in combined_seen_ids:
+                item["_source_type"] = "sold"
+                item["_seller_pool"] = "all"
+                item["_resolved_id"] = item_id
                 combined_seen_ids.add(item_id)
                 all_items.append(item)
-        print(f"📦 After no-category fallback: {len(all_items)} total")
+        print(f"📦 After no-category fallback: {len(all_items)}")
 
     return all_items
 
@@ -331,23 +296,21 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
 
 def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mileage_tolerance, adjust_mileage=True, layer_name=""):
     sold_prices = []
-    active_prices = []
 
     rejected_no_year = 0
     rejected_year = 0
     rejected_mileage = 0
     rejected_no_price = 0
     accepted_sold = 0
-    accepted_active = 0
     mileage_diffs = []
     adjustments = []
 
     for summary in summaries:
         listing_year = summary.get("_year")
         listing_mileage = summary.get("_mileage")
-        source_type = summary.get("_source_type", "active")
+        source_type = summary.get("_source_type", "sold")
 
-        total_accepted = accepted_sold + accepted_active
+        total_accepted = accepted_sold
 
         if listing_year is None:
             if total_accepted >= MIN_SAMPLE_SIZE:
@@ -381,9 +344,6 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
         if base_price < 200:
             continue
 
-        if source_type == "active":
-            base_price = base_price * ACTIVE_LISTING_DISCOUNT
-
         adjusted_price = base_price
 
         if mileage_diff is not None and adjust_mileage and listing_mileage is not None:
@@ -402,12 +362,9 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
             pool_weight = 2 if seller_pool == "private" else 1
             sold_prices.extend([adjusted_price] * (weight * pool_weight))
             accepted_sold += 1
-        else:
-            active_prices.extend([adjusted_price] * weight)
-            accepted_active += 1
 
     print(f"📊 FILTER DEBUG [{layer_name}]:")
-    print(f"   Sold accepted: {accepted_sold} ({len(sold_prices)} weighted), Active accepted: {accepted_active} ({len(active_prices)} weighted)")
+    print(f"   Sold accepted: {accepted_sold} ({len(sold_prices)} weighted entries)")
     print(f"   Rejected (no year): {rejected_no_year}")
     print(f"   Rejected (year tolerance ±{year_tolerance}yr): {rejected_year}")
     print(f"   Rejected (mileage tolerance ±{mileage_tolerance}mi): {rejected_mileage}")
@@ -424,20 +381,9 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
     if len(sold_prices) >= MIN_SAMPLE_SIZE:
         final_prices = sold_prices
         source_label = "sold_only"
-        print(f"   ✅ Using sold-only prices ({len(sold_prices)} weighted samples)")
-
-    elif len(sold_prices) > 0 and (len(sold_prices) + len(active_prices)) >= MIN_SAMPLE_SIZE:
-        final_prices = (sold_prices * 2) + active_prices
-        source_label = "sold_weighted_blend"
-        print(f"   ⚠️ Blending: {len(sold_prices)} sold (×2 weight) + {len(active_prices)} active")
-
-    elif len(active_prices) >= MIN_SAMPLE_SIZE and len(sold_prices) == 0:
-        final_prices = [p * 0.95 for p in active_prices]
-        source_label = "active_only_cautious"
-        print(f"   ⚠️ Active-only ({len(active_prices)} weighted samples) — extra 5% caution discount applied")
-
+        print(f"   ✅ Using sold prices ({len(sold_prices)} weighted entries)")
     else:
-        print(f"❌ Failed — sold: {len(sold_prices)}, active: {len(active_prices)} (min required: {MIN_SAMPLE_SIZE})")
+        print(f"❌ Failed — {len(sold_prices)} weighted entries (min required: {MIN_SAMPLE_SIZE})")
         return None
 
     final_prices = sorted(final_prices)

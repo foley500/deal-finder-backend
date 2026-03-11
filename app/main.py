@@ -22,7 +22,6 @@ from app.models import Base, Dealer, DealerSettings, Deal, ScanRun
 from app.tasks import notify_deal, scan_sniper, scan_value_sweep
 from app.services.deal_engine import process_listing
 from app.services.ebay_browse_service import search_ebay_browse
-from app.services.ocr_service import extract_plate_from_base64
 
 # =====================================================
 # APP SETUP
@@ -330,7 +329,8 @@ def save_settings_json(dealer_id: int, data: dict = Body(...), db: Session = Dep
 
 
 # =====================================================
-# FACEBOOK INGESTION — uses YOLO + EasyOCR (same as engine)
+# FACEBOOK INGESTION — queues OCR + valuation on the Celery worker.
+# Backend never loads EasyOCR — keeps backend memory lean.
 # =====================================================
 
 @app.post("/ingest/facebook")
@@ -338,30 +338,17 @@ def ingest_facebook(
     data: dict = Body(...),
     db: Session = Depends(get_db)
 ):
+    from app.tasks import process_facebook_listing
 
     dealer_id = 1
-    detected_plate = None
 
-    image_base64 = data.get("image_base64")
-
-    if image_base64:
-        try:
-            detected_plate = extract_plate_from_base64(image_base64)
-        except Exception as e:
-            print("Facebook OCR error:", e)
-
-    if detected_plate:
-        data["registration"] = detected_plate
-
-    # Get dealer settings so we can return filter reasons
+    # Pre-screen cheaply before queuing — avoids burning worker cycles on obvious rejects
     settings = db.query(DealerSettings).filter(
         DealerSettings.dealer_id == dealer_id
     ).first()
 
     price = float(data.get("price", 0) or 0)
-    title = data.get("title", "") or ""
 
-    # Pre-screen checks before running full pipeline
     if not price:
         return {"status": "filtered", "reason": "No price found on listing"}
 
@@ -371,30 +358,14 @@ def ingest_facebook(
     if settings and settings.max_price and price > settings.max_price:
         return {"status": "filtered", "reason": f"Price £{price} exceeds your max price filter of £{settings.max_price}"}
 
-    deal = process_listing(
-        raw_item=data,
-        dealer_id=dealer_id,
-        source="facebook_extension",
-    )
+    # Queue full OCR + DVSA + valuation pipeline on worker
+    task = process_facebook_listing.delay(data, dealer_id)
+
+    return {"status": "queued", "task_id": task.id}
 
     if deal:
         return {
             "status": "accepted",
-            "deal_id": deal.id,
-            "profit": deal.profit,
-            "score": deal.score,
-            "market_value": deal.market_value,
-            "reg": deal.reg or "Not detected",
-        }
-
-    # Deal was filtered by the engine — work out most likely reason
-    return {
-        "status": "filtered",
-        "reason": (
-            f"Plate detected: {detected_plate} — " if detected_plate else "No plate detected (using title for make/model) — "
-        ) + f"filtered by profit/score thresholds or no market data found. "
-          f"Min profit: £{settings.min_profit or 0}, Min score: {settings.min_score or 0}"
-    }
 
 
 # =====================================================
