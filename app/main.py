@@ -7,7 +7,7 @@ import hashlib
 import time
 
 from PIL import Image
-from app.routes import settings
+from app.routes import settings as settings_router
 from fastapi import FastAPI, Depends, Request, Query, Body, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,7 +30,7 @@ from app.services.ebay_browse_service import search_ebay_browse
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
-app.include_router(settings.router)
+app.include_router(settings_router.router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -362,10 +362,6 @@ def ingest_facebook(
     task = process_facebook_listing.delay(data, dealer_id)
 
     return {"status": "queued", "task_id": task.id}
-
-    if deal:
-        return {
-            "status": "accepted",
 
 
 # =====================================================
