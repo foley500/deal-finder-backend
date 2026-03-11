@@ -451,7 +451,9 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
 
     sample_count = len(final_prices)
 
-    if sample_count >= 10:
+    if "layer_5" in layer_name:
+        confidence = "low"  # Year-only fallback — mileage adjustment is carrying the whole comparison
+    elif sample_count >= 10:
         confidence = "high"
     elif sample_count >= 5:
         confidence = "medium"
@@ -578,10 +580,11 @@ def get_market_price_from_sold(
     enriched_summaries = _pre_expand_details(all_summaries, budget_fn=budget_fn)
 
     for tolerance_config in [
-        {"year_tolerance": 2, "mileage_tolerance": l1_tolerance, "source": "layer_1_strict",          "adjust_mileage": True},
-        {"year_tolerance": 2, "mileage_tolerance": l2_tolerance, "source": "layer_2_relaxed_mileage", "adjust_mileage": True},
+        {"year_tolerance": 2, "mileage_tolerance": l1_tolerance,         "source": "layer_1_strict",          "adjust_mileage": True},
+        {"year_tolerance": 2, "mileage_tolerance": l2_tolerance,         "source": "layer_2_relaxed_mileage", "adjust_mileage": True},
         {"year_tolerance": 3, "mileage_tolerance": l2_tolerance + 5000,  "source": "layer_3_relaxed_year",    "adjust_mileage": True},
         {"year_tolerance": 4, "mileage_tolerance": l2_tolerance + 15000, "source": "layer_4_wide",            "adjust_mileage": True},
+        {"year_tolerance": 5, "mileage_tolerance": 999999,               "source": "layer_5_year_only",       "adjust_mileage": True},
     ]:
         result = run_filter_layer(
             enriched_summaries,
