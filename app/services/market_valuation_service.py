@@ -293,7 +293,7 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
 
         return results
 
-    private_results = run_searches(",sellers:{PRIVATE}", "_private", use_category=True)
+    private_results = run_searches(",sellerAccountTypes:{INDIVIDUAL}", "_private", use_category=True)
     for item in private_results:
         item["_seller_pool"] = "private"
         combined_seen_ids.add(item.get("_resolved_id", ""))
