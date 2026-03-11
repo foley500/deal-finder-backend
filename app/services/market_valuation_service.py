@@ -82,14 +82,39 @@ def extract_mileage_from_text(text: str):
 
 def normalise_base_model(make: str, base_model: str) -> str:
     make_lower = make.lower()
-    model_lower = base_model.lower()
+    model_lower = base_model.lower().strip()
 
-    if make_lower == "bmw" and model_lower.isdigit():
-        return f"{base_model} Series"
+    if make_lower == "bmw":
+        # "118", "120", "318" etc → extract leading digit → "1 Series", "3 Series"
+        if model_lower.isdigit():
+            if len(model_lower) >= 3:
+                series_num = model_lower[0]
+                return f"{series_num} Series"
+            return f"{base_model} Series"
+        # Handle variants like "118d", "320i" etc
+        import re
+        m = re.match(r'^([1-9])\d{2}', model_lower)
+        if m:
+            return f"{m.group(1)} Series"
+        # MINI models that ended up under BMW make
+        if model_lower in ["hatch", "cooper", "one", "john cooper works", "jcw"]:
+            return "Mini"
 
     if make_lower in ["mercedes", "mercedes-benz"]:
+        # "Aclass"/"A Class" → "A-Class", "Cclass" → "C-Class" etc
         if "class" in model_lower and "-" not in model_lower:
             return model_lower.replace("class", "-class").title()
+        # "Gla", "Glb", "Glc", "Gle", "Cls", "Clk", "Slk", "Amg" etc
+        # These are fine as-is — eBay recognises them
+        # Fix ML: "Ml350", "Ml320" etc → "ML-Class"
+        if re.match(r'^ml\d', model_lower):
+            return "ML-Class"
+        # Fix GLA/GLB/GLC/GLE/GLS: already correct, just ensure title case
+        if re.match(r'^gl[abces]$', model_lower):
+            return base_model.upper()
+        # "mercedes" as model (bad title fallback) — return as-is, valuation will fail gracefully
+        if model_lower == "mercedes":
+            return base_model
 
     return base_model
 
@@ -236,10 +261,19 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
                 params["sort"] = search["sort"]
 
             throttle_ebay()
-            response = requests.get(SEARCH_URL, headers=headers, params=params)
+            # Retry up to 3 times on 429 with exponential backoff
+            response = None
+            for attempt in range(3):
+                response = requests.get(SEARCH_URL, headers=headers, params=params)
+                if response.status_code == 429:
+                    wait = 15 * (2 ** attempt)  # 15s, 30s, 60s
+                    print(f"⏳ [{search['label']}] Rate limited — waiting {wait}s (attempt {attempt+1}/3)")
+                    time.sleep(wait)
+                else:
+                    break
 
             if response.status_code == 429:
-                time.sleep(5)
+                print(f"❌ [{search['label']}] Rate limited after 3 retries — skipping")
                 continue
 
             if response.status_code != 200:
@@ -261,6 +295,7 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
 
     private_results = run_searches(",sellers:{PRIVATE}", "_private", use_category=True)
     for item in private_results:
+        item["_seller_pool"] = "private"
         combined_seen_ids.add(item.get("_resolved_id", ""))
     all_items.extend(private_results)
 
@@ -273,6 +308,7 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
             item_id = item.get("_resolved_id", "")
             if item_id and item_id not in combined_seen_ids:
                 combined_seen_ids.add(item_id)
+                item["_seller_pool"] = "all"
                 all_items.append(item)
         print(f"📦 After all-seller fallback: {len(all_items)} total")
 
@@ -358,6 +394,10 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
         weight = mileage_proximity_weight(listing_mileage, target_mileage, mileage_tolerance)
 
         if source_type == "sold":
+            # Dealer-sold prices run ~15% above private market — discount them
+            seller_pool = summary.get("_seller_pool", "all")
+            if seller_pool == "all":
+                adjusted_price = round(adjusted_price * 0.85, 2)
             sold_prices.extend([adjusted_price] * weight)
             accepted_sold += 1
         else:

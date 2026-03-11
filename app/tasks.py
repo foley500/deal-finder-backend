@@ -46,7 +46,7 @@ redis_client = redis.from_url(REDIS_URL)
 # Grand total estimate: ~1,462 calls/day vs 5,000 limit ✅
 # All valuation calls now route through _check_budget via budget_fn.
 # ==========================================
-SNIPER_LIMIT = 8         # Expansions per sniper run (48 runs/day = 384 slots)
+SNIPER_LIMIT = 25        # Expansions per sniper run — budget guard is the real ceiling
 DAILY_API_BUDGET = 4500  # Hard ceiling — 500 buffer vs 5,000 eBay limit
 DAILY_BUDGET_KEY = "ebay_daily_calls"
 VALUE_SWEEP_LIMIT = 60   # Expansions per sweep run (4 runs/day = 240 slots)
