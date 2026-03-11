@@ -475,17 +475,24 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         description_penalty = description_risk(description, price)
         risk_penalty = description_penalty + mot_penalty
 
-        profit = calculate_true_profit(
+        profit_result = calculate_true_profit(
             market_value,
             price,
             risk_penalty=risk_penalty
         )
 
-        score = calculate_score(profit, risk_penalty, mileage)
+        gross_profit = profit_result["gross_profit"]
+        net_profit = profit_result["net_profit"]
+        est_costs = profit_result["costs"]
+
+        print(f"   💷 Gross profit: £{gross_profit} | Est costs: £{profit_result['total_deductions']} | Net profit: £{net_profit}")
+
+        score = calculate_score(gross_profit, risk_penalty, mileage)
         confidence = assign_confidence(score)
 
-        if settings.min_profit is not None and profit < settings.min_profit:
-            print("❌ Filtered by profit:", profit)
+        # Filter on GROSS profit — costs are shown separately, not used as a gate
+        if settings.min_profit is not None and gross_profit < settings.min_profit:
+            print("❌ Filtered by gross profit:", gross_profit)
             return None
 
         if settings.min_score is not None and score < settings.min_score:
@@ -500,7 +507,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
             mileage=mileage,
             listing_price=price,
             market_value=market_value,
-            profit=profit,
+            profit=gross_profit,
+            net_profit=net_profit,
             risk_penalty=risk_penalty,
             score=score,
             source=source,
@@ -509,7 +517,13 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 "financials": {
                     "listing_price": price,
                     "market_value": market_value,
-                    "profit": profit,
+                    "gross_profit": gross_profit,
+                    "net_profit": net_profit,
+                    "est_transport": est_costs["transport"],
+                    "est_prep": est_costs["prep"],
+                    "est_warranty": est_costs["warranty"],
+                    "est_total_costs": est_costs["total"],
+                    "risk_penalty": risk_penalty,
                 },
                 "market_model": valuation_data,
                 "risk_breakdown": {

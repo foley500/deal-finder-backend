@@ -23,7 +23,6 @@ from app.tasks import notify_deal, scan_sniper, scan_value_sweep
 from app.services.deal_engine import process_listing
 from app.services.ebay_browse_service import search_ebay_browse
 from app.services.ocr_service import extract_plate_from_base64
-from app.services.ocr_service import extract_plate_from_base64
 
 # =====================================================
 # APP SETUP
@@ -221,7 +220,12 @@ def deal_detail(
         "financials": raw_report.get("financials") or {
             "listing_price": 0,
             "market_value": 0,
-            "profit": 0,
+            "gross_profit": 0,
+            "net_profit": 0,
+            "est_transport": None,
+            "est_prep": None,
+            "est_warranty": None,
+            "est_total_costs": None,
         },
         "market_model": raw_report.get("market_model") or {
             "market_price": None,
@@ -384,14 +388,12 @@ def ingest_facebook(
         }
 
     # Deal was filtered by the engine — work out most likely reason
-    if not detected_plate:
-        plate_msg = "No plate detected — "
-    else:
-        plate_msg = f"Plate {detected_plate} — "
-
     return {
         "status": "filtered",
-        "reason": f"{plate_msg}filtered by profit or score thresholds (min profit: £{settings.min_profit or 0}, min score: {settings.min_score or 0})"
+        "reason": (
+            f"Plate detected: {detected_plate} — " if detected_plate else "No plate detected (using title for make/model) — "
+        ) + f"filtered by profit/score thresholds or no market data found. "
+          f"Min profit: £{settings.min_profit or 0}, Min score: {settings.min_score or 0}"
     }
 
 

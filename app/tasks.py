@@ -378,6 +378,14 @@ def notify_deal(deal_id: int):
         pdf_buffer = generate_deal_pdf(deal, report.get("mot_full_data"))
         pdf_buffer.seek(0)
 
+        financials = report.get("financials", {})
+        gross_profit = financials.get("gross_profit", deal.profit)
+        net_profit = financials.get("net_profit", "N/A")
+        est_prep = financials.get("est_prep", "N/A")
+        est_transport = financials.get("est_transport", "N/A")
+        est_warranty = financials.get("est_warranty", "N/A")
+        est_total = financials.get("est_total_costs", "N/A")
+
         caption = f"""
 🚗 {deal.status.upper()} CONFIDENCE DEAL
 
@@ -386,11 +394,18 @@ def notify_deal(deal_id: int):
 📍 Reg: {deal.reg or "N/A"}
 📊 Mileage: {deal.mileage or "N/A"}
 
-💰 Price: £{deal.listing_price}
-📈 CAP Value: £{deal.market_value}
-📊 Profit: £{deal.profit}
+💰 Asking: £{deal.listing_price}
+📈 Market Value: £{deal.market_value}
+📊 Gross Profit: £{gross_profit}
 
-⚠️ Risk: £{deal.risk_penalty}
+🔧 Est. Costs:
+  • Transport: £{est_transport}
+  • Prep: £{est_prep}
+  • Warranty: £{est_warranty}
+  • Risk: £{deal.risk_penalty}
+  • Total: £{est_total}
+
+💵 Net Profit: £{net_profit}
 🎯 Score: {deal.score}
 
 🔗 Listing: {report.get("listing_url", "N/A")}

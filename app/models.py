@@ -5,10 +5,6 @@ from datetime import datetime
 Base = declarative_base()
 
 
-# ==========================================
-# DEALER
-# ==========================================
-
 class Dealer(Base):
     __tablename__ = "dealers"
 
@@ -19,10 +15,6 @@ class Dealer(Base):
     scans = relationship("ScanRun", back_populates="dealer")
     settings = relationship("DealerSettings", back_populates="dealer", uselist=False)
 
-
-# ==========================================
-# DEALER SETTINGS
-# ==========================================
 
 class DealerSettings(Base):
     __tablename__ = "dealer_settings"
@@ -44,9 +36,6 @@ class DealerSettings(Base):
 
     dealer = relationship("Dealer", back_populates="settings")
 
-    # ==========================================
-# VALUATIONS
-# ==========================================
 
 class Valuation(Base):
     __tablename__ = "valuations"
@@ -57,10 +46,6 @@ class Valuation(Base):
     source = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-
-# ==========================================
-# DEALS
-# ==========================================
 
 class Deal(Base):
     __tablename__ = "deals"
@@ -76,7 +61,8 @@ class Deal(Base):
 
     listing_price = Column(Float)
     market_value = Column(Float)
-    profit = Column(Float)
+    profit = Column(Float)        # gross profit — used for sorting/filtering
+    net_profit = Column(Float)    # after est. costs and risk
     risk_penalty = Column(Float)
     score = Column(Float)
 
@@ -89,10 +75,6 @@ class Deal(Base):
 
     dealer = relationship("Dealer", back_populates="deals")
 
-
-# ==========================================
-# SCAN RUNS
-# ==========================================
 
 class ScanRun(Base):
     __tablename__ = "scan_runs"
