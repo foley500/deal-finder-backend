@@ -63,10 +63,14 @@ def get_nav_counts(db: Session) -> dict:
     all_deals = db.query(Deal).count()
     ebay_deals = db.query(Deal).filter(Deal.source == "ebay_browse").count()
     facebook_deals = db.query(Deal).filter(Deal.source == "facebook_extension").count()
+    van_deals = db.query(Deal).filter(Deal.source == "ebay_vans").count()
+    van_deals = db.query(Deal).filter(Deal.source == "ebay_vans").count()
     return {
         "all_deals": all_deals,
         "ebay_deals": ebay_deals,
         "facebook_deals": facebook_deals,
+        "van_deals": van_deals,
+        "van_deals": van_deals,
     }
 
 
@@ -146,8 +150,10 @@ def all_deals(
     sort: str | None = Query(None),
     confidence: str | None = Query(None),
     source: str | None = Query(None),
+    page: int = Query(1, ge=1),
     db: Session = Depends(get_db)
 ):
+    PAGE_SIZE = 25
 
     query = db.query(Deal)
 
@@ -166,7 +172,11 @@ def all_deals(
     else:
         query = query.order_by(Deal.created_at.desc())
 
-    deals = query.all()
+    total_count = query.count()
+    total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = min(page, total_pages)
+
+    deals = query.offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE).all()
 
     return templates.TemplateResponse(
         "all_deals.html",
@@ -175,6 +185,53 @@ def all_deals(
             "deals": deals,
             "nav_counts": get_nav_counts(db),
             "active_source": source,
+            "page": page,
+            "total_pages": total_pages,
+            "total_count": total_count,
+        },
+    )
+
+
+
+# =====================================================
+# VANS
+# =====================================================
+
+@app.get("/vans", response_class=HTMLResponse)
+def van_deals(
+    request: Request,
+    sort: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    db: Session = Depends(get_db)
+):
+    PAGE_SIZE = 25
+
+    query = db.query(Deal).filter(Deal.source == "ebay_vans")
+
+    if sort == "profit_desc":
+        query = query.order_by(Deal.profit.desc())
+    elif sort == "profit_asc":
+        query = query.order_by(Deal.profit.asc())
+    elif sort == "score_desc":
+        query = query.order_by(Deal.score.desc())
+    else:
+        query = query.order_by(Deal.created_at.desc())
+
+    total_count = query.count()
+    total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = min(page, total_pages)
+
+    deals = query.offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE).all()
+
+    return templates.TemplateResponse(
+        "vans.html",
+        {
+            "request": request,
+            "deals": deals,
+            "nav_counts": get_nav_counts(db),
+            "page": page,
+            "total_pages": total_pages,
+            "total_count": total_count,
         },
     )
 

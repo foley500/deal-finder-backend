@@ -87,6 +87,81 @@ SCAN_QUERY_GROUPS = [
 ]
 
 SNIPER_ROTATION_KEY = "sniper_query_rotation_idx"
+# ==========================================
+# VAN SCAN QUERY GROUPS
+# Used by van sniper — rotated per run.
+# ==========================================
+VAN_SCAN_QUERY_GROUPS = [
+    'Ford Transit',
+    'Ford Transit Custom',
+    'Ford Transit Connect',
+    'Volkswagen Transporter',
+    'Volkswagen Crafter',
+    'Mercedes-Benz Sprinter',
+    'Mercedes-Benz Vito',
+    'Vauxhall Vivaro',
+    'Vauxhall Movano',
+    'Peugeot Expert',
+    'Peugeot Boxer',
+    'Citroen Dispatch',
+    'Citroen Relay',
+    'Renault Trafic',
+    'Renault Master',
+    'Nissan NV200',
+    'Nissan NV400',
+    'Toyota Proace',
+    'Fiat Ducato',
+    'Fiat Doblo',
+]
+
+VAN_SNIPER_ROTATION_KEY = "van_sniper_rotation_idx"
+
+# ==========================================
+# VAN PREWARM TARGETS
+# Higher mileage buckets vs cars — vans
+# regularly trade at 100-200k miles.
+# ==========================================
+VAN_PREWARM_TARGETS = [
+
+    # ── FORD ──────────────────────────────────────────────────────────────
+    ("Ford", "Transit",         [2014, 2015, 2016, 2017, 2018, 2019, 2020], [60000, 80000, 100000, 120000, 140000, 160000, 180000, 200000]),
+    ("Ford", "Transit Custom",  [2014, 2015, 2016, 2017, 2018, 2019, 2020], [60000, 80000, 100000, 120000, 140000, 160000]),
+    ("Ford", "Transit Connect", [2014, 2015, 2016, 2017, 2018, 2019],       [40000, 60000, 80000, 100000, 120000]),
+
+    # ── VOLKSWAGEN ────────────────────────────────────────────────────────
+    ("Volkswagen", "Transporter", [2013, 2014, 2015, 2016, 2017, 2018, 2019], [60000, 80000, 100000, 120000, 140000, 160000]),
+    ("Volkswagen", "Crafter",     [2013, 2014, 2015, 2016, 2017, 2018],       [60000, 80000, 100000, 120000, 140000]),
+    ("Volkswagen", "Caddy",       [2013, 2014, 2015, 2016, 2017, 2018],       [40000, 60000, 80000, 100000, 120000]),
+
+    # ── MERCEDES-BENZ ─────────────────────────────────────────────────────
+    ("Mercedes-Benz", "Sprinter", [2014, 2015, 2016, 2017, 2018, 2019],       [60000, 80000, 100000, 120000, 140000, 160000]),
+    ("Mercedes-Benz", "Vito",     [2014, 2015, 2016, 2017, 2018, 2019],       [60000, 80000, 100000, 120000, 140000]),
+
+    # ── VAUXHALL ──────────────────────────────────────────────────────────
+    ("Vauxhall", "Vivaro",  [2014, 2015, 2016, 2017, 2018, 2019],             [60000, 80000, 100000, 120000, 140000]),
+    ("Vauxhall", "Movano",  [2013, 2014, 2015, 2016, 2017, 2018],             [60000, 80000, 100000, 120000, 140000, 160000]),
+
+    # ── PEUGEOT / CITROEN / FIAT ──────────────────────────────────────────
+    ("Peugeot",  "Expert", [2014, 2015, 2016, 2017, 2018, 2019],              [60000, 80000, 100000, 120000, 140000]),
+    ("Peugeot",  "Boxer",  [2013, 2014, 2015, 2016, 2017, 2018],              [60000, 80000, 100000, 120000, 140000, 160000]),
+    ("Citroen",  "Dispatch",[2014, 2015, 2016, 2017, 2018, 2019],             [60000, 80000, 100000, 120000, 140000]),
+    ("Citroen",  "Relay",   [2013, 2014, 2015, 2016, 2017, 2018],             [60000, 80000, 100000, 120000, 140000, 160000]),
+    ("Fiat",     "Ducato",  [2013, 2014, 2015, 2016, 2017, 2018],             [60000, 80000, 100000, 120000, 140000, 160000]),
+    ("Fiat",     "Doblo",   [2013, 2014, 2015, 2016, 2017, 2018],             [40000, 60000, 80000, 100000, 120000]),
+
+    # ── RENAULT ───────────────────────────────────────────────────────────
+    ("Renault",  "Trafic",  [2014, 2015, 2016, 2017, 2018, 2019],             [60000, 80000, 100000, 120000, 140000]),
+    ("Renault",  "Master",  [2013, 2014, 2015, 2016, 2017, 2018],             [60000, 80000, 100000, 120000, 140000, 160000]),
+
+    # ── NISSAN ────────────────────────────────────────────────────────────
+    ("Nissan",   "NV200",   [2013, 2014, 2015, 2016, 2017, 2018],             [40000, 60000, 80000, 100000, 120000]),
+    ("Nissan",   "NV400",   [2013, 2014, 2015, 2016, 2017, 2018],             [60000, 80000, 100000, 120000, 140000]),
+
+    # ── TOYOTA ────────────────────────────────────────────────────────────
+    ("Toyota",   "Proace",  [2016, 2017, 2018, 2019, 2020],                   [40000, 60000, 80000, 100000, 120000]),
+]
+
+
 
 # ==========================================
 # FULL UK MARKET PREWARM TARGETS
@@ -433,7 +508,7 @@ def notify_deal(deal_id: int):
 # refresh cost is typically ~80-120 calls.
 # ==========================================
 @celery.task
-def prewarm_valuation_cache():
+def prewarm_valuation_cache(targets_override=None):
     from app.services.market_valuation_service import (
         get_market_price_from_sold,
         get_sold_listings,
@@ -453,7 +528,8 @@ def prewarm_valuation_cache():
 
     print("🔥 Starting valuation cache prewarm...")
 
-    for make, base_model, years, mileage_buckets in PREWARM_TARGETS:
+    targets = targets_override if targets_override is not None else PREWARM_TARGETS
+    for make, base_model, years, mileage_buckets in targets:
 
         make_title = make.strip().title()
         base_model_title = normalise_base_model(make_title, base_model.strip().title())
@@ -604,6 +680,50 @@ def scan_value_sweep(dealer_id: int):
 
 
 
+
+
+# ==========================================
+# VAN SNIPER
+# ==========================================
+@celery.task
+def scan_van_sniper(dealer_id: int):
+    idx = int(redis_client.incr(VAN_SNIPER_ROTATION_KEY) - 1) % len(VAN_SCAN_QUERY_GROUPS)
+    query = VAN_SCAN_QUERY_GROUPS[idx]
+    print(f"🚐 Van sniper rotation [{idx+1}/{len(VAN_SCAN_QUERY_GROUPS)}]: '{query}'")
+    return run_scan(
+        dealer_id=dealer_id,
+        mode_name="sniper",
+        listings_to_pull=50,
+        keywords=query,
+        sort="newlyListed",
+        source_override="ebay_vans",
+    )
+
+
+# ==========================================
+# VAN VALUE SWEEP
+# ==========================================
+@celery.task
+def scan_van_sweep(dealer_id: int):
+    return run_scan(
+        dealer_id=dealer_id,
+        mode_name="value_sweep",
+        listings_to_pull=40,
+        keywords=None,
+        query_groups_override=VAN_SCAN_QUERY_GROUPS,
+        source_override="ebay_vans",
+    )
+
+
+# ==========================================
+# VAN PREWARM
+# ==========================================
+@celery.task
+def prewarm_van_valuation_cache():
+    return prewarm_valuation_cache(targets_override=VAN_PREWARM_TARGETS)
+
+
+
 # ==========================================
 # DAILY API BUDGET GUARD
 # Tracks eBay API calls in Redis with a 24hr TTL.
@@ -633,7 +753,7 @@ def _check_budget(calls_needed: int = 1) -> bool:
 # ==========================================
 # SHARED SCAN ENGINE
 # ==========================================
-def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=None, sort="newlyListed"):
+def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=None, sort="newlyListed", source_override=None, query_groups_override=None):
     """
     Unified scan engine.
 
@@ -675,7 +795,8 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
             "min_score": settings.min_score,
         }
 
-        query_groups = [keywords] if keywords is not None else SCAN_QUERY_GROUPS
+        base_groups = query_groups_override if query_groups_override is not None else SCAN_QUERY_GROUPS
+        query_groups = [keywords] if keywords is not None else base_groups
 
         total_listings = 0
         total_deals = 0
@@ -778,7 +899,7 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                 deal = process_listing(
                     item,
                     dealer.id,
-                    source=source_name,
+                    source=source_override or source_name,
                     filters=filters,
                     budget_fn=_check_budget,  # Routes all valuation eBay calls through daily budget guard
                 )

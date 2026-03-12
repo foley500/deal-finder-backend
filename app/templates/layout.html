@@ -168,6 +168,18 @@
             <span class="nav-badge">{{ nav_counts.facebook_deals }}</span>
         {% endif %}
     </a>
+    <a href="/vans">
+        <span>🚐 Vans</span>
+        {% if nav_counts.van_deals %}
+            <span class="nav-badge">{{ nav_counts.van_deals }}</span>
+        {% endif %}
+    </a>
+    <a href="/deals?source=ebay_vans">
+        <span>Van Deals</span>
+        {% if nav_counts.van_deals %}
+            <span class="nav-badge">{{ nav_counts.van_deals }}</span>
+        {% endif %}
+    </a>
     <a href="/analytics">Analytics</a>
 </div>
 

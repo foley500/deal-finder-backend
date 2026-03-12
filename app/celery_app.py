@@ -48,6 +48,28 @@ celery.conf.beat_schedule = {
         "schedule": timedelta(hours=5),
         "options": {"expires": 7200},
     },
+
+    # ==========================================
+    # VAN SCAN TASKS
+    # Offset from car tasks to spread API load.
+    # ==========================================
+    "van-sniper-every-30-minutes": {
+        "task": "app.tasks.scan_van_sniper",
+        "schedule": timedelta(minutes=30),
+        "args": (1,),
+        "options": {"expires": 1500},
+    },
+    "van-sweep-every-6-hours": {
+        "task": "app.tasks.scan_van_sweep",
+        "schedule": timedelta(hours=6),
+        "args": (1,),
+        "options": {"expires": 3600},
+    },
+    "prewarm-van-valuation-cache": {
+        "task": "app.tasks.prewarm_van_cache",
+        "schedule": timedelta(hours=6),
+        "options": {"expires": 7200},
+    },
 }
 
 import app.tasks
