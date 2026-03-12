@@ -295,18 +295,24 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
 # CORE FILTER ENGINE
 # ---------------------------------------------------
 
-def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mileage_tolerance, adjust_mileage=True, layer_name=""):
+def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mileage_tolerance, adjust_mileage=True, layer_name="", private_only=False):
     sold_prices = []
 
     rejected_no_year = 0
     rejected_year = 0
     rejected_mileage = 0
     rejected_no_price = 0
+    rejected_dealer = 0
     accepted_sold = 0
     mileage_diffs = []
     adjustments = []
 
     for summary in summaries:
+        # If private_only mode, skip dealer-sourced listings entirely
+        if private_only and summary.get("_seller_pool") == "all":
+            rejected_dealer += 1
+            continue
+
         listing_year = summary.get("_year")
         listing_mileage = summary.get("_mileage")
         source_type = summary.get("_source_type", "sold")
@@ -358,14 +364,17 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
         weight = mileage_proximity_weight(listing_mileage, target_mileage, mileage_tolerance)
 
         if source_type == "sold":
-            # Private sold results are the most accurate comparables — weight them higher
+            # Private sold results are the most accurate comparables.
+            # Dealer-sold prices reflect retail, not trade/private values — downweight heavily.
             seller_pool = summary.get("_seller_pool", "all")
-            pool_weight = 2 if seller_pool == "private" else 1
+            pool_weight = 3 if seller_pool == "private" else 1
             sold_prices.extend([adjusted_price] * (weight * pool_weight))
             accepted_sold += 1
 
-    print(f"📊 FILTER DEBUG [{layer_name}]:")
+    print(f"📊 FILTER DEBUG [{layer_name}{'|private_only' if private_only else ''}]:")
     print(f"   Sold accepted: {accepted_sold} ({len(sold_prices)} weighted entries)")
+    if private_only:
+        print(f"   Rejected (dealer pool): {rejected_dealer}")
     print(f"   Rejected (no year): {rejected_no_year}")
     print(f"   Rejected (year tolerance ±{year_tolerance}yr): {rejected_year}")
     print(f"   Rejected (mileage tolerance ±{mileage_tolerance}mi): {rejected_mileage}")
@@ -425,6 +434,7 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
 def get_market_price_from_sold(
     make, model, year, mileage,
     engine_size=None, listing_title=None, listing_aspects=None,
+    fuel_type=None, body_style=None,
     cache_only=False, budget_fn=None,
 ):
     """
@@ -507,7 +517,46 @@ def get_market_price_from_sold(
                 except:
                     pass
 
-    query = f"{make} {base_model}"
+    # Build a targeted query using fuel type and body style when available.
+    # This narrows the comparable pool to more relevant vehicles — e.g. a
+    # "Ford Focus petrol 3dr" won't be valued against 5dr TDCi estates.
+    # Falls through to broad query naturally if the tighter pool is too thin.
+    query_parts = [make, base_model]
+
+    # Normalise fuel type to eBay-friendly terms
+    fuel_type_normalised = None
+    if fuel_type:
+        ft = str(fuel_type).lower().strip()
+        if ft in ("petrol", "p"):
+            fuel_type_normalised = "petrol"
+        elif ft in ("diesel", "d"):
+            fuel_type_normalised = "diesel"
+        # Hybrid/electric deliberately excluded — too few comparables to narrow safely
+
+    if fuel_type_normalised:
+        query_parts.append(fuel_type_normalised)
+
+    # Extract body style from title — "3dr"/"5dr"/"estate"/"convertible" etc.
+    body_style_term = None
+    if listing_title:
+        title_lower = listing_title.lower()
+        if "estate" in title_lower:
+            body_style_term = "estate"
+        elif "convertible" in title_lower or "cabriolet" in title_lower or "cabrio" in title_lower:
+            body_style_term = "convertible"
+        elif "coupe" in title_lower or "coupé" in title_lower:
+            body_style_term = "coupe"
+        elif "van" in title_lower:
+            body_style_term = "van"
+        elif re.search(r"\b3\s*dr\b|\b3-door\b", title_lower):
+            body_style_term = "3dr"
+        elif re.search(r"\b5\s*dr\b|\b5-door\b", title_lower):
+            body_style_term = "5dr"
+
+    if body_style_term:
+        query_parts.append(body_style_term)
+
+    query = " ".join(query_parts)
 
     # Dynamically scale mileage tolerance based on target mileage.
     # High mileage cars have thin comparable pools — widen tolerance to compensate.
@@ -533,6 +582,7 @@ def get_market_price_from_sold(
         {"year_tolerance": 4, "mileage_tolerance": l2_tolerance + 15000, "source": "layer_4_wide",            "adjust_mileage": True},
         {"year_tolerance": 5, "mileage_tolerance": 999999,               "source": "layer_5_year_only",       "adjust_mileage": True},
     ]:
+        # Try private-sold-only first — no dealer retail contamination
         result = run_filter_layer(
             enriched_summaries,
             target_year=year,
@@ -541,7 +591,20 @@ def get_market_price_from_sold(
             mileage_tolerance=tolerance_config["mileage_tolerance"],
             adjust_mileage=tolerance_config["adjust_mileage"],
             layer_name=tolerance_config["source"],
+            private_only=True,
         )
+
+        # Fall back to blended (private + dealer) only if private pool is too thin
+        if not result:
+            result = run_filter_layer(
+                enriched_summaries,
+                target_year=year,
+                target_mileage=mileage,
+                year_tolerance=tolerance_config["year_tolerance"],
+                mileage_tolerance=tolerance_config["mileage_tolerance"],
+                adjust_mileage=tolerance_config["adjust_mileage"],
+                layer_name=f"{tolerance_config['source']}+blended",
+            )
 
         if result:
             # Apply direct extreme mileage penalty to final market price.

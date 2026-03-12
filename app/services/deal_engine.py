@@ -93,11 +93,14 @@ def safe_int(value):
 
 
 def assign_confidence(score: float) -> str:
-    if score >= 60:
-        return "very_high"
-    elif score >= 40:
+    """
+    Maps score -> deal confidence tier.
+    Score tops out ~28-30 for a perfect deal (profit >3k, clean MOT, low mileage).
+    Good deal (profit 1-2k, clean): ~10-15. Bands calibrated to match.
+    """
+    if score >= 20:
         return "high"
-    elif score >= 20:
+    elif score >= 10:
         return "medium"
     return "low"
 
@@ -452,6 +455,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 engine_size=vehicle_data.get("engine_size"),
                 listing_title=title,
                 listing_aspects=aspects,
+                fuel_type=vehicle_data.get("fuel_type") or aspects.get("Fuel Type"),
                 cache_only=False,
                 budget_fn=budget_fn,  # Routes all valuation eBay calls through daily budget guard
             )
@@ -550,7 +554,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 "primary_image": primary_image,
             }
         )
-        
+
         db.add(deal)
         db.commit()
         db.refresh(deal)

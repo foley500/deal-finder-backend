@@ -87,7 +87,7 @@
 
             <div class="d-flex gap-2 align-items-center">
                 <div class="badge bg-dark border border-light px-3 py-2">
-                    Score: {{ report.scoring.score or 0 }}
+                    Score: {{ "%.1f"|format(report.scoring.score or 0) }}
                 </div>
                 {% set conf = report.scoring.confidence_level or "low" %}
                 {% if conf == "very_high" %}
@@ -195,12 +195,12 @@
             {% endif %}
 
             {% if report.primary_image %}
-                <div class="mt-auto">
+                <div class="mt-3 flex-grow-1 d-flex align-items-stretch" style="min-height:200px;">
                     <img
                         src="{{ report.primary_image }}"
                         alt="Listing image"
-                        class="img-fluid rounded"
-                        style="width:100%; object-fit:cover; max-height:300px;"
+                        class="rounded w-100"
+                        style="object-fit:cover; object-position:center; max-height:420px; min-height:200px;"
                         onerror="this.style.display='none'"
                     >
                 </div>

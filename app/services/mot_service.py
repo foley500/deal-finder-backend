@@ -213,6 +213,46 @@ def parse_mot_trade_response(data, asking_price=None):
 
     raw_penalty = fail_penalty + advisory_penalty
 
+    # --- Chronic failure bonus penalty ---
+    # A car that fails its MOT in consecutive years is a structural risk,
+    # not a one-off problem. Count real (non-same-day) fails across all history.
+    all_real_fails = []
+    for test in mot_tests:
+        if test.get("testResult") == "FAILED" and not is_same_day_retest(mot_tests, test):
+            test_date = test.get("completedDate", "")[:10]
+            if test_date:
+                try:
+                    all_real_fails.append(int(test_date[:4]))
+                except:
+                    pass
+
+    # Count how many years had at least one real fail
+    years_with_fails = set(all_real_fails)
+    consecutive_fail_years = 0
+    if len(years_with_fails) >= 2:
+        sorted_fail_years = sorted(years_with_fails)
+        # Walk through and count runs of consecutive years
+        run = 1
+        max_run = 1
+        for i in range(1, len(sorted_fail_years)):
+            if sorted_fail_years[i] - sorted_fail_years[i-1] <= 1:
+                run += 1
+                max_run = max(max_run, run)
+            else:
+                run = 1
+        consecutive_fail_years = max_run
+
+    chronic_bonus = 0
+    if consecutive_fail_years >= 4:
+        # 4+ consecutive years of failing = serious chronic issues
+        chronic_bonus = 300
+        print(f"   🔴 Chronic failer: {consecutive_fail_years} consecutive years with real MOT fails → +£{chronic_bonus} penalty")
+    elif consecutive_fail_years >= 2:
+        chronic_bonus = 150
+        print(f"   🟡 Repeat failer: {consecutive_fail_years} consecutive years with real MOT fails → +£{chronic_bonus} penalty")
+
+    raw_penalty = fail_penalty + advisory_penalty + chronic_bonus
+
     # Age factor: older cars get a further overall reduction
     # because some risk is already priced in at the purchase price
     if vehicle_age <= 5:
