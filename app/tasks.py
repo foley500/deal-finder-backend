@@ -44,10 +44,10 @@ redis_client = redis.from_url(REDIS_URL)
 # The key fix: _pre_expand_details now only expands on MISSING YEAR (not mileage).
 # Missing mileage is handled gracefully by the filter layer (weight 1, not rejected).
 # This cuts prewarm detail calls from ~60/model to ~10/model.
-SNIPER_LIMIT = 25        # Expansions per sniper run — budget guard is the real ceiling
+SNIPER_LIMIT = 10        # Expansions per sniper run — cache handles the rest
 DAILY_API_BUDGET = 4500  # Hard ceiling — 500 buffer vs 5,000 eBay limit
 DAILY_BUDGET_KEY = "ebay_daily_calls"
-VALUE_SWEEP_LIMIT = 60   # Expansions per sweep run (4 runs/day = 240 slots)
+VALUE_SWEEP_LIMIT = 30   # Expansions per sweep run
 
 # ==========================================
 # SCAN ROTATION QUERIES
@@ -730,7 +730,21 @@ def prewarm_van_valuation_cache():
 # Stops all scans once DAILY_API_BUDGET is reached.
 # Resets automatically at midnight UTC when key expires.
 # ==========================================
-def _check_budget(calls_needed: int = 1) -> bool:
+# Per-task soft budget allocations — prevents any single task from
+# consuming the entire daily budget and starving other tasks.
+# These are SOFT limits logged as warnings, not hard stops.
+# The DAILY_API_BUDGET is the only hard stop.
+BUDGET_ALLOCATIONS = {
+    "prewarm":     1000,   # Once/day cold run
+    "van_prewarm":  200,   # Once/day cold run
+    "sniper":      1500,   # 48 runs/day × ~31 calls avg
+    "van_sniper":   700,   # 24 runs/day × ~29 calls avg
+    "sweep":       1000,   # 6 runs/day × ~136 calls avg
+    "van_sweep":    700,   # 4 runs/day × ~136 calls avg
+}
+TASK_BUDGET_KEY_PREFIX = "ebay_task_calls"
+
+def _check_budget(calls_needed: int = 1, task_name: str = None) -> bool:
     """Returns True if budget allows, increments counter. False = stop scanning."""
     pipe = redis_client.pipeline()
     pipe.incrby(DAILY_BUDGET_KEY, calls_needed)
@@ -743,9 +757,23 @@ def _check_budget(calls_needed: int = 1) -> bool:
     if ttl == -1:
         redis_client.expire(DAILY_BUDGET_KEY, 86400)
 
+    remaining = DAILY_API_BUDGET - current_count
+    if current_count % 500 == 0:
+        print(f"📊 Budget: {current_count}/{DAILY_API_BUDGET} used ({remaining} remaining)")
+
     if current_count > DAILY_API_BUDGET:
         print(f"🛑 Daily budget exceeded: {current_count}/{DAILY_API_BUDGET} calls used")
         return False
+
+    # Soft per-task warning
+    if task_name and task_name in BUDGET_ALLOCATIONS:
+        task_key = f"{TASK_BUDGET_KEY_PREFIX}:{task_name}"
+        task_count = int(redis_client.incr(task_key))
+        if ttl == -1:
+            redis_client.expire(task_key, 86400)
+        soft_limit = BUDGET_ALLOCATIONS[task_name]
+        if task_count > soft_limit:
+            print(f"⚠️ [{task_name}] soft budget exceeded: {task_count}/{soft_limit} — continuing but investigate")
 
     return True
 

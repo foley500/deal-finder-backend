@@ -24,15 +24,13 @@ celery.conf.update(
 celery.conf.beat_schedule = {
 
     # ==========================================
-    # SCAN TASKS
+    # CAR SCAN TASKS
     # ==========================================
     "sniper-scan-every-30-minutes": {
         "task": "app.tasks.scan_sniper",
         "schedule": timedelta(minutes=30),
         "args": (1,),
     },
-    # Value sweep runs every 4 hours — catches listings where
-    # the seller dropped the price after the sniper passed over them.
     "value-sweep-every-4-hours": {
         "task": "app.tasks.scan_value_sweep",
         "schedule": timedelta(hours=4),
@@ -41,23 +39,27 @@ celery.conf.beat_schedule = {
     },
 
     # ==========================================
-    # CACHE PREWARM — every 5 hours
+    # CAR PREWARM — once per day at 2am UTC
+    # Running every 5hrs was burning ~2,700 calls/day alone.
+    # Cache TTL is 6hrs so entries stay warm across the day
+    # after a single morning refresh.
     # ==========================================
-    "prewarm-valuation-cache": {
+    "prewarm-valuation-cache-daily": {
         "task": "app.tasks.prewarm_valuation_cache",
-        "schedule": timedelta(hours=5),
+        "schedule": timedelta(hours=24),
         "options": {"expires": 7200},
     },
 
     # ==========================================
     # VAN SCAN TASKS
-    # Offset from car tasks to spread API load.
+    # Van sniper every 60min (not 30) — vans move slower,
+    # halves van sniper API spend with negligible deal loss.
     # ==========================================
-    "van-sniper-every-30-minutes": {
+    "van-sniper-every-60-minutes": {
         "task": "app.tasks.scan_van_sniper",
-        "schedule": timedelta(minutes=30),
+        "schedule": timedelta(minutes=60),
         "args": (1,),
-        "options": {"expires": 1500},
+        "options": {"expires": 3000},
     },
     "van-sweep-every-6-hours": {
         "task": "app.tasks.scan_van_sweep",
@@ -65,9 +67,13 @@ celery.conf.beat_schedule = {
         "args": (1,),
         "options": {"expires": 3600},
     },
-    "prewarm-van-valuation-cache": {
-        "task": "app.tasks.prewarm_van_cache",
-        "schedule": timedelta(hours=6),
+
+    # ==========================================
+    # VAN PREWARM — once per day, offset 1hr from car prewarm
+    # ==========================================
+    "prewarm-van-valuation-cache-daily": {
+        "task": "app.tasks.prewarm_van_valuation_cache",
+        "schedule": timedelta(hours=24),
         "options": {"expires": 7200},
     },
 }

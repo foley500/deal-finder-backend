@@ -22,10 +22,11 @@ reader = easyocr.Reader(["en"], gpu=False)
 # ===============================
 # CONFIG
 # ===============================
-MIN_YOLO_CONFIDENCE = 0.25          # Lowered — catch more plate candidates
-MIN_OCR_CONFIDENCE = 0.15           # Lowered — we correct and validate anyway
+MIN_YOLO_CONFIDENCE = 0.25
+MIN_OCR_CONFIDENCE = 0.15
 MAX_IMAGES_PER_LISTING = 5
-BOX_PADDING_RATIO = 0.10            # Tighter crop — less background noise
+BOX_PADDING_RATIO = 0.10
+BOX_PADDING_RIGHT_EXTRA = 0.08     # Extra right-side padding for angled plates
 
 
 BANNED_PLATE_STRINGS = {
@@ -52,36 +53,30 @@ def normalise_uk_plate(raw_plate: str) -> str:
     return plate
 
 
-# Full confusion matrix for OCR characters
-# Letter positions: 0, 1, 4, 5, 6  (digit→letter)
 DIGIT_TO_LETTER = {
     "0": "O", "1": "I", "2": "Z", "4": "A",
     "5": "S", "6": "G", "8": "B",
 }
 
-# Digit positions: 2, 3  (letter→digit)
 LETTER_TO_DIGIT = {
+    # High-confidence swaps only — visually unambiguous
     "O": "0", "I": "1", "Z": "2", "A": "4",
     "S": "5", "G": "9", "B": "8", "Q": "0",
-    "D": "0", "U": "0", "J": "1", "L": "1",
-    "T": "1", "E": "6", "C": "0",
+    # Removed: D, C, U, J, L, T, E — too ambiguous, causes trailing letter corruption
+    # e.g. DWF → 0WF, LXU → 1XU on angled plates
 }
 
 
 def correct_common_ocr_errors(plate: str) -> str:
-    """Apply position-aware character corrections for standard UK new-style plates (AA09AAA)."""
     if len(plate) == 7:
         plate = list(plate)
-        # Positions 2,3 must be digits
         for i in [2, 3]:
             plate[i] = LETTER_TO_DIGIT.get(plate[i], plate[i])
-        # Positions 0,1,4,5,6 must be letters
         for i in [0, 1, 4, 5, 6]:
             plate[i] = DIGIT_TO_LETTER.get(plate[i], plate[i])
         return "".join(plate)
 
     elif len(plate) >= 5:
-        # For other format plates use context-aware correction
         plate = list(plate)
         corrected = []
         for i, c in enumerate(plate):
@@ -99,11 +94,6 @@ def correct_common_ocr_errors(plate: str) -> str:
 
 
 def generate_fuzzy_variants(plate: str) -> list[str]:
-    """
-    Generate plausible alternative readings for a 7-char plate
-    by swapping commonly confused characters at each position.
-    Allows DVSA to be tried with slight variations if exact match fails.
-    """
     if len(plate) != 7:
         return [plate]
 
@@ -121,7 +111,6 @@ def generate_fuzzy_variants(plate: str) -> list[str]:
     variants = set()
     plate_list = list(plate)
 
-    # Single character swaps only — avoids combinatorial explosion
     for i, c in enumerate(plate_list):
         if c in confusion:
             for alt in confusion[c]:
@@ -134,11 +123,11 @@ def generate_fuzzy_variants(plate: str) -> list[str]:
 
 def is_valid_uk_plate(plate: str) -> bool:
     patterns = [
-        r"^[A-Z]{2}[0-9]{2}[A-Z]{3}$",   # Current: AA09AAA
-        r"^[A-Z][0-9]{1,3}[A-Z]{3}$",     # Prefix: A999AAA
-        r"^[A-Z]{3}[0-9]{1,3}[A-Z]$",     # Suffix: AAA999A
-        r"^[0-9]{1,4}[A-Z]{1,3}$",         # Dateless
-        r"^[A-Z]{1,3}[0-9]{1,4}$",         # Dateless
+        r"^[A-Z]{2}[0-9]{2}[A-Z]{3}$",
+        r"^[A-Z][0-9]{1,3}[A-Z]{3}$",
+        r"^[A-Z]{3}[0-9]{1,3}[A-Z]$",
+        r"^[0-9]{1,4}[A-Z]{1,3}$",
+        r"^[A-Z]{1,3}[0-9]{1,4}$",
     ]
     return any(re.match(p, plate) for p in patterns)
 
@@ -147,74 +136,139 @@ def is_valid_uk_plate(plate: str) -> bool:
 # IMAGE PREPROCESSING
 # ===============================
 def expand_box(x1, y1, x2, y2, img_shape):
+    """Asymmetric padding — extra right side to catch trailing chars on angled plates."""
     h, w = img_shape[:2]
-    pad_x = int((x2 - x1) * BOX_PADDING_RATIO)
-    pad_y = int((y2 - y1) * BOX_PADDING_RATIO)
+    box_w = x2 - x1
+    box_h = y2 - y1
+    pad_x = int(box_w * BOX_PADDING_RATIO)
+    pad_y = int(box_h * BOX_PADDING_RATIO)
+    pad_right = int(box_w * (BOX_PADDING_RATIO + BOX_PADDING_RIGHT_EXTRA))
     x1 = max(0, x1 - pad_x)
     y1 = max(0, y1 - pad_y)
-    x2 = min(w, x2 + pad_x)
+    x2 = min(w, x2 + pad_right)
     y2 = min(h, y2 + pad_y)
     return x1, y1, x2, y2
 
 
+def deskew_plate(crop: np.ndarray) -> np.ndarray | None:
+    """
+    Perspective correction for angled plate crops.
+    Finds largest 4-corner contour and warps it to a flat rectangle.
+    Returns corrected BGR image or None if no suitable contour found.
+    """
+    try:
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edged = cv2.Canny(blurred, 30, 150)
+
+        contours, _ = cv2.findContours(edged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        crop_area = crop.shape[0] * crop.shape[1]
+        plate_contour = None
+        for c in contours[:5]:
+            # Skip contours too small to be the plate boundary (< 10% of crop area)
+            if cv2.contourArea(c) < crop_area * 0.10:
+                continue
+            peri = cv2.arcLength(c, True)
+            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+            if len(approx) == 4:
+                plate_contour = approx
+                break
+
+        if plate_contour is None:
+            return None
+
+        pts = plate_contour.reshape(4, 2).astype(np.float32)
+        rect = np.zeros((4, 2), dtype=np.float32)
+        s = pts.sum(axis=1)
+        rect[0] = pts[np.argmin(s)]    # top-left
+        rect[2] = pts[np.argmax(s)]    # bottom-right
+        diff = np.diff(pts, axis=1)
+        rect[1] = pts[np.argmin(diff)] # top-right
+        rect[3] = pts[np.argmax(diff)] # bottom-left
+
+        h, w = crop.shape[:2]
+        target_w = max(w, 400)
+        target_h = int(target_w / 4.5)
+        dst = np.array([
+            [0, 0],
+            [target_w - 1, 0],
+            [target_w - 1, target_h - 1],
+            [0, target_h - 1]
+        ], dtype=np.float32)
+
+        M = cv2.getPerspectiveTransform(rect, dst)
+        warped = cv2.warpPerspective(crop, M, (target_w, target_h))
+        return warped
+
+    except Exception:
+        return None
+
+
 def preprocess_variants(plate_crop: np.ndarray) -> list[np.ndarray]:
     """
-    Generate multiple preprocessed versions of the plate crop.
-    Each variant gives EasyOCR a different view — increases chances of correct read.
+    Multiple preprocessed versions for EasyOCR.
+    Variants 1-7: standard pipeline (works well for front-facing plates).
+    Variants 8-11: deskewed versions for angled plates.
     """
     variants = []
     gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
 
     # 1. Raw greyscale
     variants.append(gray)
 
-    # 2. Upscaled 2x — most important for small/distant plates
+    # 2. Upscaled 2x
     upscaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
     variants.append(upscaled)
 
-    # 3. CLAHE contrast enhancement on upscaled
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
-    contrast = clahe.apply(upscaled)
-    variants.append(contrast)
+    # 3. CLAHE on upscaled
+    variants.append(clahe.apply(upscaled))
 
     # 4. Sharpened
     kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-    sharpened = cv2.filter2D(upscaled, -1, kernel)
-    variants.append(sharpened)
+    variants.append(cv2.filter2D(upscaled, -1, kernel))
 
-    # 5. Adaptive threshold (black/white) — best for clear plates
+    # 5. Adaptive threshold
     blurred = cv2.GaussianBlur(upscaled, (3, 3), 0)
-    adaptive = cv2.adaptiveThreshold(
+    variants.append(cv2.adaptiveThreshold(
         blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
-    )
-    variants.append(adaptive)
+    ))
 
     # 6. Otsu threshold
     _, otsu = cv2.threshold(upscaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     variants.append(otsu)
 
-    # 7. Inverted Otsu (for dark plates with light text)
+    # 7. Inverted Otsu
     variants.append(cv2.bitwise_not(otsu))
+
+    # 8-11. Deskewed variants for angled plates
+    deskewed = deskew_plate(plate_crop)
+    if deskewed is not None:
+        deskew_gray = cv2.cvtColor(deskewed, cv2.COLOR_BGR2GRAY)
+        deskew_up = cv2.resize(deskew_gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        variants.append(deskew_gray)
+        variants.append(deskew_up)
+        variants.append(clahe.apply(deskew_up))
+        blurred_d = cv2.GaussianBlur(deskew_up, (3, 3), 0)
+        variants.append(cv2.adaptiveThreshold(
+            blurred_d, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+        ))
 
     return variants
 
 
 def score_plate_candidate(plate: str, ocr_conf: float, yolo_conf: float) -> float:
-    """Score a plate candidate — higher = more likely correct."""
     score = ocr_conf * yolo_conf
-
-    # Bonus for valid format
     if is_valid_uk_plate(plate):
         score *= 2.0
-
-    # Bonus for correct length
     if len(plate) == 7:
         score *= 1.3
-
-    # Penalty if all same characters (garbage read)
     if len(set(plate)) <= 2:
         score *= 0.1
-
     return score
 
 
@@ -222,16 +276,11 @@ def score_plate_candidate(plate: str, ocr_conf: float, yolo_conf: float) -> floa
 # CORE OCR — works on a PIL Image
 # ===============================
 def _run_ocr_on_image(image: Image.Image, high_res: bool = False) -> str | None:
-    """
-    Full pipeline: YOLO detection → crop → multi-variant preprocessing → EasyOCR
-    → position-aware correction → validation → fuzzy fallback.
-    """
     img_np = None
     results = None
 
     try:
         if high_res:
-            # Facebook images: run at native resolution, upscale if small
             w, h = image.size
             if max(w, h) < 1280:
                 scale = 1280 / max(w, h)
@@ -246,7 +295,6 @@ def _run_ocr_on_image(image: Image.Image, high_res: bool = False) -> str | None:
             img_np = np.array(image)
             imgsz = 640
 
-        # Run YOLO at two sizes for better detection coverage
         all_boxes = []
         for sz in ([imgsz, 1280] if high_res else [imgsz]):
             r = model(img_np, imgsz=sz)
@@ -256,7 +304,6 @@ def _run_ocr_on_image(image: Image.Image, high_res: bool = False) -> str | None:
         if not all_boxes:
             return None
 
-        # Deduplicate boxes by position (IoU-like — skip very similar boxes)
         seen_boxes = []
         unique_boxes = []
         for box in all_boxes:
@@ -270,11 +317,12 @@ def _run_ocr_on_image(image: Image.Image, high_res: bool = False) -> str | None:
                 unique_boxes.append(box)
                 seen_boxes.append((x1, y1, x2, y2))
 
-        # Sort by YOLO confidence descending
         unique_boxes = sorted(unique_boxes, key=lambda b: float(b.conf[0]), reverse=True)
 
         best_plate = None
         best_score = 0.0
+        best_invalid_plate = None   # Best candidate that didn't pass format validation
+        best_invalid_score = 0.0
 
         for box in unique_boxes:
             yolo_conf = float(box.conf[0])
@@ -324,12 +372,24 @@ def _run_ocr_on_image(image: Image.Image, high_res: bool = False) -> str | None:
                         if candidate_score > best_score:
                             best_score = candidate_score
                             best_plate = plate
+                    else:
+                        if candidate_score > best_invalid_score:
+                            best_invalid_score = candidate_score
+                            best_invalid_plate = plate
 
         if best_plate:
             print(f"✅ VALID UK PLATE: {best_plate} (score: {best_score:.3f})")
             return best_plate
 
-        print("⚠️ No valid plate found — trying fuzzy variants on best candidates")
+        # Fuzzy fallback — try character swap variants on best near-miss
+        if best_invalid_plate:
+            print(f"⚠️ No valid plate — trying fuzzy variants on: {best_invalid_plate}")
+            for variant_plate in generate_fuzzy_variants(best_invalid_plate):
+                if is_valid_uk_plate(variant_plate):
+                    print(f"✅ FUZZY MATCH: {variant_plate} (from {best_invalid_plate})")
+                    return variant_plate
+
+        print("⚠️ No valid plate found across all variants")
         return None
 
     except Exception as e:
@@ -383,10 +443,6 @@ def extract_plate_from_images(image_urls: list[str]):
 # ENTRY POINT 2 — base64 image (Facebook extension)
 # ===============================
 def extract_plate_from_base64(image_base64: str) -> str | None:
-    """
-    Accepts a base64 data URI (e.g. "data:image/jpeg;base64,/9j/...")
-    and runs the same YOLO + EasyOCR pipeline at high resolution.
-    """
     image = None
     try:
         if "," in image_base64:
