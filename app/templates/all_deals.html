@@ -123,7 +123,7 @@
 <div class="d-flex align-items-center justify-content-between mt-4">
 
     <span style="color:#64748b; font-size:0.875rem;">
-        Showing {{ ((page - 1) * 25) + 1 }}–{{ [page * 25, total_count] | min }} of {{ total_count }} deals
+        Showing {{ ((page - 1) * 25) + 1 }}–{% if page * 25 < total_count %}{{ page * 25 }}{% else %}{{ total_count }}{% endif %} of {{ total_count }} deals
     </span>
 
     <nav>
@@ -139,8 +139,8 @@
             </li>
 
             {# Page numbers — show window of 5 around current page #}
-            {% set start_page = [1, page - 2] | max %}
-            {% set end_page = [total_pages, page + 2] | min %}
+            {% set start_page = [1, page - 2] | sort | last %}
+            {% set end_page = [total_pages, page + 2] | sort | first %}
 
             {% if start_page > 1 %}
                 <li class="page-item">
