@@ -65,15 +65,13 @@ def extract_mileage_from_text(text: str):
 
     text = text.lower().replace(",", "")
 
-    match = re.search(r"(\d{4,6})\s*(miles|mile|mi)\b", text)
+    match = re.search(r"(\d{2,3})\s?k\s*(miles|mile|mi)?", text)
+    if match:
+        return int(match.group(1)) * 1000
+
+    match = re.search(r"\b(\d{5,6})\b", text)
     if match:
         val = int(match.group(1))
-        if 1000 < val < 300000:
-            return val
-
-    match = re.search(r"(\d{2,3})\s?k\b", text)
-    if match:
-        val = int(match.group(1)) * 1000
         if 1000 < val < 300000:
             return val
 
@@ -324,21 +322,18 @@ def run_filter_layer(
             rejected_dealer += 1
             continue
 
-        listing_title = summary.get("title", "").lower()
-
         title = summary.get("title", "").lower()
 
-        model_tokens = base_model.lower().split()
-        if not all(token in title for token in model_tokens):
+        if not re.search(rf"\b{re.escape(base_model.lower())}\b", title):
             continue
 
         if engine_litre:
-            engine_match = re.search(r"\b(\d\.\d)\b", listing_title)
+            engine_match = re.search(r"\b(\d\.\d)\b", title)
 
             if engine_match:
                 listing_engine = float(engine_match.group(1))
             else:
-                badge_match = re.search(r"\b(\d{2,3})[di]\b", listing_title)
+                badge_match = re.search(r"\b(\d{2,3})[di]\b", title)
                 if badge_match:
                     digits = badge_match.group(1)
                     try:
@@ -563,9 +558,6 @@ def get_market_price_from_sold(
 
     if engine_litre:
         query_parts.append(str(engine_litre))
-
-    if trim:
-        query_parts.append(trim)
 
     # Normalise fuel type to eBay-friendly terms
     fuel_type_normalised = None
