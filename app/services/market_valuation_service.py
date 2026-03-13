@@ -23,7 +23,7 @@ MAX_ENRICHED_TARGET = 80    # Stop once 80 items have full year data
 
 
 MILEAGE_BLOCK_SIZE = 5000
-MILEAGE_BLOCK_RATE = 0.015
+MILEAGE_BLOCK_RATE = 0.010
 MAX_LINEAR_BLOCKS = 8
 EXTREME_MILEAGE_THRESHOLD = 120000
 
@@ -295,7 +295,18 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
 # CORE FILTER ENGINE
 # ---------------------------------------------------
 
-def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mileage_tolerance, adjust_mileage=True, layer_name="", private_only=False):
+def run_filter_layer(
+    summaries,
+    target_year,
+    target_mileage,
+    year_tolerance,
+    mileage_tolerance,
+    adjust_mileage=True,
+    layer_name="",
+    private_only=False,
+    base_model=None,
+    engine_litre=None
+):
     sold_prices = []
 
     rejected_no_year = 0
@@ -313,6 +324,33 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
             rejected_dealer += 1
             continue
 
+        listing_title = summary.get("title", "").lower()
+
+        title = summary.get("title", "").lower()
+
+        model_tokens = base_model.lower().split()
+        if not all(token in title for token in model_tokens):
+            continue
+
+        if engine_litre:
+            engine_match = re.search(r"\b(\d\.\d)\b", listing_title)
+
+            if engine_match:
+                listing_engine = float(engine_match.group(1))
+            else:
+                badge_match = re.search(r"\b(\d{2,3})[di]\b", listing_title)
+                if badge_match:
+                    digits = badge_match.group(1)
+                    try:
+                        listing_engine = float(digits[0] + "." + digits[1])
+                    except:
+                        listing_engine = None
+                else:
+                    listing_engine = None
+
+            if listing_engine and abs(listing_engine - engine_litre) > 0.5:
+                continue
+                
         listing_year = summary.get("_year")
         listing_mileage = summary.get("_mileage")
         source_type = summary.get("_source_type", "sold")
@@ -348,7 +386,7 @@ def run_filter_layer(summaries, target_year, target_mileage, year_tolerance, mil
         base_price = float(price_obj["value"])
 
         # Reject junk listings — parts, scams, placeholder prices
-        if base_price < 200:
+        if base_price < 800:
             continue
 
         adjusted_price = base_price
@@ -467,7 +505,7 @@ def get_market_price_from_sold(
             pass
 
     mileage_bucket = round(mileage / 20000) * 20000
-    cache_key = f"sold_cache:{make}:{base_model}:{year}:{mileage_bucket}"
+    cache_key = f"sold_cache:{make}:{base_model}:{engine_litre}:{year}:{mileage_bucket}"
     print(f"   🔑 Cache key: {cache_key}")
     cached = redis_client.get(cache_key)
     if cached:
@@ -522,6 +560,12 @@ def get_market_price_from_sold(
     # "Ford Focus petrol 3dr" won't be valued against 5dr TDCi estates.
     # Falls through to broad query naturally if the tighter pool is too thin.
     query_parts = [make, base_model]
+
+    if engine_litre:
+        query_parts.append(str(engine_litre))
+
+    if trim:
+        query_parts.append(trim)
 
     # Normalise fuel type to eBay-friendly terms
     fuel_type_normalised = None
@@ -587,6 +631,8 @@ def get_market_price_from_sold(
             enriched_summaries,
             target_year=year,
             target_mileage=mileage,
+            base_model=base_model,
+            engine_litre=engine_litre,
             year_tolerance=tolerance_config["year_tolerance"],
             mileage_tolerance=tolerance_config["mileage_tolerance"],
             adjust_mileage=tolerance_config["adjust_mileage"],
@@ -600,6 +646,8 @@ def get_market_price_from_sold(
                 enriched_summaries,
                 target_year=year,
                 target_mileage=mileage,
+                base_model=base_model,
+                engine_litre=engine_litre,
                 year_tolerance=tolerance_config["year_tolerance"],
                 mileage_tolerance=tolerance_config["mileage_tolerance"],
                 adjust_mileage=tolerance_config["adjust_mileage"],

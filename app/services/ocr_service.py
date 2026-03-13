@@ -136,17 +136,26 @@ def is_valid_uk_plate(plate: str) -> bool:
 # IMAGE PREPROCESSING
 # ===============================
 def expand_box(x1, y1, x2, y2, img_shape):
-    """Asymmetric padding — extra right side to catch trailing chars on angled plates."""
     h, w = img_shape[:2]
     box_w = x2 - x1
     box_h = y2 - y1
-    pad_x = int(box_w * BOX_PADDING_RATIO)
-    pad_y = int(box_h * BOX_PADDING_RATIO)
-    pad_right = int(box_w * (BOX_PADDING_RATIO + BOX_PADDING_RIGHT_EXTRA))
+
+    aspect = box_w / float(box_h)
+
+    pad_x = int(box_w * 0.20)
+    pad_y = int(box_h * 0.20)
+
+    # angled plates tend to have lower aspect ratio
+    if aspect < 3:
+        pad_right = int(box_w * 0.35)
+    else:
+        pad_right = int(box_w * 0.20)
+
     x1 = max(0, x1 - pad_x)
     y1 = max(0, y1 - pad_y)
     x2 = min(w, x2 + pad_right)
     y2 = min(h, y2 + pad_y)
+
     return x1, y1, x2, y2
 
 
@@ -258,6 +267,18 @@ def preprocess_variants(plate_crop: np.ndarray) -> list[np.ndarray]:
             blurred_d, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
         ))
 
+    for base_img in [plate_crop, deskewed] if deskewed is not None else [plate_crop]:
+
+        h, w = base_img.shape[:2]
+
+        for angle in [-10, -5, 5, 10]:
+
+            M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1)
+
+            rotated = cv2.warpAffine(base_img, M, (w, h))
+
+            variants.append(cv2.cvtColor(rotated, cv2.COLOR_BGR2GRAY))
+
     return variants
 
 
@@ -344,12 +365,23 @@ def _run_ocr_on_image(image: Image.Image, high_res: bool = False) -> str | None:
             variants = preprocess_variants(plate_crop)
 
             for variant in variants:
+
+                variant = cv2.copyMakeBorder(
+                    variant,
+                    10, 10, 10, 10,
+                    cv2.BORDER_CONSTANT,
+                    value=255
+                )
+
                 ocr_results = reader.readtext(
                     variant,
                     allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
                     detail=1,
                     paragraph=False,
+                    width_ths=0.7,
+                    decoder="beamsearch"
                 )
+                
 
                 for (_, text, ocr_conf) in ocr_results:
                     if ocr_conf < MIN_OCR_CONFIDENCE:
