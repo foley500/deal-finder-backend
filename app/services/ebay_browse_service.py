@@ -138,14 +138,15 @@ def search_ebay_browse(
 def search_sniper_windows(make, model):
     """
     Runs multiple price-window searches to catch mispriced listings.
-    Dramatically increases deal detection.
+    Also scans page 2 of newly listed vehicles to catch listings
+    before they reach the front page.
     """
 
     windows = [
-        (500, 3000),
-        (3000, 7000),
-        (7000, 15000),
-        (15000, 40000),
+        (500, 1500),
+        (1500, 5000),
+        (5000, 12000),
+        (12000, 40000),
     ]
 
     all_results = []
@@ -153,23 +154,27 @@ def search_sniper_windows(make, model):
 
     for min_price, max_price in windows:
 
-        listings = search_ebay_browse(
-            keywords=f"{make} {model}",
-            limit=50,
-            min_price=min_price,
-            max_price=max_price,
-            sort="newlyListed"
-        )
+        # Scan first two pages of newly listed results
+        for offset in [0, 50, 100]:
 
-        for listing in listings:
+            listings = search_ebay_browse(
+                keywords=f"{make} {model}".strip(),
+                limit=50,
+                min_price=min_price,
+                max_price=max_price,
+                sort="newlyListed",
+                offset=offset
+            )
 
-            item_id = listing["id"]
+            for listing in listings:
 
-            if item_id in seen_ids:
-                continue
+                item_id = listing["id"]
 
-            seen_ids.add(item_id)
-            all_results.append(listing)
+                if item_id in seen_ids:
+                    continue
+
+                seen_ids.add(item_id)
+                all_results.append(listing)
 
     print(f"🎯 Sniper windows returned {len(all_results)} unique listings")
 

@@ -97,6 +97,17 @@ YEAR_SNIPER_QUERIES = [
     "2018",
 ]
 
+GENERIC_SNIPER_QUERIES = [
+    "cheap car",
+    "good runner",
+    "first car",
+    "diesel car",
+    "petrol car",
+    "cheap vehicle",
+    "cheap hatchback",
+    "cheap automatic",
+]
+
 SNIPER_ROTATION_KEY = "sniper_query_rotation_idx"
 # ==========================================
 # VAN SCAN QUERY GROUPS
@@ -548,8 +559,15 @@ def prewarm_valuation_cache(targets_override=None):
         # Check if ALL buckets for this model are already cached.
         # If most are warm, skip the whole model to save API calls.
         cached_count = 0
-        total_buckets = len(years) * len(mileage_buckets)
-        engine_buckets = [None, 1.0, 1.2, 1.4, 1.6, 2.0, 2.2, 3.0]
+
+        engine_buckets = [
+            1.0, 1.2, 1.4, 1.6, 
+            1.8, 2.0, 2.2, 
+            2.5, 3.0,
+            None
+        ]
+
+        total_buckets = len(engine_buckets) * len(years) * len(mileage_buckets)
 
         for engine_bucket in engine_buckets:
             for year in years:
@@ -625,7 +643,7 @@ def prewarm_valuation_cache(targets_override=None):
                             adjust_mileage=tolerance_config["adjust_mileage"],
                             layer_name=tolerance_config["source"],
                         )
-                        if result:
+                        if result and result.get("sample_size", 0) >= 4:
                             if mileage > EXTREME_MILEAGE_THRESHOLD:
                                 excess = mileage - EXTREME_MILEAGE_THRESHOLD
                                 extra_blocks = min(excess / 10000, 15)
@@ -644,7 +662,7 @@ def prewarm_valuation_cache(targets_override=None):
                         print(f"   ⚠️  No result: {make_title} {base_model_title} {year} {mileage}mi")
 
         # Pause between models to respect rate limiter
-        time.sleep(3)
+        time.sleep(1)
 
     print(f"🔥 Prewarm complete: {total_searches} searches, {total_cached} buckets cached, {total_skipped} skipped")
     return {"searches": total_searches, "cached": total_cached, "skipped": total_skipped}
@@ -843,17 +861,6 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
             "min_score": settings.min_score,
         }
 
-        GENERIC_SNIPER_QUERIES = [
-            "cheap car",
-            "good runner",
-            "first car",
-            "diesel car",
-            "petrol car",
-            "cheap vehicle",
-            "cheap hatchback",
-            "cheap automatic",
-        ]
-
         base_groups = query_groups_override if query_groups_override is not None else SCAN_QUERY_GROUPS
         query_groups = [keywords] if keywords is not None else base_groups
 
@@ -877,7 +884,7 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     # Lands in stale/overlooked cheap stock beyond page 1.
                     # Offsets must be multiples of limit (40) per eBay API.
                     # -------------------------------------------------------
-                    for offset in [80, 120, 160]:
+                    for offset in [40, 80, 120, 160]:
 
                         task_name = "van_sweep" if source_override == "ebay_vans" else "sweep"
                         if not _check_budget(1, task_name):
@@ -978,7 +985,8 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     print(f"⛔ Pre-screen: £{rough_price} exceeds max £{filters['max_price']} — skipping")
                     continue
 
-                if not _check_budget(1, mode_name):
+                task_name = "van_sweep" if source_override == "ebay_vans" else "sweep"
+                if not _check_budget(1, task_name):
                     print("🛑 Daily API budget reached — stopping expansions")
                     break
 
