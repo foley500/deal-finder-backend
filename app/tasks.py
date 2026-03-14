@@ -1084,6 +1084,7 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                         else "sniper" if mode_name == "sniper"
                         else "sweep"
                     )
+                )
 
                 detail_expansions += 1
                 gc.collect()  # Free image/OCR memory between expansions
