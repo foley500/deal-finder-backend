@@ -369,7 +369,9 @@ def run_filter_layer(
 
     for summary in summaries:
         # If private_only mode, skip dealer-sourced listings entirely
-        if private_only and summary.get("_seller_pool") == "all":
+        seller_pool = summary.get("_seller_pool", "all")
+
+        if private_only and seller_pool != "private":
             rejected_dealer += 1
             continue
 
@@ -633,9 +635,6 @@ def get_market_price_from_sold(
 
     if year:
         query_parts.append(str(year))
-
-    if engine_litre:
-        query_parts.append(str(engine_litre))
 
     query = " ".join(query_parts)
 
