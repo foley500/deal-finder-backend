@@ -138,8 +138,7 @@ def search_ebay_browse(
 def search_sniper_windows(make, model):
     """
     Runs multiple price-window searches to catch mispriced listings.
-    Also scans page 2 of newly listed vehicles to catch listings
-    before they reach the front page.
+    Also scans multiple result pages and reverse keyword order.
     """
 
     windows = [
@@ -149,32 +148,49 @@ def search_sniper_windows(make, model):
         (12000, 40000),
     ]
 
+    search_terms = [
+        f"{make} {model}".strip(),
+        f"{model} {make}".strip()
+    ]
+
+    # model-only search if distinctive
+    if model and (any(c.isdigit() for c in model) or len(model) >= 4):
+        search_terms.append(model.strip())
+
+    sort_types = ["newlyListed", "price"]
+
     all_results = []
     seen_ids = set()
 
-    for min_price, max_price in windows:
+    for term in search_terms:
 
-        # Scan first two pages of newly listed results
-        for offset in [0, 50, 100]:
+        for min_price, max_price in windows:
 
-            listings = search_ebay_browse(
-                keywords=f"{make} {model}".strip(),
-                limit=50,
-                min_price=min_price,
-                max_price=max_price,
-                sort="newlyListed",
-                offset=offset
-            )
+            for sort_type in sort_types:
 
-            for listing in listings:
+                for offset in [0, 50]:
 
-                item_id = listing["id"]
+                    listings = search_ebay_browse(
+                        keywords=term,
+                        limit=50,
+                        min_price=min_price,
+                        max_price=max_price,
+                        sort=sort_type,
+                        offset=offset
+                    )
 
-                if item_id in seen_ids:
-                    continue
+                    if not listings:
+                        continue
 
-                seen_ids.add(item_id)
-                all_results.append(listing)
+                    for listing in listings:
+
+                        item_id = listing["id"]
+
+                        if item_id in seen_ids:
+                            continue
+
+                        seen_ids.add(item_id)
+                        all_results.append(listing)
 
     print(f"🎯 Sniper windows returned {len(all_results)} unique listings")
 

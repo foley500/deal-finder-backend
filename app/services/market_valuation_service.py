@@ -17,7 +17,7 @@ redis_client = redis.from_url(REDIS_URL)
 
 CACHE_TTL = 43200          # 6 hours — prices don't change hourly
 MAX_DETAIL_EXPANSIONS = 60  # Scan-time expansion cap (live valuations on cache miss)
-MAX_PREWARM_EXPANSIONS = 15 # Prewarm cap — year-only, missing mileage does NOT trigger expansion
+MAX_PREWARM_EXPANSIONS = 25 # Prewarm cap — year-only, missing mileage does NOT trigger expansion
 MIN_SAMPLE_SIZE = 5
 MAX_ENRICHED_TARGET = 80    # Stop once 80 items have full year data
 
@@ -421,7 +421,7 @@ def run_filter_layer(
                 else:
                     listing_engine = None
 
-            if listing_engine and abs(listing_engine - engine_litre) > 0.8:
+            if listing_engine and abs(listing_engine - engine_litre) > 0.5:
                 continue
                 
         listing_year = summary.get("_year")
@@ -459,7 +459,7 @@ def run_filter_layer(
         base_price = float(price_obj["value"])
 
         # Reject junk listings — parts, scams, placeholder prices
-        if base_price < 1200:
+        if base_price < 700:
             continue
 
         adjusted_price = base_price
@@ -580,7 +580,7 @@ def get_market_price_from_sold(
         except:
             pass
 
-    mileage_bucket = round(mileage / 20000) * 20000
+    mileage_bucket = int(mileage / 20000) * 20000
     engine_bucket = bucket_engine_size(engine_litre)
     cache_key = f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}"
     print(f"   🔑 Cache key: {cache_key}")
@@ -629,12 +629,7 @@ def get_market_price_from_sold(
     # This narrows the comparable pool to more relevant vehicles — e.g. a
     # "Ford Focus petrol 3dr" won't be valued against 5dr TDCi estates.
     # Falls through to broad query naturally if the tighter pool is too thin.
-    query_parts = [make, base_model]
-
-    if year:
-        query_parts.append(str(year))
-
-    query = " ".join(query_parts)
+    query = f"{make} {base_model}"
 
     # Dynamically scale mileage tolerance based on target mileage.
     # High mileage cars have thin comparable pools — widen tolerance to compensate.
