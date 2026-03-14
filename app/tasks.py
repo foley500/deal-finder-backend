@@ -2,6 +2,7 @@ import gc
 import os
 import redis
 import time
+import random
 from app.celery_app import celery
 from app.database import SessionLocal
 from app.models import Dealer, DealerSettings, ScanRun
@@ -15,7 +16,7 @@ from app.services.telegram_service import send_telegram_document
 # SOURCES
 # ==========================================
 SOURCES = ["ebay_browse"]
-
+PRICE_TRACK_KEY = "listing_price"
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
@@ -540,7 +541,7 @@ def prewarm_valuation_cache(targets_override=None):
         total_buckets = len(years) * len(mileage_buckets)
         for year in years:
             for mileage in mileage_buckets:
-                ck = f"sold_cache:{make_title}:{base_model_title}:{year}:{mileage}"
+                ck = f"sold_cache:{make_title}:{base_model_title}:None:{year}:{mileage}"
                 if mvc_redis.get(ck):
                     cached_count += 1
 
@@ -582,7 +583,7 @@ def prewarm_valuation_cache(targets_override=None):
         for year in years:
             for mileage in mileage_buckets:
 
-                cache_key = f"sold_cache:{make_title}:{base_model_title}:{year}:{mileage}"
+                cache_key = f"sold_cache:{make_title}:{base_model_title}:None:{year}:{mileage}"
 
                 if mvc_redis.get(cache_key):
                     total_skipped += 1
@@ -846,11 +847,12 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     # Lands in stale/overlooked cheap stock beyond page 1.
                     # Offsets must be multiples of limit (40) per eBay API.
                     # -------------------------------------------------------
-                    for offset in [80, 120]:
+                    for offset in [80, 120, 160]:
                         if not _check_budget(1):
                             print("🛑 Daily API budget reached — stopping sweep (strategy A)")
                             budget_ok = False
                             break
+
                         page_items = source.search(
                             keywords=query,
                             entries=listings_to_pull,
@@ -913,6 +915,22 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                 processed_ids.add(external_id)
 
                 rough_price = float(item.get("price", 0))
+
+                item_id = item.get("id")
+                price_key = f"{PRICE_TRACK_KEY}:{item_id}"
+
+                previous_price = redis_client.get(price_key)
+
+                if previous_price:
+                    previous_price = float(previous_price)
+
+                    drop_pct = (previous_price - rough_price) / previous_price
+
+                    if drop_pct > 0.07:
+                        print(f"📉 Price drop detected: {previous_price} → {rough_price}")
+
+                redis_client.set(price_key, rough_price, ex=86400)
+
                 if not rough_price:
                     continue
 

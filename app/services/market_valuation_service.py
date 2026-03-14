@@ -15,7 +15,7 @@ SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
-CACHE_TTL = 21600          # 6 hours — prices don't change hourly
+CACHE_TTL = 43200          # 6 hours — prices don't change hourly
 MAX_DETAIL_EXPANSIONS = 60  # Scan-time expansion cap (live valuations on cache miss)
 MAX_PREWARM_EXPANSIONS = 15 # Prewarm cap — year-only, missing mileage does NOT trigger expansion
 MIN_SAMPLE_SIZE = 5
@@ -52,6 +52,24 @@ def get_mileage_tolerances(target_mileage: int) -> tuple:
         if target_mileage < threshold:
             return l1, l2
     return 32000, 45000
+
+def bucket_engine_size(engine_litre):
+    """
+    Normalises engine sizes into buckets.
+    """
+    if engine_litre is None:
+        return None
+
+    if engine_litre < 1.3:
+        return 1.0
+    elif engine_litre < 1.8:
+        return 1.6
+    elif engine_litre < 2.3:
+        return 2.0
+    elif engine_litre < 3.5:
+        return 3.0
+    else:
+        return 4.0
 
 
 def extract_year_from_title(title: str):
@@ -288,6 +306,39 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
 
     return all_items
 
+def get_active_listings(query: str, limit: int = 40, budget_fn=None):
+    """
+    Fetches ACTIVE listings to determine the market floor price.
+    """
+
+    token = get_ebay_access_token()
+    if not token:
+        return []
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
+    }
+
+    params = {
+        "q": query,
+        "limit": limit,
+        "filter": "conditions:{USED}",
+        "sort": "price",
+        "category_ids": "9801"
+    }
+
+    if budget_fn and not budget_fn(1):
+        return []
+
+    throttle_ebay()
+    response = requests.get(SEARCH_URL, headers=headers, params=params)
+
+    if response.status_code != 200:
+        return []
+
+    return response.json().get("itemSummaries", [])
+
 
 # ---------------------------------------------------
 # CORE FILTER ENGINE
@@ -324,8 +375,31 @@ def run_filter_layer(
 
         title = summary.get("title", "").lower()
 
-        if not re.search(rf"\b{re.escape(base_model.lower())}\b", title):
+        if any(x in title for x in [
+            "breaking",
+            "spares",
+            "parts",
+            "engine",
+            "gearbox",
+            "wheel",
+            "door",
+            "bumper",
+        ]):
             continue
+
+        if any(x in title for x in [
+            "finance available",
+            "warranty included",
+            "dealer warranty",
+            "part exchange welcome",
+        ]):
+            continue
+
+        # strict base model match
+        if base_model:
+            model_pattern = rf"\b{re.escape(base_model.lower())}\b"
+            if not re.search(model_pattern, title):
+                continue
 
         if engine_litre:
             engine_match = re.search(r"\b(\d\.\d)\b", title)
@@ -336,14 +410,16 @@ def run_filter_layer(
                 badge_match = re.search(r"\b(\d{2,3})[di]\b", title)
                 if badge_match:
                     digits = badge_match.group(1)
-                    try:
-                        listing_engine = float(digits[0] + "." + digits[1])
-                    except:
+
+                    # BMW style badge parsing
+                    if len(digits) == 3:
+                        listing_engine = float(digits[1] + "." + digits[2])
+                    else:
                         listing_engine = None
                 else:
                     listing_engine = None
 
-            if listing_engine and abs(listing_engine - engine_litre) > 0.5:
+            if listing_engine and abs(listing_engine - engine_litre) > 0.8:
                 continue
                 
         listing_year = summary.get("_year")
@@ -381,7 +457,7 @@ def run_filter_layer(
         base_price = float(price_obj["value"])
 
         # Reject junk listings — parts, scams, placeholder prices
-        if base_price < 800:
+        if base_price < 1200:
             continue
 
         adjusted_price = base_price
@@ -449,7 +525,10 @@ def run_filter_layer(
     else:
         confidence = "low"
 
-    market_price = round(statistics.median(final_prices) * spread_discount, 2)
+    sold_median = statistics.median(final_prices)
+
+    market_price = round(sold_median * spread_discount, 2)
+
     print(f"   💰 Market price: £{market_price} ({confidence} confidence, pool: {source_label})")
 
     return {
@@ -500,7 +579,8 @@ def get_market_price_from_sold(
             pass
 
     mileage_bucket = round(mileage / 20000) * 20000
-    cache_key = f"sold_cache:{make}:{base_model}:{engine_litre}:{year}:{mileage_bucket}"
+    engine_bucket = bucket_engine_size(engine_litre)
+    cache_key = f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}"
     print(f"   🔑 Cache key: {cache_key}")
     cached = redis_client.get(cache_key)
     if cached:
@@ -523,22 +603,17 @@ def get_market_price_from_sold(
                 pass
 
         if not engine_litre:
-            cc_match = re.search(r"\b(\d{3,4})\s?cc\b", title_lower)
-            if cc_match:
-                try:
-                    engine_litre = round(int(cc_match.group(1)) / 1000, 1)
-                except:
-                    pass
-
-        if not engine_litre:
-            badge_match = re.search(r"\b(\d{2,3})([di])\b", title_lower)
+            badge_match = re.search(r"\b(\d{2,3})[di]\b", title_lower)
             if badge_match:
+                digits = badge_match.group(1)
                 try:
-                    digits = badge_match.group(1)
-                    engine_litre = float(digits[0] + "." + digits[1])
+                    if len(digits) == 3:
+                        engine_litre = float(digits[1] + "." + digits[2])
+                    elif len(digits) == 2:
+                        engine_litre = float(digits[0] + "." + digits[1])
                 except:
                     pass
-
+      
     if listing_aspects:
         if not engine_litre:
             aspect_engine = listing_aspects.get("Engine Size")
@@ -556,41 +631,11 @@ def get_market_price_from_sold(
     # Falls through to broad query naturally if the tighter pool is too thin.
     query_parts = [make, base_model]
 
+    if year:
+        query_parts.append(str(year))
+
     if engine_litre:
         query_parts.append(str(engine_litre))
-
-    # Normalise fuel type to eBay-friendly terms
-    fuel_type_normalised = None
-    if fuel_type:
-        ft = str(fuel_type).lower().strip()
-        if ft in ("petrol", "p"):
-            fuel_type_normalised = "petrol"
-        elif ft in ("diesel", "d"):
-            fuel_type_normalised = "diesel"
-        # Hybrid/electric deliberately excluded — too few comparables to narrow safely
-
-    if fuel_type_normalised:
-        query_parts.append(fuel_type_normalised)
-
-    # Extract body style from title — "3dr"/"5dr"/"estate"/"convertible" etc.
-    body_style_term = None
-    if listing_title:
-        title_lower = listing_title.lower()
-        if "estate" in title_lower:
-            body_style_term = "estate"
-        elif "convertible" in title_lower or "cabriolet" in title_lower or "cabrio" in title_lower:
-            body_style_term = "convertible"
-        elif "coupe" in title_lower or "coupé" in title_lower:
-            body_style_term = "coupe"
-        elif "van" in title_lower:
-            body_style_term = "van"
-        elif re.search(r"\b3\s*dr\b|\b3-door\b", title_lower):
-            body_style_term = "3dr"
-        elif re.search(r"\b5\s*dr\b|\b5-door\b", title_lower):
-            body_style_term = "5dr"
-
-    if body_style_term:
-        query_parts.append(body_style_term)
 
     query = " ".join(query_parts)
 
