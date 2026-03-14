@@ -591,9 +591,7 @@ def get_market_price_from_sold(
     # During scan tasks, never fall through to live eBay calls.
     # Cache miss = no valuation. Prewarm fills the cache.
     if cache_only:
-        print(f"   ⚡ Cache miss (cache_only) — skipping: {make} {base_model} {year} {mileage_bucket}mi")
-        return None
-
+        print(f" Cache miss - performing live valuation: {make} {base_model} {year} {mileage_bucket}mi")
     title_lower = listing_title.lower() if listing_title else ""
 
     if not engine_litre and listing_title:
@@ -706,6 +704,7 @@ def get_market_price_from_sold(
             redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
             return result
 
+    redis_client.set(cache_key, json.dumps({"market_price": None}), ex=3600)
     return None
 
 

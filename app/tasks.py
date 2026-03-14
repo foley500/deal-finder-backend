@@ -10,7 +10,7 @@ from app.services.deal_engine import process_listing
 from app.services.listing_sources.factory import get_listing_source
 from app.services.pdf_service import generate_deal_pdf
 from app.services.telegram_service import send_telegram_document
-from app.services.ebay_browse_service import sniper_search
+from app.services.ebay_browse_service import sniper_search, search_sniper_windows
 
 
 # ==========================================
@@ -549,11 +549,14 @@ def prewarm_valuation_cache(targets_override=None):
         # If most are warm, skip the whole model to save API calls.
         cached_count = 0
         total_buckets = len(years) * len(mileage_buckets)
-        for year in years:
-            for mileage in mileage_buckets:
-                ck = f"sold_cache:{make_title}:{base_model_title}:None:{year}:{mileage}"
-                if mvc_redis.get(ck):
-                    cached_count += 1
+        engine_buckets = [None, 1.0, 1.2, 1.4, 1.6, 2.0, 2.2, 3.0]
+
+        for engine_bucket in engine_buckets:
+            for year in years:
+                for mileage in mileage_buckets:
+                    ck = f"sold_cache:{make_title}:{base_model_title}:{engine_bucket}:{year}:{mileage}"
+                    if mvc_redis.get(ck):
+                        cached_count += 1
 
         if cached_count >= total_buckets:
             total_skipped += total_buckets
@@ -593,50 +596,52 @@ def prewarm_valuation_cache(targets_override=None):
 
         # Fan out: run filter layers for every year/mileage bucket combination
         # No additional API calls — just filtering the already-fetched summaries
-        for year in years:
-            for mileage in mileage_buckets:
+        for engine_bucket in engine_buckets:
+            for year in years:
+                for mileage in mileage_buckets:
 
-                cache_key = f"sold_cache:{make_title}:{base_model_title}:None:{year}:{mileage}"
+                    cache_key = f"sold_cache:{make_title}:{base_model_title}:{engine_bucket}:{year}:{mileage}"
 
-                if mvc_redis.get(cache_key):
-                    total_skipped += 1
-                    continue
+                    if mvc_redis.get(cache_key):
+                        total_skipped += 1
+                        continue
 
-                l1_tolerance, l2_tolerance = get_mileage_tolerances(mileage)
+                    l1_tolerance, l2_tolerance = get_mileage_tolerances(mileage)
 
-                result = None
-                for tolerance_config in [
-                    {"year_tolerance": 2, "mileage_tolerance": l1_tolerance,         "source": "layer_1_strict",          "adjust_mileage": True},
-                    {"year_tolerance": 2, "mileage_tolerance": l2_tolerance,         "source": "layer_2_relaxed_mileage", "adjust_mileage": True},
-                    {"year_tolerance": 3, "mileage_tolerance": l2_tolerance + 5000,  "source": "layer_3_relaxed_year",    "adjust_mileage": True},
-                    {"year_tolerance": 4, "mileage_tolerance": l2_tolerance + 15000, "source": "layer_4_wide",            "adjust_mileage": True},
-                ]:
-                    result = run_filter_layer(
-                        enriched_summaries,
-                        target_year=year,
-                        target_mileage=mileage,
-                        year_tolerance=tolerance_config["year_tolerance"],
-                        mileage_tolerance=tolerance_config["mileage_tolerance"],
-                        adjust_mileage=tolerance_config["adjust_mileage"],
-                        layer_name=tolerance_config["source"],
-                    )
-                    if result:
-                        if mileage > EXTREME_MILEAGE_THRESHOLD:
-                            excess = mileage - EXTREME_MILEAGE_THRESHOLD
-                            extra_blocks = min(excess / 10000, 15)
-                            extreme_penalty_pct = min(0.025 * extra_blocks, 0.50)
-                            original = result["market_price"]
-                            result["market_price"] = round(original * (1 - extreme_penalty_pct), 2)
-                            print(f"   🔻 Extreme mileage penalty: {mileage}mi → −{round(extreme_penalty_pct*100,1)}% → £{result['market_price']}")
+                    result = None
+                    for tolerance_config in [
+                        {"year_tolerance": 2, "mileage_tolerance": l1_tolerance,         "source": "layer_1_strict",          "adjust_mileage": True},
+                        {"year_tolerance": 2, "mileage_tolerance": l2_tolerance,         "source": "layer_2_relaxed_mileage", "adjust_mileage": True},
+                        {"year_tolerance": 3, "mileage_tolerance": l2_tolerance + 5000,  "source": "layer_3_relaxed_year",    "adjust_mileage": True},
+                        {"year_tolerance": 4, "mileage_tolerance": l2_tolerance + 15000, "source": "layer_4_wide",            "adjust_mileage": True},
+                    ]:
+                        result = run_filter_layer(
+                            enriched_summaries,
+                            target_year=year,
+                            target_mileage=mileage,
+                            engine_litre=engine_bucket,
+                            year_tolerance=tolerance_config["year_tolerance"],
+                            mileage_tolerance=tolerance_config["mileage_tolerance"],
+                            adjust_mileage=tolerance_config["adjust_mileage"],
+                            layer_name=tolerance_config["source"],
+                        )
+                        if result:
+                            if mileage > EXTREME_MILEAGE_THRESHOLD:
+                                excess = mileage - EXTREME_MILEAGE_THRESHOLD
+                                extra_blocks = min(excess / 10000, 15)
+                                extreme_penalty_pct = min(0.025 * extra_blocks, 0.50)
+                                original = result["market_price"]
+                                result["market_price"] = round(original * (1 - extreme_penalty_pct), 2)
+                                print(f"   🔻 Extreme mileage penalty: {mileage}mi → −{round(extreme_penalty_pct*100,1)}% → £{result['market_price']}")
 
-                        result["source"] = tolerance_config["source"]
-                        mvc_redis.set(cache_key, json.dumps(result), ex=CACHE_TTL)
-                        total_cached += 1
-                        print(f"   ✅ Cached: {make_title} {base_model_title} {year} {mileage}mi → £{result['market_price']}")
-                        break
+                            result["source"] = tolerance_config["source"]
+                            mvc_redis.set(cache_key, json.dumps(result), ex=CACHE_TTL)
+                            total_cached += 1
+                            print(f"   ✅ Cached: {make_title} {base_model_title} {year} {mileage}mi → £{result['market_price']}")
+                            break
 
-                if not result:
-                    print(f"   ⚠️  No result: {make_title} {base_model_title} {year} {mileage}mi")
+                    if not result:
+                        print(f"   ⚠️  No result: {make_title} {base_model_title} {year} {mileage}mi")
 
         # Pause between models to respect rate limiter
         time.sleep(3)
@@ -651,7 +656,7 @@ def prewarm_valuation_cache(targets_override=None):
 @celery.task
 def scan_sniper(dealer_id: int):
     # Rotate through make groups — each 10-min cycle scans a fresh slice
-    all_queries = SCAN_QUERY_GROUPS + YEAR_SNIPER_QUERIES
+    all_queries = SCAN_QUERY_GROUPS + YEAR_SNIPER_QUERIES + GENERIC_SNIPER_QUERIES
     idx = int(redis_client.incr(SNIPER_ROTATION_KEY) -1) % len(all_queries)
     query = all_queries[idx]
     print(f"🎯 Sniper rotation [{idx+1}/{len(all_queries)}]: '{query}'")
@@ -838,6 +843,17 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
             "min_score": settings.min_score,
         }
 
+        GENERIC_SNIPER_QUERIES = [
+            "cheap car",
+            "good runner",
+            "first car",
+            "diesel car",
+            "petrol car",
+            "cheap vehicle",
+            "cheap hatchback",
+            "cheap automatic",
+        ]
+
         base_groups = query_groups_override if query_groups_override is not None else SCAN_QUERY_GROUPS
         query_groups = [keywords] if keywords is not None else base_groups
 
@@ -904,13 +920,13 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                 else:
                     # Sniper: multi-window search strategy
                     task_name = "van_sniper" if source_override == "ebay_vans" else "sniper"
-                    if not _check_budget(1, task_name):
-                        print("🛑 Daily API budget reached — stopping sniper")
-                        break
 
                     if source_name == "ebay_browse":
-                        sniper_items = sniper_search(query, "")
-                        _check_budget(6, task_name)  # estimate window calls
+                        if not _check_budget(1, task_name):
+                            print("Daily API budget reached - stopping sniper")
+                            break
+
+                        sniper_items = search_sniper_windows(query, "")
                         items.extend(sniper_items)
 
                     else:

@@ -3,6 +3,7 @@ import requests
 import base64
 import time
 import redis
+import random
 from app.services.ebay_rate_limiter import throttle_ebay
 
 EBAY_CLIENT_ID = os.getenv("EBAY_CLIENT_ID")
@@ -69,10 +70,12 @@ def search_ebay_browse(
         "q": keywords,
         "limit": limit,
         "offset": offset,
-        "category_ids": "9801",
         "sort": sort,
         "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}}"
     }
+
+    if random.random() < 0.7:
+        params["category_ids"] = "9801"
 
     for attempt in range(2):
         throttle_ebay()
