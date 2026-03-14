@@ -234,40 +234,68 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
     combined_seen_ids = set()
 
     def run_sold_search(seller_filter: str, label: str, use_category: bool = True):
-        if budget_fn and not budget_fn(1):
-            print(f"🛑 Budget exhausted — skipping [{label}]")
-            return []
 
-        params = {
-            "q": query,
-            "limit": limit,
-            "filter": f"soldItems:true,conditions:{{USED}}{seller_filter}",
-            "sort": "newlyListed",
-        }
-        if use_category:
-            params["category_ids"] = "9801"
+        collected = []
+        seen_ids = set()
 
-        throttle_ebay()
-        response = None
-        for attempt in range(3):
-            response = requests.get(SEARCH_URL, headers=headers, params=params)
-            if response.status_code == 429:
-                wait = 15 * (2 ** attempt)
-                print(f"⏳ [{label}] Rate limited — waiting {wait}s (attempt {attempt+1}/3)")
-                time.sleep(wait)
-            else:
+        # fetch up to 3 pages of sold results
+        for offset in [0, 50, 100, 150, 200]:
+
+            if budget_fn and not budget_fn(1):
+                print(f"🛑 Budget exhausted — stopping [{label}] pagination")
                 break
 
-        if response.status_code == 429:
-            print(f"❌ [{label}] Rate limited after 3 retries — skipping")
-            return []
-        if response.status_code != 200:
-            print(f"❌ [{label}] search error: {response.status_code}")
-            return []
+            params = {
+                "q": query,
+                "limit": 50,
+                "offset": offset,
+                "filter": f"soldItems:true,conditions:{{USED}}{seller_filter}",
+                "sort": "endingSoonest",
+            }
 
-        items = response.json().get("itemSummaries", [])
-        print(f"✅ [{label}] '{query[:35]}' → {len(items)} items")
-        return items
+            if use_category:
+                params["category_ids"] = "9801"
+
+            throttle_ebay()
+
+            response = None
+            for attempt in range(3):
+
+                response = requests.get(SEARCH_URL, headers=headers, params=params)
+
+                if response.status_code == 429:
+                    wait = 15 * (2 ** attempt)
+                    print(f"⏳ [{label}] Rate limited — waiting {wait}s (attempt {attempt+1}/3)")
+                    time.sleep(wait)
+                else:
+                    break
+
+            if response.status_code != 200:
+                print(f"❌ [{label}] search error: {response.status_code}")
+                break
+
+            items = response.json().get("itemSummaries", [])
+
+            if not items:
+                break
+
+            for item in items:
+
+                item_id = item.get("itemId") or item.get("title", "")[:60]
+
+                if item_id in seen_ids:
+                    continue
+
+                seen_ids.add(item_id)
+                collected.append(item)
+
+            # stop early if we already have enough comparables
+            if len(collected) >= 200:
+                break
+
+        print(f"✅ [{label}] '{query[:35]}' → {len(collected)} items")
+
+        return collected
 
     # Pass 1: private sold listings — most accurate price signal
     for item in run_sold_search(",sellerAccountTypes:{INDIVIDUAL}", "sold_private"):
