@@ -26,16 +26,17 @@ celery.conf.beat_schedule = {
     # ==========================================
     # CAR SCAN TASKS
     # ==========================================
-    "sniper-scan-every-30-minutes": {
-        "task": "app.tasks.scan_sniper",
-        "schedule": timedelta(minutes=30),
-        "args": (1,),
+    "sniper-scan-every-60-minutes": {
+    "task": "app.tasks.scan_sniper",
+    "schedule": timedelta(hours=1),
+    "args": (1,),
     },
-    "value-sweep-every-4-hours": {
-        "task": "app.tasks.scan_value_sweep",
-        "schedule": timedelta(hours=4),
-        "args": (1,),
-        "options": {"expires": 3600},
+
+    "value-sweep-every-12-hours": {
+    "task": "app.tasks.scan_value_sweep",
+    "schedule": timedelta(hours=12),
+    "args": (1,),
+    "options": {"expires": 3600},
     },
 
     # ==========================================
@@ -57,7 +58,7 @@ celery.conf.beat_schedule = {
     # ==========================================
     "van-sniper-every-60-minutes": {
         "task": "app.tasks.scan_van_sniper",
-        "schedule": timedelta(minutes=60),
+        "schedule": timedelta(minutes=120),
         "args": (1,),
         "options": {"expires": 3000},
     },

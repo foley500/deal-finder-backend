@@ -3,6 +3,7 @@ import os
 import redis
 import time
 import random
+import re
 from app.celery_app import celery
 from app.database import SessionLocal
 from app.models import Dealer, DealerSettings, ScanRun
@@ -11,6 +12,7 @@ from app.services.listing_sources.factory import get_listing_source
 from app.services.pdf_service import generate_deal_pdf
 from app.services.telegram_service import send_telegram_document
 from app.services.ebay_browse_service import sniper_search, search_sniper_windows
+from app.services.market_valuation_service import get_market_price_from_sold
 
 
 # ==========================================
@@ -20,6 +22,7 @@ SOURCES = ["ebay_browse"]
 PRICE_TRACK_KEY = "listing_price"
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
+
 
 # API BUDGET — REAL CALL COSTS
 #
@@ -50,6 +53,8 @@ SNIPER_LIMIT = 10        # Expansions per sniper run — cache handles the rest
 DAILY_API_BUDGET = 4500  # Hard ceiling — 500 buffer vs 5,000 eBay limit
 DAILY_BUDGET_KEY = "ebay_daily_calls"
 VALUE_SWEEP_LIMIT = 30   # Expansions per sweep run
+YEAR_PATTERN = re.compile(r"\b(20\d{2}|19\d{2})\b")
+MILEAGE_PATTERN = re.compile(r"(\d{2,3})\s?k")
 
 # ==========================================
 # SCAN ROTATION QUERIES
@@ -95,6 +100,14 @@ YEAR_SNIPER_QUERIES = [
     "2016",
     "2017",
     "2018",
+]
+
+ENGINE_SNIPER_QUERIES = [
+    "1.2",
+    "1.4",
+    "1.6",
+    "1.8",
+    "2.0",
 ]
 
 GENERIC_SNIPER_QUERIES = [
@@ -674,7 +687,12 @@ def prewarm_valuation_cache(targets_override=None):
 @celery.task
 def scan_sniper(dealer_id: int):
     # Rotate through make groups — each 10-min cycle scans a fresh slice
-    all_queries = SCAN_QUERY_GROUPS + YEAR_SNIPER_QUERIES + GENERIC_SNIPER_QUERIES
+    all_queries = (
+        SCAN_QUERY_GROUPS 
+        + YEAR_SNIPER_QUERIES
+        + ENGINE_SNIPER_QUERIES
+        + GENERIC_SNIPER_QUERIES
+    )
     idx = int(redis_client.incr(SNIPER_ROTATION_KEY) -1) % len(all_queries)
     query = all_queries[idx]
     print(f"🎯 Sniper rotation [{idx+1}/{len(all_queries)}]: '{query}'")
@@ -884,7 +902,7 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     # Lands in stale/overlooked cheap stock beyond page 1.
                     # Offsets must be multiples of limit (40) per eBay API.
                     # -------------------------------------------------------
-                    for offset in [40, 80, 120, 160]:
+                    for offset in [40, 80, 120, 160, 200]:
 
                         task_name = "van_sweep" if source_override == "ebay_vans" else "sweep"
                         if not _check_budget(1, task_name):
@@ -961,7 +979,12 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
 
                 processed_ids.add(external_id)
 
-                rough_price = float(item.get("price", 0))
+                price_val = item.get("price")
+
+                if not price_val:
+                    continue
+                
+                rough_price = float(price_val)
 
                 item_id = item.get("id")
                 price_key = f"{PRICE_TRACK_KEY}:{item_id}"
@@ -985,7 +1008,66 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     print(f"⛔ Pre-screen: £{rough_price} exceeds max £{filters['max_price']} — skipping")
                     continue
 
-                task_name = "van_sweep" if source_override == "ebay_vans" else "sweep"
+                # ------------------------------------------
+                # PRICE EXPECTATION GATE
+                # Uses prewarm cache to skip listings priced
+                # too close to market value before running
+                # expensive full valuation.
+                # ------------------------------------------
+                try:
+                    title = item.get("title", "")
+
+                    year_match = YEAR_PATTERN.search(title)
+                    year = int(year_match.group(1)) if year_match else None
+
+                    mileage_match = MILEAGE_PATTERN.search(title.lower())
+                    mileage = int(mileage_match.group(1)) * 1000 if mileage_match else None
+
+                    title_words = title.split()
+
+                    make = None
+                    model = None
+
+                    for i, word in enumerate(title_words):
+                        if word.lower() in [
+                            "ford","vauxhall","bmw","audi","volkswagen","vw","toyota","nissan",
+                            "mercedes","mercedes-benz","kia","hyundai","peugeot","renault",
+                            "skoda","seat","mazda","volvo","mini","citroen"
+                        ]:
+                            make = word
+                            if i + 1 < len(title_words):
+                                model = title_words[i + 1]
+                            break
+
+                    if make and model and year:
+
+                        valuation = get_market_price_from_sold(
+                            make,
+                            model,
+                            year,
+                            mileage,
+                            cache_only=True
+                        )
+
+                        if valuation and valuation.get("market_price"):
+
+                            expected_price = valuation["market_price"]
+
+                            if rough_price > expected_price * 0.85:
+                                print(
+                                    f"🚫 Gate skip: £{rough_price} too close to market "
+                                    f"(£{expected_price})"
+                                )
+                                continue
+
+                except Exception as e:
+                    print(f"Gate check failed: {e}")
+
+                if source_override == "ebay_vans":
+                    task_name = "van_sniper" if mode_name == "sniper" else "van_sweep"
+                else:
+                    task_name = "sniper" if mode_name == "sniper" else "sweep"
+
                 if not _check_budget(1, task_name):
                     print("🛑 Daily API budget reached — stopping expansions")
                     break
@@ -995,8 +1077,13 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     dealer.id,
                     source=source_override or source_name,
                     filters=filters,
-                    budget_fn=lambda n: _check_budget(n, mode_name), # Routes all valuation eBay calls through daily budget guard
-                )
+                    budget_fn=lambda n: _check_budget(
+                        n,
+                        "van_sniper" if source_override == "ebay_vans" and mode_name == "sniper"
+                        else "van_sweep" if source_override == "ebay_vans"
+                        else "sniper" if mode_name == "sniper"
+                        else "sweep"
+                    )
 
                 detail_expansions += 1
                 gc.collect()  # Free image/OCR memory between expansions

@@ -71,11 +71,10 @@ def search_ebay_browse(
         "limit": limit,
         "offset": offset,
         "sort": sort,
-        "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}}"
+        "category_ids": "9801",
+        "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}},itemLocationCountry:GB"
     }
 
-    if random.random() < 0.7:
-        params["category_ids"] = "9801"
 
     for attempt in range(2):
         throttle_ebay()
@@ -143,9 +142,9 @@ def search_sniper_windows(make, model):
 
     windows = [
         (500, 1500),
-        (1500, 5000),
-        (5000, 12000),
-        (12000, 40000),
+        (1500, 4000),
+        (4000, 8000),
+        (8000, 20000),
     ]
 
     search_terms = [
@@ -157,7 +156,9 @@ def search_sniper_windows(make, model):
     if model and (any(c.isdigit() for c in model) or len(model) >= 4):
         search_terms.append(model.strip())
 
-    sort_types = ["newlyListed", "price"]
+    random.shuffle(search_terms)
+
+    sort_types = ["newlyListed", "bestMatch"]
 
     all_results = []
     seen_ids = set()
