@@ -10,6 +10,7 @@ from app.services.deal_engine import process_listing
 from app.services.listing_sources.factory import get_listing_source
 from app.services.pdf_service import generate_deal_pdf
 from app.services.telegram_service import send_telegram_document
+from app.services.ebay_browse_service import sniper_search
 
 
 # ==========================================
@@ -85,6 +86,15 @@ SCAN_QUERY_GROUPS = [
     "Volvo",
     "Mini",
     "Citroen",
+]
+
+YEAR_SNIPER_QUERIES = [
+    "2013",
+    "2014",
+    "2015",
+    "2016",
+    "2017",
+    "2018",
 ]
 
 SNIPER_ROTATION_KEY = "sniper_query_rotation_idx"
@@ -561,7 +571,10 @@ def prewarm_valuation_cache(targets_override=None):
         # ONE eBay search for this make/model — shared across all year/mileage combos
         query = f"{make_title} {base_model_title}"
         try:
-            all_summaries = get_sold_listings(query, budget_fn=_check_budget)
+            all_summaries = get_sold_listings(
+                query,
+                budget_fn=lambda n: _check_budget(n, "prewarm")
+            )
             total_searches += 1
         except Exception as e:
             print(f"❌ Search failed for {query}: {e}")
@@ -638,9 +651,10 @@ def prewarm_valuation_cache(targets_override=None):
 @celery.task
 def scan_sniper(dealer_id: int):
     # Rotate through make groups — each 10-min cycle scans a fresh slice
-    idx = int(redis_client.incr(SNIPER_ROTATION_KEY) - 1) % len(SCAN_QUERY_GROUPS)
-    query = SCAN_QUERY_GROUPS[idx]
-    print(f"🎯 Sniper rotation [{idx+1}/{len(SCAN_QUERY_GROUPS)}]: '{query}'")
+    all_queries = SCAN_QUERY_GROUPS + YEAR_SNIPER_QUERIES
+    idx = int(redis_client.incr(SNIPER_ROTATION_KEY) -1) % len(all_queries)
+    query = all_queries[idx]
+    print(f"🎯 Sniper rotation [{idx+1}/{len(all_queries)}]: '{query}'")
     return run_scan(
         dealer_id=dealer_id,
         mode_name="sniper",
@@ -755,7 +769,7 @@ def _check_budget(calls_needed: int = 1, task_name: str = None) -> bool:
     ttl = result[1]
 
     # Set 24hr expiry on first write
-    if ttl == -1:
+    if ttl < 0:
         redis_client.expire(DAILY_BUDGET_KEY, 86400)
 
     remaining = DAILY_API_BUDGET - current_count
@@ -770,7 +784,7 @@ def _check_budget(calls_needed: int = 1, task_name: str = None) -> bool:
     if task_name and task_name in BUDGET_ALLOCATIONS:
         task_key = f"{TASK_BUDGET_KEY_PREFIX}:{task_name}"
         task_count = int(redis_client.incr(task_key))
-        if ttl == -1:
+        if ttl < 0:
             redis_client.expire(task_key, 86400)
         soft_limit = BUDGET_ALLOCATIONS[task_name]
         if task_count > soft_limit:
@@ -848,7 +862,9 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     # Offsets must be multiples of limit (40) per eBay API.
                     # -------------------------------------------------------
                     for offset in [80, 120, 160]:
-                        if not _check_budget(1):
+
+                        task_name = "van_sweep" if source_override == "ebay_vans" else "sweep"
+                        if not _check_budget(1, task_name):
                             print("🛑 Daily API budget reached — stopping sweep (strategy A)")
                             budget_ok = False
                             break
@@ -861,6 +877,7 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                             sort="price",
                             offset=offset,
                         )
+
                         items.extend(page_items)
 
                     # -------------------------------------------------------
@@ -869,7 +886,8 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     # Catches motivated sellers that newlyListed won't show.
                     # -------------------------------------------------------
                     if budget_ok:
-                        if not _check_budget(1):
+                        task_name = "van_sweep" if source_override == "ebay_vans" else "sweep"
+                        if not _check_budget(1, task_name):
                             print("🛑 Daily API budget reached — stopping sweep (strategy B)")
                         else:
                             page_items = source.search(
@@ -884,21 +902,27 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
 
 
                 else:
-                    # -------------------------------------------------------
-                    # Sniper: single fetch, newest listings first
-                    # -------------------------------------------------------
-                    if not _check_budget(1):
+                    # Sniper: multi-window search strategy
+                    task_name = "van_sniper" if source_override == "ebay_vans" else "sniper"
+                    if not _check_budget(1, task_name):
                         print("🛑 Daily API budget reached — stopping sniper")
                         break
-                    page_items = source.search(
-                        keywords=query,
-                        entries=listings_to_pull,
-                        min_price=None,
-                        max_price=filters["max_price"],
-                        sort=sort,
-                        offset=0,
-                    )
-                    items.extend(page_items)
+
+                    if source_name == "ebay_browse":
+                        sniper_items = sniper_search(query, "")
+                        _check_budget(6, task_name)  # estimate window calls
+                        items.extend(sniper_items)
+
+                    else:
+                        page_items = source.search(
+                            keywords=query,
+                            entries=listings_to_pull,
+                            min_price=None,
+                            max_price=filters["max_price"],
+                            sort=sort,
+                            offset=0,
+                        )
+                        items.extend(page_items)
 
             total_listings += len(items)
 
@@ -938,7 +962,7 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     print(f"⛔ Pre-screen: £{rough_price} exceeds max £{filters['max_price']} — skipping")
                     continue
 
-                if not _check_budget(1):
+                if not _check_budget(1, mode_name):
                     print("🛑 Daily API budget reached — stopping expansions")
                     break
 
@@ -947,7 +971,7 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     dealer.id,
                     source=source_override or source_name,
                     filters=filters,
-                    budget_fn=_check_budget,  # Routes all valuation eBay calls through daily budget guard
+                    budget_fn=lambda n: _check_budget(n, mode_name), # Routes all valuation eBay calls through daily budget guard
                 )
 
                 detail_expansions += 1

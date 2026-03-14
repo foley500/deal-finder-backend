@@ -132,6 +132,99 @@ def search_ebay_browse(
     print(f"✅ eBay returned {len(listings)} vehicle summaries")
     return listings
 
+def search_sniper_windows(make, model):
+    """
+    Runs multiple price-window searches to catch mispriced listings.
+    Dramatically increases deal detection.
+    """
+
+    windows = [
+        (500, 3000),
+        (3000, 7000),
+        (7000, 15000),
+        (15000, 40000),
+    ]
+
+    all_results = []
+    seen_ids = set()
+
+    for min_price, max_price in windows:
+
+        listings = search_ebay_browse(
+            keywords=f"{make} {model}",
+            limit=50,
+            min_price=min_price,
+            max_price=max_price,
+            sort="newlyListed"
+        )
+
+        for listing in listings:
+
+            item_id = listing["id"]
+
+            if item_id in seen_ids:
+                continue
+
+            seen_ids.add(item_id)
+            all_results.append(listing)
+
+    print(f"🎯 Sniper windows returned {len(all_results)} unique listings")
+
+    return all_results
+
+def get_model_variants(make, model):
+    """
+    Generates common typo / shorthand search variants.
+    """
+
+    variants = [(make, model)]
+
+    make_lower = make.lower()
+
+    replacements = {
+        "mercedes": ["merc"],
+        "volkswagen": ["vw", "volkswagon"],
+        "bmw": ["bm"],
+        "land rover": ["landrover"],
+    }
+
+    if make_lower in replacements:
+
+        for variant in replacements[make_lower]:
+            variants.append((variant, model))
+
+    return variants
+
+def sniper_search(make, model):
+    """
+    Runs full sniper search strategy:
+    - price windows
+    - typo variants
+    """
+
+    all_results = []
+    seen_ids = set()
+
+    variants = [(make, model)] if not model else get_model_variants(make, model)
+
+    for variant_make, variant_model in variants:
+
+        listings = search_sniper_windows(variant_make, variant_model)
+
+        for listing in listings:
+
+            item_id = listing["id"]
+
+            if item_id in seen_ids:
+                continue
+
+            seen_ids.add(item_id)
+            all_results.append(listing)
+
+    print(f"🚀 Sniper collected {len(all_results)} listings")
+
+    return all_results
+
 
 def get_item_detail(item_id):
     token = get_ebay_access_token()
