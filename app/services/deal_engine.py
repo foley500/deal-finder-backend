@@ -684,6 +684,21 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 model = title_model
                 print(f"   🔍 Model from title fallback: {model}")
 
+        # Normalise DVSA make strings to eBay-friendly equivalents.
+        # DVSA returns ALL CAPS; .title() then mangles multi-word/hyphenated makes.
+        # e.g. "MERCEDES-BENZ" → .title() → "Mercedes-Benz" → eBay prefers "Mercedes"
+        #      "BMW" → .title() → "Bmw" → must be restored to "BMW"
+        _MAKE_EBAY_ALIASES = {
+            "Mercedes-Benz": "Mercedes",
+            "Bmw": "BMW",
+            "Vauxhall Opel": "Vauxhall",
+            "Vw": "Volkswagen",
+            "Alfa-Romeo": "Alfa Romeo",
+        }
+        if make:
+            make_title = str(make).strip().title()
+            make = _MAKE_EBAY_ALIASES.get(make_title, make_title)
+
         print(f"   🚗 Resolved: make={make}, model={model}, year={year}, mileage={mileage}")
 
         valuation_result = None

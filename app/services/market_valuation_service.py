@@ -135,9 +135,17 @@ def extract_mileage_from_text(text: str):
     return None
 
 
-def normalise_base_model(make: str, base_model: str) -> str:
+def normalise_base_model(make: str, base_model: str, full_model: str = "") -> str:
+    """
+    Converts DVSA/eBay make+model into an eBay-searchable base model term.
+
+    full_model: the complete model string before splitting (e.g. "C Class", "Range Rover Sport").
+    Without it, DVSA multi-word models like "C CLASS" only pass "C" as base_model,
+    making Mercedes/Land Rover queries far too vague.
+    """
     make_lower = make.lower()
     model_lower = base_model.lower().strip()
+    full_lower = (full_model or base_model).lower().strip()
 
     if make_lower == "bmw":
         # "118", "120", "318" etc → extract leading digit → "1 Series", "3 Series"
@@ -155,20 +163,35 @@ def normalise_base_model(make: str, base_model: str) -> str:
             return "Mini"
 
     if make_lower in ["mercedes", "mercedes-benz"]:
-        # "Aclass"/"A Class" → "A-Class", "Cclass" → "C-Class" etc
+        # Handle DVSA format: "C CLASS", "A CLASS", "E CLASS", "GLA CLASS" etc
+        # full_lower catches these where base_model alone is just "C", "A" etc
+        if "class" in full_lower:
+            class_match = re.match(r'^([a-z]{1,4})\s*[-\s]?class', full_lower)
+            if class_match:
+                letter = class_match.group(1).upper()
+                return f"{letter}-Class"
+        # Handle concatenated legacy format: "Aclass", "Cclass"
         if "class" in model_lower and "-" not in model_lower:
             return model_lower.replace("class", "-class").title()
-        # "Gla", "Glb", "Glc", "Gle", "Cls", "Clk", "Slk", "Amg" etc
-        # These are fine as-is — eBay recognises them
-        # Fix ML: "Ml350", "Ml320" etc → "ML-Class"
+        # ML-Class: "Ml350", "Ml320" etc
         if re.match(r'^ml\d', model_lower):
             return "ML-Class"
-        # Fix GLA/GLB/GLC/GLE/GLS: already correct, just ensure title case
+        # GLA/GLB/GLC/GLE/GLS shorthand — uppercase them
         if re.match(r'^gl[abces]$', model_lower):
             return base_model.upper()
-        # "mercedes" as model (bad title fallback) — return as-is, valuation will fail gracefully
+        # "mercedes" as model (bad title fallback) — return as-is
         if model_lower == "mercedes":
             return base_model
+
+    if make_lower == "land rover":
+        # DVSA returns "RANGE ROVER", "RANGE ROVER SPORT", "RANGE ROVER EVOQUE" etc
+        # Taking only the first word gives "Range" — useless for eBay search
+        if full_lower.startswith("range rover"):
+            return "Range Rover"
+        if full_lower.startswith("discovery sport"):
+            return "Discovery Sport"
+        # Defender, Freelander, Discovery — first word is correct
+        return base_model
 
     return base_model
 
@@ -605,13 +628,16 @@ def run_filter_layer(
             sold_prices.extend([adjusted_price] * total_weight)
             # Capture a sample of comparables for deal detail display
             if len(sample_comps) < 12:
+                _sold_dt = summary.get("_sold_date")
+                _date_str = _sold_dt.strftime("%d %b %Y") if _sold_dt else None
                 sample_comps.append({
                     "title": summary.get("title", "")[:70],
                     "price": int(round(base_price, 0)),
                     "adjusted_price": int(round(adjusted_price, 0)),
                     "year": listing_year,
                     "mileage": listing_mileage,
-                    "sold_date": summary.get("_sold_date"),
+                    "date": _date_str,
+                    "url": summary.get("itemWebUrl", "") or "",
                     "seller_pool": summary.get("_seller_pool", ""),
                 })
             accepted_sold += 1
@@ -643,10 +669,23 @@ def run_filter_layer(
 
     final_prices = sorted(final_prices)
 
-    # Trim outliers (10% each end)
-    cut = int(len(final_prices) * 0.1)
-    if cut > 0:
-        final_prices = final_prices[cut:-cut]
+    # IQR-based outlier trimming (Tukey fences: Q1 − 1.5×IQR, Q3 + 1.5×IQR).
+    # More adaptive than a flat 10% cut — small samples (5-10 comps) are barely
+    # touched; genuine outliers in larger pools are cleanly removed.
+    if len(final_prices) >= 6:
+        mid = len(final_prices) // 2
+        q1 = statistics.median(final_prices[:mid])
+        q3 = statistics.median(final_prices[mid:])
+        iqr = q3 - q1
+        if iqr > 0:
+            lower_fence = q1 - 1.5 * iqr
+            upper_fence = q3 + 1.5 * iqr
+            trimmed = [p for p in final_prices if lower_fence <= p <= upper_fence]
+            if len(trimmed) >= MIN_SAMPLE_SIZE:
+                removed = len(final_prices) - len(trimmed)
+                if removed > 0:
+                    print(f"   ✂️ IQR trim: removed {removed} outliers (fences £{round(lower_fence)}–£{round(upper_fence)})")
+                final_prices = trimmed
 
     spread_discount = check_spread(final_prices, layer_name)
 
@@ -708,7 +747,9 @@ def get_market_price_from_sold(
     model = str(model).strip().title()
     model_words = model.split()
     base_model = model_words[0]
-    base_model = normalise_base_model(make, base_model)
+    # Pass the full model so multi-word DVSA models ("C Class", "Range Rover Sport")
+    # are resolved correctly instead of only using the first word
+    base_model = normalise_base_model(make, base_model, full_model=model)
     trim = " ".join(model_words[1:]) if len(model_words) > 1 else None
 
     engine_litre = None
@@ -775,9 +816,19 @@ def get_market_price_from_sold(
                     pass
 
     # Include year in the query to anchor eBay results to the right vintage.
-    # Without year, a search for "Renault Clio" returns all ages; a 2009 Clio
-    # valued against 2014 Clios produces a severely inflated market price.
-    query = f"{make} {base_model} {year}"
+    # Include fuel type to separate diesel/petrol pools — they can differ by 15-20%.
+    # Do NOT add fuel type for hybrids (too niche, too few comparables).
+    fuel_suffix = ""
+    if fuel_type:
+        ft = fuel_type.lower()
+        if "diesel" in ft:
+            fuel_suffix = " diesel"
+        elif "petrol" in ft:
+            fuel_suffix = " petrol"
+        elif "electric" in ft and "hybrid" not in ft:
+            fuel_suffix = " electric"
+
+    query = f"{make} {base_model} {year}{fuel_suffix}"
 
     # Dynamically scale mileage tolerance based on target mileage.
     # High mileage cars have thin comparable pools — widen tolerance to compensate.
