@@ -158,7 +158,12 @@ def all_deals(
     confidence: str | None = Query(None),
     source: str | None = Query(None),
     page: int = Query(1, ge=1),
-    db: Session = Depends(get_db)
+    q: str = Query(""),
+    min_profit: float | None = Query(None),
+    min_score: float | None = Query(None),
+    stage: str = Query(""),
+    signals: str = Query(""),
+    db: Session = Depends(get_db),
 ):
     PAGE_SIZE = 25
 
@@ -166,9 +171,51 @@ def all_deals(
 
     if source:
         query = query.filter(Deal.source == source)
-
     if confidence:
         query = query.filter(Deal.status == confidence)
+    if q.strip():
+        query = query.filter(Deal.title.ilike(f"%{q.strip()}%"))
+    if min_profit is not None:
+        query = query.filter(Deal.profit >= min_profit)
+    if min_score is not None:
+        query = query.filter(Deal.score >= min_score)
+    if stage.strip():
+        query = query.filter(
+            Deal.report.op("->")("deal_lifecycle").op("->>")("stage") == stage.strip()
+        )
+
+    # Signal filters
+    for sig in [s.strip() for s in signals.split(",") if s.strip()]:
+        if sig == "fsh":
+            query = query.filter(
+                Deal.report.op("->")("deal_signals").op("->>")("fsh") == "true"
+            )
+        elif sig == "motivated":
+            query = query.filter(
+                Deal.report.op("->")("deal_signals").op("->>")("motivated_seller") == "true"
+            )
+        elif sig == "one_owner":
+            query = query.filter(
+                Deal.report.op("->")("deal_signals").op("->>")("one_owner") == "true"
+            )
+        elif sig == "price_drop":
+            query = query.filter(
+                Deal.report.op("->")("deal_signals").op("->>")("is_price_drop_alert") == "true"
+            )
+        elif sig == "ulez":
+            query = query.filter(
+                Deal.report.op("->")("deal_signals").op("->>")("ulez_diesel_risk") == "true"
+            )
+        elif sig == "mileage_anomaly":
+            query = query.filter(
+                Deal.report.op("->")("deal_signals").op("->>")("mileage_anomaly") == "true"
+            )
+        elif sig == "buy_below_trade":
+            query = query.filter(
+                Deal.report.op("->")("deal_signals").op("->>")("buy_below_trade").cast(
+                    __import__("sqlalchemy").Float
+                ) > 0
+            )
 
     if sort == "profit_desc":
         query = query.order_by(Deal.profit.desc())
@@ -195,6 +242,11 @@ def all_deals(
             "page": page,
             "total_pages": total_pages,
             "total_count": total_count,
+            "active_q": q,
+            "active_min_profit": min_profit,
+            "active_min_score": min_score,
+            "active_stage": stage,
+            "active_signals": signals,
         },
     )
 
@@ -246,6 +298,226 @@ def completed_deals(request: Request, db: Session = Depends(get_db)):
             "total_actual_profit": round(total_actual_profit, 2),
             "avg_margin": avg_margin,
             "nav_counts": get_nav_counts(db),
+        },
+    )
+
+
+# =====================================================
+# DEAL NOTES
+# =====================================================
+
+@app.post("/deals/{deal_id}/notes")
+def add_deal_note(
+    deal_id: int,
+    note_text: str = Form(...),
+    redirect_to: str = Form("/deals"),
+    db: Session = Depends(get_db),
+):
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if not deal or not note_text.strip():
+        return RedirectResponse(url=redirect_to, status_code=303)
+
+    _report = dict(deal.report or {})
+    notes = list(_report.get("notes", []))
+    notes.insert(0, {
+        "text": note_text.strip(),
+        "timestamp": datetime.utcnow().strftime("%d %b %Y %H:%M"),
+    })
+    _report["notes"] = notes[:50]  # Cap at 50 notes per deal
+    deal.report = _report
+    db.commit()
+
+    return RedirectResponse(url=redirect_to, status_code=303)
+
+
+# =====================================================
+# BULK ACTIONS
+# =====================================================
+
+@app.post("/deals/bulk-pass")
+def bulk_pass_deals(
+    deal_ids: list[int] = Form(...),
+    db: Session = Depends(get_db),
+):
+    deals = db.query(Deal).filter(Deal.id.in_(deal_ids)).all()
+    for deal in deals:
+        _report = dict(deal.report or {})
+        lc = dict(_report.get("deal_lifecycle", {}))
+        lc["stage"] = "passed"
+        if not lc.get("passed_date"):
+            lc["passed_date"] = datetime.utcnow().strftime("%Y-%m-%d")
+        _report["deal_lifecycle"] = lc
+        deal.report = _report
+    db.commit()
+    return RedirectResponse(url="/deals", status_code=303)
+
+
+# =====================================================
+# COMPLETED DEALS CSV EXPORT
+# =====================================================
+
+@app.get("/completed/export")
+def export_completed_csv(db: Session = Depends(get_db)):
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    pipeline_deals = db.query(Deal).filter(
+        Deal.report.op("->")("deal_lifecycle").op("->>")("stage").in_(["purchased", "sold"])
+    ).order_by(Deal.created_at.desc()).all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Vehicle", "Reg", "Stage",
+        "Offer Price (£)", "Purchase Price (£)", "Sale Price (£)",
+        "Actual Profit (£)", "Margin (%)",
+        "Purchase Date", "Sale Date", "Notes",
+    ])
+
+    for deal in pipeline_deals:
+        lc = (deal.report or {}).get("deal_lifecycle", {})
+        pp = lc.get("purchase_price") or 0
+        sp = lc.get("sale_price") or 0
+        ap = lc.get("actual_profit") or 0
+        margin = round((ap / pp * 100), 1) if pp else 0
+        writer.writerow([
+            deal.title,
+            deal.reg or "",
+            lc.get("stage", ""),
+            lc.get("offer_price", ""),
+            pp or "",
+            sp or "",
+            ap or "",
+            f"{margin}%" if pp else "",
+            lc.get("purchase_date", ""),
+            lc.get("sale_date", ""),
+            lc.get("notes", ""),
+        ])
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")  # utf-8-sig for Excel compatibility
+    return StreamingResponse(
+        io.BytesIO(csv_bytes),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=completed_deals.csv"},
+    )
+
+
+# =====================================================
+# ANALYTICS
+# =====================================================
+
+@app.get("/analytics", response_class=HTMLResponse)
+def analytics(request: Request, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+
+    total_deals = db.query(Deal).count()
+
+    # Deals by source
+    source_counts = {
+        "eBay": db.query(Deal).filter(Deal.source == "ebay_browse").count(),
+        "Facebook": db.query(Deal).filter(Deal.source == "facebook_extension").count(),
+        "Vans": db.query(Deal).filter(Deal.source == "ebay_vans").count(),
+    }
+
+    # Deals by confidence tier
+    tier_counts = {
+        "High": db.query(Deal).filter(Deal.status.in_(["high", "very_high"])).count(),
+        "Medium": db.query(Deal).filter(Deal.status == "medium").count(),
+        "Low": db.query(Deal).filter(Deal.status == "low").count(),
+    }
+
+    # Score distribution (buckets of 5)
+    all_scores = [r[0] for r in db.query(Deal.score).filter(Deal.score.isnot(None)).all()]
+    score_buckets = {}
+    for s in all_scores:
+        bucket = int(s // 5) * 5
+        label = f"{bucket}-{bucket+4}"
+        score_buckets[label] = score_buckets.get(label, 0) + 1
+
+    # Top 10 makes
+    try:
+        makes_rows = db.execute(text(
+            "SELECT report->'vehicle'->>'make' as make, COUNT(*) as cnt "
+            "FROM deals "
+            "WHERE report->'vehicle'->>'make' IS NOT NULL "
+            "GROUP BY make ORDER BY cnt DESC LIMIT 10"
+        )).fetchall()
+        top_makes = [{"make": r[0], "count": r[1]} for r in makes_rows if r[0]]
+    except Exception:
+        top_makes = []
+
+    # Lifecycle funnel
+    try:
+        funnel_rows = db.execute(text(
+            "SELECT report->'deal_lifecycle'->>'stage' as stage, COUNT(*) as cnt "
+            "FROM deals "
+            "WHERE report->'deal_lifecycle'->>'stage' IS NOT NULL "
+            "GROUP BY stage"
+        )).fetchall()
+        funnel = {r[0]: r[1] for r in funnel_rows if r[0]}
+    except Exception:
+        funnel = {}
+
+    # Average profit by score band
+    from sqlalchemy import case
+    band_data = db.query(
+        case(
+            (Deal.score >= 20, "High (20+)"),
+            (Deal.score >= 10, "Medium (10-19)"),
+            else_="Low (<10)"
+        ).label("band"),
+        func.avg(Deal.profit).label("avg_profit"),
+        func.count(Deal.id).label("count"),
+    ).group_by("band").all()
+    profit_by_band = [{"band": r[0], "avg_profit": round(r[1] or 0, 0), "count": r[2]} for r in band_data]
+
+    # Signal prevalence
+    try:
+        signal_stats = {}
+        for sig, col in [
+            ("FSH", "fsh"), ("Motivated", "motivated_seller"),
+            ("1 Owner", "one_owner"), ("ULEZ Risk", "ulez_diesel_risk"),
+            ("Price Drop", "is_price_drop_alert"), ("Mileage Anomaly", "mileage_anomaly"),
+            ("Buy Below Trade", "buy_below_trade"),
+        ]:
+            if col == "buy_below_trade":
+                n = db.execute(text(
+                    f"SELECT COUNT(*) FROM deals WHERE (report->'deal_signals'->>'buy_below_trade')::numeric > 0"
+                )).scalar()
+            else:
+                n = db.execute(text(
+                    f"SELECT COUNT(*) FROM deals WHERE report->'deal_signals'->>'{col}' = 'true'"
+                )).scalar()
+            signal_stats[sig] = n or 0
+    except Exception:
+        signal_stats = {}
+
+    # Completed P&L summary
+    completed_deals = db.query(Deal).filter(
+        Deal.report.op("->")("deal_lifecycle").op("->>")("stage") == "sold"
+    ).all()
+    total_sold = len(completed_deals)
+    total_actual_profit = sum(
+        (d.report or {}).get("deal_lifecycle", {}).get("actual_profit") or 0
+        for d in completed_deals
+    )
+
+    return templates.TemplateResponse(
+        "analytics.html",
+        {
+            "request": request,
+            "nav_counts": get_nav_counts(db),
+            "total_deals": total_deals,
+            "source_counts": source_counts,
+            "tier_counts": tier_counts,
+            "score_buckets": score_buckets,
+            "top_makes": top_makes,
+            "funnel": funnel,
+            "profit_by_band": profit_by_band,
+            "signal_stats": signal_stats,
+            "total_sold": total_sold,
+            "total_actual_profit": round(total_actual_profit, 2),
         },
     )
 

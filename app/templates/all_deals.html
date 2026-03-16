@@ -24,6 +24,72 @@
     <a href="/deals?source=ebay_vans" class="btn btn-sm {% if active_source == 'ebay_vans' %}btn-success{% else %}btn-outline-secondary{% endif %}">Vans</a>
 </div>
 
+<!-- FILTER BAR -->
+<form method="get" action="/deals" id="filterForm" class="mb-3">
+    {% if active_source %}<input type="hidden" name="source" value="{{ active_source }}">{% endif %}
+    <div class="card p-3">
+        <div class="row g-2 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label small text-secondary mb-1">Search</label>
+                <input type="text" name="q" value="{{ active_q or '' }}"
+                       class="form-control form-control-sm"
+                       style="background:#1e293b; color:#f1f5f9; border-color:#334155;"
+                       placeholder="Make, model, reg...">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small text-secondary mb-1">Min Profit (£)</label>
+                <input type="number" name="min_profit" value="{{ active_min_profit or '' }}"
+                       class="form-control form-control-sm"
+                       style="background:#1e293b; color:#f1f5f9; border-color:#334155;"
+                       placeholder="e.g. 500" min="0" step="100">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small text-secondary mb-1">Min Score</label>
+                <input type="number" name="min_score" value="{{ active_min_score or '' }}"
+                       class="form-control form-control-sm"
+                       style="background:#1e293b; color:#f1f5f9; border-color:#334155;"
+                       placeholder="e.g. 15" min="0" step="1">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small text-secondary mb-1">Stage</label>
+                <select name="stage" class="form-select form-select-sm"
+                        style="background:#1e293b; color:#f1f5f9; border-color:#334155;">
+                    <option value="">All stages</option>
+                    <option value="watching" {% if active_stage == 'watching' %}selected{% endif %}>Watching</option>
+                    <option value="offered" {% if active_stage == 'offered' %}selected{% endif %}>Offered</option>
+                    <option value="purchased" {% if active_stage == 'purchased' %}selected{% endif %}>Purchased</option>
+                    <option value="sold" {% if active_stage == 'sold' %}selected{% endif %}>Sold</option>
+                    <option value="passed" {% if active_stage == 'passed' %}selected{% endif %}>Passed</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small text-secondary mb-1">Signals</label>
+                <select name="signals" class="form-select form-select-sm"
+                        style="background:#1e293b; color:#f1f5f9; border-color:#334155;">
+                    <option value="">Any</option>
+                    <option value="fsh" {% if active_signals == 'fsh' %}selected{% endif %}>📋 FSH</option>
+                    <option value="motivated" {% if active_signals == 'motivated' %}selected{% endif %}>🚨 Motivated Seller</option>
+                    <option value="one_owner" {% if active_signals == 'one_owner' %}selected{% endif %}>🔑 One Owner</option>
+                    <option value="price_drop" {% if active_signals == 'price_drop' %}selected{% endif %}>🔻 Price Drop</option>
+                    <option value="ulez" {% if active_signals == 'ulez' %}selected{% endif %}>⚠️ ULEZ Risk</option>
+                    <option value="mileage_anomaly" {% if active_signals == 'mileage_anomaly' %}selected{% endif %}>🚨 Mileage Anomaly</option>
+                    <option value="buy_below_trade" {% if active_signals == 'buy_below_trade' %}selected{% endif %}>🏆 Buy Below Trade</option>
+                </select>
+            </div>
+            <div class="col-md-1 d-flex gap-1">
+                <button type="submit" class="btn btn-sm btn-success w-100">Filter</button>
+            </div>
+        </div>
+        {% if active_q or active_min_profit or active_min_score or active_stage or active_signals %}
+        <div class="mt-2">
+            <a href="/deals{% if active_source %}?source={{ active_source }}{% endif %}" class="small text-secondary">
+                ✕ Clear filters
+            </a>
+        </div>
+        {% endif %}
+    </div>
+</form>
+
 <div class="card p-4">
 
 <form method="post" action="/deals/delete" id="bulk-form">
@@ -169,12 +235,18 @@
 
 </div>
 
-<div class="mt-3">
+<div class="mt-3 d-flex gap-2 align-items-center">
     <button type="submit"
             class="btn btn-danger btn-sm"
             onclick="return confirm('Delete selected deals?')">
         Delete Selected
     </button>
+    <button type="button"
+            class="btn btn-sm btn-outline-secondary"
+            onclick="bulkPass()">
+        ❌ Mark Selected as Passed
+    </button>
+    <span class="small text-secondary ms-2" id="selectedCount"></span>
 </div>
 
 </form>
@@ -257,10 +329,36 @@
 {% endif %}
 
 <script>
-document.getElementById("select-all").addEventListener("change", function() {
-    document.querySelectorAll(".deal-checkbox")
-        .forEach(cb => cb.checked = this.checked);
+// Update selected count badge
+document.querySelectorAll(".deal-checkbox").forEach(cb => {
+    cb.addEventListener("change", updateCount);
 });
+document.getElementById("select-all").addEventListener("change", function() {
+    document.querySelectorAll(".deal-checkbox").forEach(cb => cb.checked = this.checked);
+    updateCount();
+});
+function updateCount() {
+    const n = document.querySelectorAll(".deal-checkbox:checked").length;
+    document.getElementById("selectedCount").textContent = n > 0 ? n + " selected" : "";
+}
+
+function bulkPass() {
+    const checked = Array.from(document.querySelectorAll(".deal-checkbox:checked"));
+    if (!checked.length) { alert("Select at least one deal first."); return; }
+    if (!confirm("Mark " + checked.length + " deal(s) as Passed?")) return;
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = "/deals/bulk-pass";
+    checked.forEach(cb => {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = "deal_ids";
+        input.value = cb.value;
+        form.appendChild(input);
+    });
+    document.body.appendChild(form);
+    form.submit();
+}
 </script>
 
 <!-- DEAL LIFECYCLE TRACK MODAL -->

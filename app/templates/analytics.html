@@ -1,0 +1,387 @@
+{% extends "layout.html" %}
+
+{% block content %}
+
+<!-- Chart.js CDN -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<!-- Page Header -->
+<div class="mb-5">
+    <h2 class="fw-semibold">📊 Analytics</h2>
+    <p class="text-secondary mb-0">Engine performance and deal intelligence</p>
+</div>
+
+<!-- KPI Row -->
+<div class="row g-4 mb-5">
+
+    <div class="col-md-3">
+        <div class="card p-4">
+            <div class="muted mb-1">Total Deals Identified</div>
+            <div class="metric text-info">{{ total_deals }}</div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <div class="card p-4">
+            <div class="muted mb-1">Vehicles Sold</div>
+            <div class="metric text-success">{{ total_sold }}</div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <div class="card p-4" {% if total_actual_profit > 0 %}style="border-color: #22c55e;"{% endif %}>
+            <div class="muted mb-1">Actual Profit</div>
+            <div class="metric text-success">£{{ "%.0f"|format(total_actual_profit) }}</div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <div class="card p-4">
+            <div class="muted mb-1">High Confidence Deals</div>
+            <div class="metric text-warning">{{ tier_counts.get("High", 0) }}</div>
+        </div>
+    </div>
+
+</div>
+
+<!-- Doughnut Charts Row -->
+<div class="row g-4 mb-4">
+
+    <div class="col-md-6">
+        <div class="card p-4">
+            <div class="muted mb-3 fw-semibold" style="font-size:14px; text-transform:uppercase; letter-spacing:0.06em;">Deals by Source</div>
+            <div style="position: relative; height: 260px;">
+                <canvas id="sourceChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card p-4">
+            <div class="muted mb-3 fw-semibold" style="font-size:14px; text-transform:uppercase; letter-spacing:0.06em;">Confidence Tiers</div>
+            <div style="position: relative; height: 260px;">
+                <canvas id="tierChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<!-- Score Distribution Bar Chart (full width) -->
+<div class="row g-4 mb-4">
+    <div class="col-12">
+        <div class="card p-4">
+            <div class="muted mb-3 fw-semibold" style="font-size:14px; text-transform:uppercase; letter-spacing:0.06em;">Score Distribution</div>
+            <div style="position: relative; height: 260px;">
+                <canvas id="scoreChart"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Top Makes + Profit by Band Row -->
+<div class="row g-4 mb-4">
+
+    <div class="col-md-6">
+        <div class="card p-4">
+            <div class="muted mb-3 fw-semibold" style="font-size:14px; text-transform:uppercase; letter-spacing:0.06em;">Top Makes</div>
+            <div style="position: relative; height: 300px;">
+                <canvas id="makesChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card p-4">
+            <div class="muted mb-3 fw-semibold" style="font-size:14px; text-transform:uppercase; letter-spacing:0.06em;">Average Profit by Score Band</div>
+            <div style="position: relative; height: 300px;">
+                <canvas id="profitBandChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<!-- Lifecycle Funnel -->
+<div class="row g-4 mb-4">
+    <div class="col-12">
+        <div class="card p-4">
+            <div class="muted mb-4 fw-semibold" style="font-size:14px; text-transform:uppercase; letter-spacing:0.06em;">Deal Lifecycle Pipeline</div>
+
+            <div class="d-flex align-items-center gap-0 flex-wrap">
+
+                <!-- Watching -->
+                <div class="text-center px-4 py-3" style="background: rgba(96,165,250,0.12); border: 1px solid rgba(96,165,250,0.3); border-radius: 14px 0 0 14px; min-width: 130px;">
+                    <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:#94a3b8;" class="mb-1">Watching</div>
+                    <div style="font-size:28px; font-weight:700; color:#60a5fa;">{{ funnel.get("watching", 0) }}</div>
+                </div>
+
+                <!-- Arrow -->
+                <div style="color:#374151; font-size:22px; padding: 0 4px;">▶</div>
+
+                <!-- Offered -->
+                <div class="text-center px-4 py-3" style="background: rgba(168,85,247,0.12); border: 1px solid rgba(168,85,247,0.3); border-top-width:1px; border-bottom-width:1px; border-left-width:0; border-right-width:0; min-width: 130px;">
+                    <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:#94a3b8;" class="mb-1">Offered</div>
+                    <div style="font-size:28px; font-weight:700; color:#c084fc;">{{ funnel.get("offered", 0) }}</div>
+                </div>
+
+                <!-- Arrow -->
+                <div style="color:#374151; font-size:22px; padding: 0 4px;">▶</div>
+
+                <!-- Purchased -->
+                <div class="text-center px-4 py-3" style="background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.3); border-top-width:1px; border-bottom-width:1px; border-left-width:0; border-right-width:0; min-width: 130px;">
+                    <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:#94a3b8;" class="mb-1">Purchased</div>
+                    <div style="font-size:28px; font-weight:700; color:#fbbf24;">{{ funnel.get("purchased", 0) }}</div>
+                </div>
+
+                <!-- Arrow -->
+                <div style="color:#374151; font-size:22px; padding: 0 4px;">▶</div>
+
+                <!-- Sold -->
+                <div class="text-center px-4 py-3" style="background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.3); border-radius: 0 14px 14px 0; min-width: 130px;">
+                    <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:#94a3b8;" class="mb-1">Sold</div>
+                    <div style="font-size:28px; font-weight:700; color:#22c55e;">{{ funnel.get("sold", 0) }}</div>
+                </div>
+
+                <!-- Spacer -->
+                <div class="ms-auto"></div>
+
+                <!-- Passed (separate) -->
+                <div class="text-center px-4 py-3" style="background: rgba(100,116,139,0.1); border: 1px solid #1f2937; border-radius: 14px; min-width: 120px;">
+                    <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:#64748b;" class="mb-1">Passed</div>
+                    <div style="font-size:28px; font-weight:700; color:#64748b;">{{ funnel.get("passed", 0) }}</div>
+                </div>
+
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<!-- Signal Prevalence -->
+<div class="row g-4 mb-5">
+    <div class="col-12">
+        <div class="card p-4">
+            <div class="muted mb-4 fw-semibold" style="font-size:14px; text-transform:uppercase; letter-spacing:0.06em;">Signal Prevalence</div>
+
+            <div class="row g-3">
+                {% for signal, count in signal_stats.items() %}
+                <div class="col-md-4 col-lg-3">
+                    <div class="d-flex align-items-center justify-content-between px-3 py-2"
+                         style="background: rgba(34,197,94,0.06); border: 1px solid #1f2937; border-radius: 12px;">
+                        <span style="font-size:14px; color:#cbd5e1;">{{ signal }}</span>
+                        <span style="font-size:18px; font-weight:700; color:#22c55e;">{{ count }}</span>
+                    </div>
+                </div>
+                {% else %}
+                <div class="col-12">
+                    <p class="text-secondary mb-0">No signal data available.</p>
+                </div>
+                {% endfor %}
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<!-- Chart.js Scripts -->
+<script>
+    const chartDefaults = {
+        plugins: {
+            legend: {
+                labels: {
+                    color: '#94a3b8',
+                    font: { size: 13 }
+                }
+            }
+        }
+    };
+
+    const gridColor = '#1f2937';
+    const labelColor = '#94a3b8';
+
+    // ── Deals by Source (Doughnut) ──────────────────────────────────────────
+    const sourceData = {{ source_counts | tojson }};
+    new Chart(document.getElementById('sourceChart'), {
+        type: 'doughnut',
+        data: {
+            labels: Object.keys(sourceData),
+            datasets: [{
+                data: Object.values(sourceData),
+                backgroundColor: ['#60a5fa', '#818cf8', '#4ade80'],
+                borderColor: '#0b1120',
+                borderWidth: 3,
+                hoverOffset: 8
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                    labels: { color: '#94a3b8', padding: 16, font: { size: 13 } }
+                }
+            }
+        }
+    });
+
+    // ── Confidence Tiers (Doughnut) ─────────────────────────────────────────
+    const tierData = {{ tier_counts | tojson }};
+    const tierOrder = ['High', 'Medium', 'Low'];
+    const tierColors = { High: '#22c55e', Medium: '#f59e0b', Low: '#ef4444' };
+    const tierLabels = tierOrder.filter(k => tierData[k] !== undefined);
+    const tierValues = tierLabels.map(k => tierData[k] || 0);
+    const tierBg = tierLabels.map(k => tierColors[k]);
+
+    new Chart(document.getElementById('tierChart'), {
+        type: 'doughnut',
+        data: {
+            labels: tierLabels,
+            datasets: [{
+                data: tierValues,
+                backgroundColor: tierBg,
+                borderColor: '#0b1120',
+                borderWidth: 3,
+                hoverOffset: 8
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                    labels: { color: '#94a3b8', padding: 16, font: { size: 13 } }
+                }
+            }
+        }
+    });
+
+    // ── Score Distribution (Bar) ─────────────────────────────────────────────
+    const scoreBuckets = {{ score_buckets | tojson }};
+    // Sort numerically by the first number in the bucket key (e.g. "10-14" → 10)
+    const scoreSorted = Object.entries(scoreBuckets).sort((a, b) => {
+        return parseInt(a[0].split('-')[0]) - parseInt(b[0].split('-')[0]);
+    });
+    const scoreLabels = scoreSorted.map(e => e[0]);
+    const scoreValues = scoreSorted.map(e => e[1]);
+
+    new Chart(document.getElementById('scoreChart'), {
+        type: 'bar',
+        data: {
+            labels: scoreLabels,
+            datasets: [{
+                label: 'Deals',
+                data: scoreValues,
+                backgroundColor: '#22c55e',
+                borderRadius: 6,
+                borderSkipped: false
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false }
+            },
+            scales: {
+                x: {
+                    grid: { color: gridColor },
+                    ticks: { color: labelColor }
+                },
+                y: {
+                    grid: { color: gridColor },
+                    ticks: { color: labelColor, precision: 0 }
+                }
+            }
+        }
+    });
+
+    // ── Top Makes (Horizontal Bar) ───────────────────────────────────────────
+    const topMakes = {{ top_makes | tojson }};
+    const makesLabels = topMakes.map(m => m.make);
+    const makesValues = topMakes.map(m => m.count);
+
+    new Chart(document.getElementById('makesChart'), {
+        type: 'bar',
+        data: {
+            labels: makesLabels,
+            datasets: [{
+                label: 'Count',
+                data: makesValues,
+                backgroundColor: '#f97316',
+                borderRadius: 6,
+                borderSkipped: false
+            }]
+        },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false }
+            },
+            scales: {
+                x: {
+                    grid: { color: gridColor },
+                    ticks: { color: labelColor, precision: 0 }
+                },
+                y: {
+                    grid: { color: gridColor },
+                    ticks: { color: labelColor }
+                }
+            }
+        }
+    });
+
+    // ── Profit by Score Band (Bar) ───────────────────────────────────────────
+    const profitBands = {{ profit_by_band | tojson }};
+    const bandLabels = profitBands.map(b => b.band);
+    const bandValues = profitBands.map(b => b.avg_profit);
+
+    // Color bands: High=green, Medium=yellow, Low=red, fallback=blue
+    const bandBgColors = profitBands.map(b => {
+        const bl = b.band.toLowerCase();
+        if (bl.includes('high')) return '#22c55e';
+        if (bl.includes('medium') || bl.includes('mid')) return '#f59e0b';
+        if (bl.includes('low')) return '#ef4444';
+        return '#60a5fa';
+    });
+
+    new Chart(document.getElementById('profitBandChart'), {
+        type: 'bar',
+        data: {
+            labels: bandLabels,
+            datasets: [{
+                label: 'Avg Profit (£)',
+                data: bandValues,
+                backgroundColor: bandBgColors,
+                borderRadius: 6,
+                borderSkipped: false
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false }
+            },
+            scales: {
+                x: {
+                    grid: { color: gridColor },
+                    ticks: { color: labelColor }
+                },
+                y: {
+                    grid: { color: gridColor },
+                    ticks: {
+                        color: labelColor,
+                        callback: val => '£' + val.toLocaleString()
+                    }
+                }
+            }
+        }
+    });
+</script>
+
+{% endblock %}

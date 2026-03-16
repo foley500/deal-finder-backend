@@ -715,6 +715,76 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         if mot_months_remaining is not None:
             print(f"   🔧 MOT months remaining: {mot_months_remaining}")
 
+        # ---------------------------------
+        # Mileage anomaly detection
+        # ---------------------------------
+        mileage_anomaly = False
+        mileage_anomaly_reason = None
+        if mot_full_data and mileage:
+            try:
+                mot_mileages = []
+                for test in sorted(mot_full_data, key=lambda x: x.get("completedDate", ""), reverse=True):
+                    od = test.get("odometerValue")
+                    if od:
+                        try:
+                            mot_mileages.append(int(str(od).replace(",", "").replace(" ", "")))
+                        except Exception:
+                            pass
+                if mot_mileages:
+                    last_mot = mot_mileages[0]
+                    if mileage < last_mot - 500:
+                        mileage_anomaly = True
+                        mileage_anomaly_reason = f"Stated {mileage:,} mi is LOWER than last MOT {last_mot:,} mi — possible clock"
+                        print(f"   🚨 MILEAGE ANOMALY: {mileage_anomaly_reason}")
+                    # Check for any MOT-to-MOT mileage decrease (clock rolling)
+                    for i in range(len(mot_mileages) - 1):
+                        if mot_mileages[i] < mot_mileages[i + 1] - 200:
+                            mileage_anomaly = True
+                            mileage_anomaly_reason = (
+                                f"MOT mileage dropped: {mot_mileages[i+1]:,} → {mot_mileages[i]:,} mi"
+                            )
+                            print(f"   🚨 MILEAGE ANOMALY: {mileage_anomaly_reason}")
+                            break
+            except Exception:
+                pass
+
+        # ---------------------------------
+        # Insurance group estimate (make-based)
+        # ---------------------------------
+        _INSURANCE_GROUPS = {
+            "ford": "10-20", "vauxhall": "10-20", "volkswagen": "15-25",
+            "audi": "25-40", "bmw": "25-45", "mercedes": "25-45",
+            "mercedes-benz": "25-45", "land rover": "30-45", "jaguar": "30-50",
+            "porsche": "40-50", "mini": "15-25", "honda": "10-20",
+            "toyota": "10-20", "nissan": "10-20", "kia": "10-20",
+            "hyundai": "10-20", "peugeot": "10-20", "renault": "10-20",
+            "skoda": "10-20", "seat": "10-20", "volvo": "20-35",
+            "tesla": "35-50", "fiat": "10-18", "citroen": "10-18",
+            "mazda": "12-22", "subaru": "20-35", "mitsubishi": "15-25",
+            "dacia": "5-15", "alfa romeo": "20-35", "jeep": "20-35",
+        }
+        insurance_group_est = _INSURANCE_GROUPS.get((make or "").lower().strip(), "10-30")
+
+        # ---------------------------------
+        # Annual road tax estimate
+        # ---------------------------------
+        _ft = (vehicle_data.get("fuel_type") or aspects.get("Fuel Type") or "").lower()
+        if "electric" in _ft or "ev" in _ft or "batterie" in _ft:
+            road_tax_annual = 0
+        elif year and year >= 2017:
+            road_tax_annual = 180  # Standard VED rate (post-April 2017 flat rate)
+        elif year and year >= 2001:
+            road_tax_annual = 165  # CO2-based band average
+        else:
+            road_tax_annual = 160  # Engine-size based (pre-2001)
+
+        # ---------------------------------
+        # Buy-below-trade: can you buy cheaper than auction value?
+        # ---------------------------------
+        buy_below_trade = round(price_trade - price, 2) if price_trade else None
+        if buy_below_trade is not None and buy_below_trade > 0:
+            print(f"   🏆 Buy below trade: £{buy_below_trade} under auction value")
+
         valuation_confidence = valuation_result.get("confidence") if valuation_result else None
 
         score = calculate_score(
@@ -827,7 +897,13 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                     "mot_months_remaining": mot_months_remaining,
                     "ulez_diesel_risk": ulez_risk,
                     "valuation_confidence": valuation_confidence,
+                    "mileage_anomaly": mileage_anomaly,
+                    "mileage_anomaly_reason": mileage_anomaly_reason,
+                    "insurance_group_est": insurance_group_est,
+                    "road_tax_annual_est": road_tax_annual,
+                    "buy_below_trade": buy_below_trade,
                 },
+                "images": image_urls,
                 "mot_summary": mot_summary,
                 "mot_full_data": mot_full_data,
                 "vehicle_data": vehicle_data,

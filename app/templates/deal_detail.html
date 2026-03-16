@@ -1,6 +1,21 @@
 {% extends "layout.html" %}
 {% block content %}
 
+{# Mileage anomaly alert — top of page, high visibility #}
+{% if report.deal_signals and report.deal_signals.mileage_anomaly %}
+<div class="alert mb-4 d-flex align-items-start gap-3"
+     style="background:rgba(239,68,68,0.12); border:1px solid #ef4444; border-radius:14px;">
+    <span style="font-size:1.5rem;">🚨</span>
+    <div>
+        <strong style="color:#f87171;">MILEAGE ANOMALY DETECTED</strong>
+        <div class="small mt-1" style="color:#fca5a5;">
+            {{ report.deal_signals.mileage_anomaly_reason or "Mileage inconsistency found in MOT history." }}
+        </div>
+        <div class="small mt-1" style="color:#94a3b8;">Cross-reference with MOT history below before proceeding.</div>
+    </div>
+</div>
+{% endif %}
+
 {% if report.deal_signals and report.deal_signals.is_price_drop_alert %}
 <div class="alert mb-4 d-flex align-items-center gap-3"
      style="background:rgba(239,68,68,0.12); border:1px solid #ef4444; border-radius:8px; color:#fca5a5;">
@@ -287,21 +302,82 @@
                 </a>
             {% endif %}
 
-            {% if report.primary_image %}
-                <div class="mt-3 flex-grow-1 d-flex align-items-stretch" style="min-height:200px;">
-                    <img
-                        src="{{ report.primary_image }}"
-                        alt="Listing image"
-                        class="rounded w-100"
-                        style="object-fit:cover; object-position:center; max-height:420px; min-height:200px;"
-                        onerror="this.style.display='none'"
-                    >
+            {% set all_images = report.images if report.images else ([report.primary_image] if report.primary_image else []) %}
+            {% if all_images %}
+            <div class="card p-3 mt-3">
+                <div class="fw-semibold mb-2 small" style="color:#94a3b8; text-transform:uppercase; letter-spacing:0.05em;">
+                    Photos ({{ all_images|length }})
                 </div>
+
+                {# Main image #}
+                <img id="mainDealImage"
+                     src="{{ all_images[0] }}"
+                     alt="Vehicle"
+                     style="width:100%; border-radius:12px; object-fit:cover; max-height:380px; cursor:pointer;"
+                     onerror="this.style.display='none'"
+                     onclick="window.open(this.src,'_blank')">
+
+                {# Thumbnail strip #}
+                {% if all_images|length > 1 %}
+                <div class="d-flex flex-wrap gap-2 mt-2">
+                    {% for img in all_images[:20] %}
+                    <img src="{{ img }}"
+                         alt="Photo {{ loop.index }}"
+                         onclick="document.getElementById('mainDealImage').src='{{ img }}'"
+                         style="width:72px; height:54px; object-fit:cover; border-radius:8px; cursor:pointer; opacity:0.8; transition:opacity 0.2s;"
+                         onmouseover="this.style.opacity='1'"
+                         onmouseout="this.style.opacity='0.8'"
+                         onerror="this.style.display='none'">
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
             {% endif %}
 
         </div>
     </div>
 
+</div>
+
+<!-- Running Costs & Trade Intel -->
+<div class="card p-4 mt-3">
+    <div class="fw-semibold mb-3" style="color:#94a3b8; font-size:0.85rem; text-transform:uppercase; letter-spacing:0.05em;">
+        Running Costs & Trade Intel
+    </div>
+
+    {% set bt = report.deal_signals.buy_below_trade %}
+    {% if bt is not none %}
+    <div class="d-flex justify-content-between align-items-center py-2 border-bottom" style="border-color:#1f2937!important;">
+        <span class="text-secondary small">Buy Below Trade</span>
+        <span class="fw-bold {% if bt > 0 %}text-success{% else %}text-danger{% endif %}">
+            {% if bt > 0 %}🏆 £{{ "%.0f"|format(bt) }} under auction value{% else %}£{{ "%.0f"|format(bt|abs) }} above trade{% endif %}
+        </span>
+    </div>
+    {% endif %}
+
+    {% if report.deal_signals.road_tax_annual_est is not none %}
+    <div class="d-flex justify-content-between align-items-center py-2 border-bottom" style="border-color:#1f2937!important;">
+        <span class="text-secondary small">Est. Annual Road Tax</span>
+        <span class="fw-semibold {% if report.deal_signals.road_tax_annual_est == 0 %}text-success{% else %}text-info{% endif %}">
+            {% if report.deal_signals.road_tax_annual_est == 0 %}Free (Electric){% else %}£{{ report.deal_signals.road_tax_annual_est }}/yr{% endif %}
+        </span>
+    </div>
+    {% endif %}
+
+    {% if report.deal_signals.insurance_group_est %}
+    <div class="d-flex justify-content-between align-items-center py-2 border-bottom" style="border-color:#1f2937!important;">
+        <span class="text-secondary small">Insurance Group Est.</span>
+        <span class="fw-semibold text-info">Group {{ report.deal_signals.insurance_group_est }}</span>
+    </div>
+    {% endif %}
+
+    {% set fin = report.financials %}
+    {% if fin.price_trade %}
+    <div class="d-flex justify-content-between align-items-center py-2">
+        <span class="text-secondary small">Auction / Trade Guide</span>
+        <span class="fw-semibold text-warning">£{{ "%.0f"|format(fin.price_trade) }}</span>
+    </div>
+    {% endif %}
 </div>
 
 <!-- MARKET VALUATION -->
@@ -538,5 +614,35 @@
     document.getElementById('offerInput').addEventListener('input', recalculate);
     recalculate();
 </script>
+
+<!-- DEAL NOTES -->
+<div class="card p-4 mt-4" id="notes">
+    <div class="fw-semibold mb-3" style="color:#94a3b8; font-size:0.85rem; text-transform:uppercase; letter-spacing:0.05em;">
+        📝 Deal Notes
+    </div>
+
+    <form method="post" action="/deals/{{ deal.id }}/notes" class="mb-4">
+        <input type="hidden" name="redirect_to" value="/deals/{{ deal.id }}">
+        <div class="d-flex gap-2">
+            <input type="text" name="note_text" required
+                   class="form-control form-control-sm"
+                   style="background:#1e293b; color:#f1f5f9; border-color:#334155;"
+                   placeholder="Add a note — e.g. 'Called seller, willing to accept £500 off'">
+            <button type="submit" class="btn btn-sm btn-success px-3">Add</button>
+        </div>
+    </form>
+
+    {% set notes = report.notes if report.notes else [] %}
+    {% if notes %}
+        {% for note in notes %}
+        <div class="py-2 border-bottom" style="border-color:#1f2937!important;">
+            <div style="color:#e2e8f0;">{{ note.text }}</div>
+            <div class="small mt-1" style="color:#475569;">{{ note.timestamp }}</div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <div class="text-secondary small">No notes yet. Add your first note above.</div>
+    {% endif %}
+</div>
 
 {% endblock %}

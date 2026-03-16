@@ -38,7 +38,32 @@ WIDE_SPREAD_DISCOUNT = 0.97
 # Retail  = what a dealer advertises at (≈20% above private clean).
 # Trade   = what a dealer pays at auction / part-ex offer (≈22% below private clean).
 RETAIL_MULTIPLIER = 1.20
-TRADE_MULTIPLIER  = 0.78
+TRADE_MULTIPLIER  = 0.78  # Default fallback
+
+
+def get_trade_multiplier(mileage: int, make: str = "") -> float:
+    """
+    Returns a mileage and make-adjusted trade/auction multiplier.
+    Low mileage cars command a premium at auction; high mileage cars are discounted.
+    Prestige makes hold trade value slightly better due to dealer demand.
+    """
+    if mileage and mileage < 30000:
+        base = 0.86
+    elif mileage and mileage < 60000:
+        base = 0.82
+    elif mileage and mileage < 100000:
+        base = 0.78
+    elif mileage and mileage > 120000:
+        base = 0.70
+    else:
+        base = 0.78
+
+    # Prestige makes hold trade value slightly better
+    prestige = {"bmw", "mercedes", "mercedes-benz", "audi", "porsche", "land rover", "lexus"}
+    if make and make.lower().strip() in prestige:
+        base = min(base + 0.02, 0.90)
+
+    return round(base, 4)
 
 # Active listing asking prices sit above what cars actually sell for.
 # Discount to realistic sale price before deriving the three values.
@@ -691,7 +716,12 @@ def get_market_price_from_sold(
     cached = redis_client.get(cache_key)
     if cached:
         data = json.loads(cached)
-        print(f"   ✅ Cache HIT — private £{data.get('price_private', data.get('market_price'))} | retail £{data.get('price_retail', '?')} | trade £{data.get('price_trade', '?')}")
+        # Recalculate trade price with mileage-adjusted multiplier on cache hit
+        if data.get("price_private"):
+            trade_mult = get_trade_multiplier(mileage, make)
+            data["price_trade"] = round(data["price_private"] * trade_mult, 2)
+            data["trade_multiplier"] = trade_mult
+        print(f"   ✅ Cache HIT — private £{data.get('price_private', data.get('market_price'))} | retail £{data.get('price_retail', '?')} | trade £{data.get('price_trade', '?')} (trade mult: {data.get('trade_multiplier', 0.78)})")
         return data
 
     # During scan tasks, never fall through to live eBay calls.
