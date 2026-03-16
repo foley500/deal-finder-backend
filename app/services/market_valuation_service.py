@@ -31,14 +31,16 @@ EXTREME_MILEAGE_THRESHOLD = 120000
 MAX_ACCEPTABLE_IQR_RATIO = 0.55
 WIDE_SPREAD_DISCOUNT = 0.97
 
-# eBay sold prices reflect what buyers paid on eBay — typically 15–20% above
-# CAP private clean value (eBay convenience premium + optimistic seller pricing).
-# This factor converts eBay-derived market prices to realistic private trade value.
-MARKET_REALISM_FACTOR = 0.82
+# UK motor trade valuation multipliers (relative to eBay private sold median).
+# Private sold on eBay ≈ CAP Private Clean (same market: private seller → private buyer).
+# Retail  = what a dealer advertises at (≈20% above private clean).
+# Trade   = what a dealer pays at auction / part-ex offer (≈22% below private clean).
+RETAIL_MULTIPLIER = 1.20
+TRADE_MULTIPLIER  = 0.78
 
-# Active listing asking prices are typically 8–12% above what cars actually sell for.
-# Applied on top of MARKET_REALISM_FACTOR for the active-listing fallback path only.
-ACTIVE_LISTING_DISCOUNT = 0.90
+# Active listing asking prices sit above what cars actually sell for.
+# Discount to realistic sale price before deriving the three values.
+ACTIVE_SALE_DISCOUNT = 0.92
 
 # Mileage bands for dynamic layer_1 tolerance scaling.
 # Low mileage cars have plenty of comparables — keep tight.
@@ -562,15 +564,20 @@ def run_filter_layer(
 
     sold_median = statistics.median(final_prices)
 
-    market_price = round(sold_median * spread_discount * MARKET_REALISM_FACTOR, 2)
+    price_private = round(sold_median * spread_discount, 2)
+    price_retail  = round(price_private * RETAIL_MULTIPLIER, 2)
+    price_trade   = round(price_private * TRADE_MULTIPLIER, 2)
 
-    print(f"   💰 Market price: £{market_price} ({confidence} confidence, pool: {source_label}, realism_factor={MARKET_REALISM_FACTOR})")
+    print(f"   💰 Private: £{price_private} | Retail: £{price_retail} | Trade: £{price_trade} ({confidence} confidence, pool: {source_label})")
 
     return {
-        "market_price": market_price,
-        "sample_size": sample_count,
-        "confidence": confidence,
-        "source_label": source_label,
+        "market_price":  price_private,   # backward-compat alias
+        "price_private": price_private,
+        "price_retail":  price_retail,
+        "price_trade":   price_trade,
+        "sample_size":   sample_count,
+        "confidence":    confidence,
+        "source_label":  source_label,
     }
 
 
@@ -619,7 +626,9 @@ def get_market_price_from_sold(
     print(f"   🔑 Cache key: {cache_key}")
     cached = redis_client.get(cache_key)
     if cached:
-        return json.loads(cached)
+        data = json.loads(cached)
+        print(f"   ✅ Cache HIT — private £{data.get('price_private', data.get('market_price'))} | retail £{data.get('price_retail', '?')} | trade £{data.get('price_trade', '?')}")
+        return data
 
     # During scan tasks, never fall through to live eBay calls.
     # Cache miss = no valuation. Prewarm fills the cache.
@@ -668,8 +677,9 @@ def get_market_price_from_sold(
     # Low mileage cars stay tight — they have plenty of comparables already.
     l1_tolerance, l2_tolerance = get_mileage_tolerances(mileage)
 
-    print(f"🔎 Searching: make={make} base_model={base_model} engine={engine_litre} year={year} mileage={mileage}")
+    print(f"🔎 LIVE VALUATION: make={make} base_model={base_model} engine={engine_litre}L year={year} mileage={mileage}mi")
     print(f"   Query: '{query}' | Mileage tolerances: L1=±{l1_tolerance}, L2=±{l2_tolerance}")
+    print(f"   cache_key={cache_key}")
 
     all_summaries = get_sold_listings(query, budget_fn=budget_fn)
 
@@ -718,16 +728,22 @@ def get_market_price_from_sold(
             )
 
         if result:
-            # Apply direct extreme mileage penalty to final market price.
+            layer = tolerance_config["source"]
+            print(f"   ✅ Layer '{layer}' succeeded — private £{result['price_private']} | retail £{result['price_retail']} | trade £{result['price_trade']} | confidence={result['confidence']}")
+            # Apply direct extreme mileage penalty to final market prices.
             # Corrects for when the target car itself has extreme mileage
             # and comparables couldn't fully account for it.
             if mileage > EXTREME_MILEAGE_THRESHOLD:
                 excess = mileage - EXTREME_MILEAGE_THRESHOLD
                 extra_blocks = min(excess / 10000, 15)
                 extreme_penalty_pct = min(0.025 * extra_blocks, 0.50)
-                original = result["market_price"]
-                result["market_price"] = round(original * (1 - extreme_penalty_pct), 2)
-                print(f"   🔻 Final extreme mileage penalty: {mileage}mi → −{round(extreme_penalty_pct*100,1)}% → £{result['market_price']} (was £{original})")
+                factor = 1 - extreme_penalty_pct
+                original = result["price_private"]
+                result["price_private"] = round(original * factor, 2)
+                result["price_retail"]  = round(result["price_retail"] * factor, 2)
+                result["price_trade"]   = round(result["price_trade"] * factor, 2)
+                result["market_price"]  = result["price_private"]
+                print(f"   🔻 Final extreme mileage penalty: {mileage}mi → −{round(extreme_penalty_pct*100,1)}% → private £{result['price_private']} (was £{original})")
 
             result["source"] = tolerance_config["source"]
             redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
@@ -750,9 +766,12 @@ def get_market_price_from_sold(
             excess = mileage - EXTREME_MILEAGE_THRESHOLD
             extra_blocks = min(excess / 10000, 15)
             extreme_penalty_pct = min(0.025 * extra_blocks, 0.50)
-            original = active_result["market_price"]
-            active_result["market_price"] = round(original * (1 - extreme_penalty_pct), 2)
-            print(f"   🔻 Active fallback extreme mileage penalty: −{round(extreme_penalty_pct*100,1)}% → £{active_result['market_price']}")
+            factor = 1 - extreme_penalty_pct
+            active_result["price_private"] = round(active_result["price_private"] * factor, 2)
+            active_result["price_retail"]  = round(active_result["price_retail"] * factor, 2)
+            active_result["price_trade"]   = round(active_result["price_trade"] * factor, 2)
+            active_result["market_price"]  = active_result["price_private"]
+            print(f"   🔻 Active fallback extreme mileage penalty: −{round(extreme_penalty_pct*100,1)}% → private £{active_result['price_private']}")
 
         active_result["source"] = "active_fallback"
         redis_client.set(cache_key, json.dumps(active_result), ex=CACHE_TTL)
@@ -831,16 +850,21 @@ def _active_listing_fallback(
     spread_discount = check_spread(prices, "active_fallback")
     median_asking = statistics.median(prices)
 
-    # asking price → realistic private value
-    market_price = round(median_asking * spread_discount * ACTIVE_LISTING_DISCOUNT * MARKET_REALISM_FACTOR, 2)
+    # asking price → realistic sold price → three CAP-equivalent values
+    price_private = round(median_asking * spread_discount * ACTIVE_SALE_DISCOUNT, 2)
+    price_retail  = round(price_private * RETAIL_MULTIPLIER, 2)
+    price_trade   = round(price_private * TRADE_MULTIPLIER, 2)
 
-    print(f"   📋 Active fallback: asking median £{round(median_asking)} → private estimate £{market_price}")
+    print(f"   📋 Active fallback: asking median £{round(median_asking)} → private £{price_private} | retail £{price_retail} | trade £{price_trade}")
 
     return {
-        "market_price": market_price,
-        "sample_size": len(prices),
-        "confidence": "low",
-        "source_label": "active_fallback",
+        "market_price":  price_private,
+        "price_private": price_private,
+        "price_retail":  price_retail,
+        "price_trade":   price_trade,
+        "sample_size":   len(prices),
+        "confidence":    "low",
+        "source_label":  "active_fallback",
     }
 
 

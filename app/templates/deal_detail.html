@@ -16,9 +16,17 @@
                 <strong>£{{ report.financials.listing_price or 0 }}</strong>
             </div>
 
+            <div class="d-flex justify-content-between mb-1">
+                <span class="text-secondary">Trade / Part-Ex Value</span>
+                <strong class="text-warning">£{{ report.financials.price_trade or "—" }}</strong>
+            </div>
+            <div class="d-flex justify-content-between mb-1">
+                <span class="text-secondary">Private Value <span class="badge bg-secondary" style="font-size:0.65rem;">used for profit</span></span>
+                <strong class="text-info">£{{ report.financials.price_private or report.financials.market_value or 0 }}</strong>
+            </div>
             <div class="d-flex justify-content-between mb-2">
-                <span class="text-secondary">Market Value</span>
-                <strong>£{{ report.financials.market_value or 0 }}</strong>
+                <span class="text-secondary">Retail Value</span>
+                <strong>£{{ report.financials.price_retail or "—" }}</strong>
             </div>
 
             <div class="d-flex justify-content-between mb-2">
@@ -128,8 +136,8 @@
                 </div>
 
                 <div class="d-flex justify-content-between mb-2">
-                    <span class="text-secondary small">Market Value</span>
-                    <strong>£{{ report.financials.market_value or 0 }}</strong>
+                    <span class="text-secondary small">Private Value</span>
+                    <strong>£{{ report.financials.price_private or report.financials.market_value or 0 }}</strong>
                 </div>
 
                 <div class="d-flex justify-content-between mb-2">
@@ -213,19 +221,38 @@
 
 <!-- MARKET VALUATION -->
 <div class="card p-4 mt-4">
-    <h5 class="mb-3">Market Valuation (Sold Data Model)</h5>
+    <h5 class="mb-3">Market Valuation (eBay Sold Data)</h5>
 
     {% if report.market_model and report.market_model.market_price %}
-        <div class="row g-4 align-items-center">
-            <div class="col-md-3">
-                <div class="small text-secondary mb-1">Estimated Market Price</div>
-                <div class="fs-3 fw-bold">£{{ report.market_model.market_price }}</div>
+        <div class="row g-3 mb-4">
+            <div class="col-md-4">
+                <div class="rounded p-3 text-center" style="background:#0f172a; border:1px solid #f59e0b;">
+                    <div class="small text-warning mb-1">Trade / Part-Ex</div>
+                    <div class="fs-3 fw-bold text-warning">£{{ report.market_model.price_trade or report.financials.price_trade or "—" }}</div>
+                    <div class="small text-secondary mt-1">What a dealer would offer</div>
+                </div>
             </div>
-            <div class="col-md-3">
+            <div class="col-md-4">
+                <div class="rounded p-3 text-center" style="background:#0f172a; border:2px solid #38bdf8;">
+                    <div class="small text-info mb-1">Private Clean</div>
+                    <div class="fs-3 fw-bold text-info">£{{ report.market_model.price_private or report.market_model.market_price }}</div>
+                    <div class="small text-secondary mt-1">Private sale value (CAP equiv.)</div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="rounded p-3 text-center" style="background:#0f172a; border:1px solid #475569;">
+                    <div class="small text-secondary mb-1">Retail</div>
+                    <div class="fs-3 fw-bold">£{{ report.market_model.price_retail or report.financials.price_retail or "—" }}</div>
+                    <div class="small text-secondary mt-1">Dealer forecourt price</div>
+                </div>
+            </div>
+        </div>
+        <div class="row g-4 align-items-center">
+            <div class="col-md-4">
                 <div class="small text-secondary mb-1">Sample Size</div>
                 <div class="fs-5">{{ report.market_model.sample_size or 0 }} comparable sales</div>
             </div>
-            <div class="col-md-3">
+            <div class="col-md-4">
                 <div class="small text-secondary mb-1">Confidence</div>
                 {% set conf = report.market_model.confidence or "low" %}
                 {% if conf == "high" %}
@@ -236,7 +263,7 @@
                     <span class="badge bg-danger px-3 py-2">Low Confidence</span>
                 {% endif %}
             </div>
-            <div class="col-md-3">
+            <div class="col-md-4">
                 <div class="small text-secondary mb-1">Source</div>
                 <div class="small">{{ report.market_model.source }}</div>
                 {% if report.market_model.source_label %}
