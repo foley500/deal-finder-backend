@@ -8,7 +8,8 @@ import time
 from app.services.ebay_rate_limiter import throttle_ebay
 from app.services.ebay_browse_service import (
     get_ebay_access_token,
-    get_item_detail
+    get_item_detail,
+    _trip_circuit,
 )
 
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
@@ -258,17 +259,12 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
 
             throttle_ebay()
 
-            response = None
-            for attempt in range(3):
+            response = requests.get(SEARCH_URL, headers=headers, params=params)
 
-                response = requests.get(SEARCH_URL, headers=headers, params=params)
-
-                if response.status_code == 429:
-                    wait = 15 * (2 ** attempt)
-                    print(f"⏳ [{label}] Rate limited — waiting {wait}s (attempt {attempt+1}/3)")
-                    time.sleep(wait)
-                else:
-                    break
+            if response.status_code == 429:
+                _trip_circuit()
+                print(f"❌ [{label}] Rate limited — circuit tripped, stopping sold search")
+                break
 
             if response.status_code != 200:
                 print(f"❌ [{label}] search error: {response.status_code}")
@@ -653,11 +649,10 @@ def get_market_price_from_sold(
                 except:
                     pass
 
-    # Build a targeted query using fuel type and body style when available.
-    # This narrows the comparable pool to more relevant vehicles — e.g. a
-    # "Ford Focus petrol 3dr" won't be valued against 5dr TDCi estates.
-    # Falls through to broad query naturally if the tighter pool is too thin.
-    query = f"{make} {base_model}"
+    # Include year in the query to anchor eBay results to the right vintage.
+    # Without year, a search for "Renault Clio" returns all ages; a 2009 Clio
+    # valued against 2014 Clios produces a severely inflated market price.
+    query = f"{make} {base_model} {year}"
 
     # Dynamically scale mileage tolerance based on target mileage.
     # High mileage cars have thin comparable pools — widen tolerance to compensate.
@@ -681,7 +676,9 @@ def get_market_price_from_sold(
         {"year_tolerance": 2, "mileage_tolerance": l2_tolerance,         "source": "layer_2_relaxed_mileage", "adjust_mileage": True},
         {"year_tolerance": 3, "mileage_tolerance": l2_tolerance + 5000,  "source": "layer_3_relaxed_year",    "adjust_mileage": True},
         {"year_tolerance": 4, "mileage_tolerance": l2_tolerance + 15000, "source": "layer_4_wide",            "adjust_mileage": True},
-        {"year_tolerance": 5, "mileage_tolerance": 999999,               "source": "layer_5_year_only",       "adjust_mileage": True},
+        # layer_5 (year_only, unlimited mileage) removed from live valuations —
+        # it matches cars from completely different model years and inflates prices.
+        # Prewarm still uses layers 1-4 only, so cache coverage is unaffected.
     ]:
         # Try private-sold-only first — no dealer retail contamination
         result = run_filter_layer(
