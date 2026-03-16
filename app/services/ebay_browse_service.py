@@ -18,6 +18,20 @@ redis_client = redis.from_url(REDIS_URL)
 
 EBAY_TOKEN_KEY = "ebay:access_token"
 
+# Circuit breaker — tripped on any 429 to prevent hammering the API.
+# All browse calls check this first and fast-fail if the circuit is open.
+BROWSE_CIRCUIT_KEY = "ebay_browse_circuit_open"
+BROWSE_CIRCUIT_TTL = 90  # seconds to cool down
+
+
+def _is_circuit_open() -> bool:
+    return bool(redis_client.exists(BROWSE_CIRCUIT_KEY))
+
+
+def _trip_circuit():
+    redis_client.set(BROWSE_CIRCUIT_KEY, "1", ex=BROWSE_CIRCUIT_TTL)
+    print(f"⚡ Browse circuit tripped — pausing all browse calls for {BROWSE_CIRCUIT_TTL}s")
+
 
 def get_ebay_access_token():
     cached = redis_client.get(EBAY_TOKEN_KEY)
@@ -76,22 +90,20 @@ def search_ebay_browse(
     }
 
 
-    for attempt in range(2):
-        throttle_ebay()
-        response = requests.get(SEARCH_URL, headers=headers, params=params)
+    if _is_circuit_open():
+        print("⚡ Browse circuit open — skipping request")
+        return []
 
-        if response.status_code == 429:
-            print("⚠️ Browse rate limited — sleeping 5s")
-            time.sleep(5)
-            continue
+    throttle_ebay()
+    response = requests.get(SEARCH_URL, headers=headers, params=params)
 
-        if response.status_code != 200:
-            print("❌ Browse API error:", response.text)
-            time.sleep(1)
-            return []
+    if response.status_code == 429:
+        _trip_circuit()
+        print("⚠️ Browse rate limited — circuit tripped")
+        return []
 
-        break
-    else:
+    if response.status_code != 200:
+        print("❌ Browse API error:", response.text)
         return []
 
     summaries = response.json().get("itemSummaries", [])
@@ -147,19 +159,22 @@ def search_sniper_windows(make, model):
         (8000, 20000),
     ]
 
-    search_terms = [
+    # Build deduplicated search terms — reversed order only adds value when
+    # make and model are distinct. When model is empty, both terms are identical.
+    seen_terms = set()
+    search_terms = []
+    for candidate in [
         f"{make} {model}".strip(),
-        f"{model} {make}".strip()
-    ]
+        f"{model} {make}".strip() if model.strip() else None,
+        model.strip() if model and (any(c.isdigit() for c in model) or len(model) >= 4) else None,
+    ]:
+        if candidate and candidate not in seen_terms:
+            seen_terms.add(candidate)
+            search_terms.append(candidate)
 
-    # model-only search if distinctive
-    if model and (any(c.isdigit() for c in model) or len(model) >= 4):
-        search_terms.append(model.strip())
-
-    random.shuffle(search_terms)
-
-    sort_types = ["newlyListed", "bestMatch"]
-
+    # Sniper: freshest listings only — one sort, no pagination offset.
+    # Budget = len(search_terms) × len(windows) calls.
+    # Typical: 1 term × 4 windows = 4 calls vs old 32 calls.
     all_results = []
     seen_ids = set()
 
@@ -167,31 +182,31 @@ def search_sniper_windows(make, model):
 
         for min_price, max_price in windows:
 
-            for sort_type in sort_types:
+            if _is_circuit_open():
+                print("⚡ Browse circuit open — stopping sniper windows")
+                break
 
-                for offset in [0, 50]:
+            listings = search_ebay_browse(
+                keywords=term,
+                limit=50,
+                min_price=min_price,
+                max_price=max_price,
+                sort="newlyListed",
+                offset=0
+            )
 
-                    listings = search_ebay_browse(
-                        keywords=term,
-                        limit=50,
-                        min_price=min_price,
-                        max_price=max_price,
-                        sort=sort_type,
-                        offset=offset
-                    )
+            if not listings:
+                continue
 
-                    if not listings:
-                        continue
+            for listing in listings:
 
-                    for listing in listings:
+                item_id = listing["id"]
 
-                        item_id = listing["id"]
+                if item_id in seen_ids:
+                    continue
 
-                        if item_id in seen_ids:
-                            continue
-
-                        seen_ids.add(item_id)
-                        all_results.append(listing)
+                seen_ids.add(item_id)
+                all_results.append(listing)
 
     print(f"🎯 Sniper windows returned {len(all_results)} unique listings")
 
@@ -252,6 +267,10 @@ def sniper_search(make, model):
 
 
 def get_item_detail(item_id):
+    if _is_circuit_open():
+        print("⚡ Browse circuit open — skipping item detail")
+        return None
+
     token = get_ebay_access_token()
     if not token:
         return None
@@ -268,13 +287,12 @@ def get_item_detail(item_id):
     )
 
     if response.status_code == 429:
-        print("Rate limited - sleeping 5s")
-        time.sleep(5)
+        _trip_circuit()
+        print("Rate limited - circuit tripped")
         return None
 
     if response.status_code != 200:
         print("❌ Item detail error:", response.text)
-        time.sleep(1)
         return None
 
     return response.json()

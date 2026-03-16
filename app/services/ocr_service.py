@@ -502,7 +502,16 @@ def extract_plate_from_text(text: str):
     if not text:
         return None
     text = text.upper()
-    matches = re.findall(r"[A-Z]{2}[0-9]{2}[A-Z]{3}", text)
+    # Current format (post Sep 2001): AB12CDE
+    matches = re.findall(r"\b[A-Z]{2}[0-9]{2}[A-Z]{3}\b", text)
+    if matches:
+        return matches[0]
+    # Pre-2001 suffix: A123BCD
+    matches = re.findall(r"\b[A-Z][0-9]{1,3}[A-Z]{3}\b", text)
+    if matches:
+        return matches[0]
+    # Pre-2001 prefix: ABC123D
+    matches = re.findall(r"\b[A-Z]{3}[0-9]{1,3}[A-Z]\b", text)
     if matches:
         return matches[0]
     return None
