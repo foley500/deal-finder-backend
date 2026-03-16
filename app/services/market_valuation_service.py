@@ -483,6 +483,7 @@ def run_filter_layer(
     accepted_sold = 0
     mileage_diffs = []
     adjustments = []
+    sample_comps = []
 
     for summary in summaries:
         # If private_only mode, skip dealer-sourced listings entirely
@@ -602,6 +603,17 @@ def run_filter_layer(
             r_weight = recency_weight(summary.get("_sold_date"))
             total_weight = weight * pool_weight * r_weight
             sold_prices.extend([adjusted_price] * total_weight)
+            # Capture a sample of comparables for deal detail display
+            if len(sample_comps) < 12:
+                sample_comps.append({
+                    "title": summary.get("title", "")[:70],
+                    "price": int(round(base_price, 0)),
+                    "adjusted_price": int(round(adjusted_price, 0)),
+                    "year": listing_year,
+                    "mileage": listing_mileage,
+                    "sold_date": summary.get("_sold_date"),
+                    "seller_pool": summary.get("_seller_pool", ""),
+                })
             accepted_sold += 1
 
     print(f"📊 FILTER DEBUG [{layer_name}{'|private_only' if private_only else ''}]:")
@@ -665,6 +677,7 @@ def run_filter_layer(
         "sample_size":   sample_count,
         "confidence":    confidence,
         "source_label":  source_label,
+        "sample_comps":  sample_comps,
     }
 
 

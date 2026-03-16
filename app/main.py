@@ -169,6 +169,15 @@ def all_deals(
 
     query = db.query(Deal)
 
+    # Exclude expired deals by default unless the user explicitly filters for them.
+    # Use OR (stage IS NULL OR stage != 'expired') to safely handle rows with no lifecycle key.
+    if not stage.strip() or stage.strip() != "expired":
+        from sqlalchemy import or_
+        _stage_col = Deal.report.op("->")("deal_lifecycle").op("->>")("stage")
+        query = query.filter(
+            or_(_stage_col.is_(None), _stage_col != "expired")
+        )
+
     if source:
         query = query.filter(Deal.source == source)
     if confidence:

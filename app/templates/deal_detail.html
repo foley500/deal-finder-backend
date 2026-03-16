@@ -16,6 +16,38 @@
 </div>
 {% endif %}
 
+{% if report.deal_signals and report.deal_signals.is_auction %}
+<div class="alert mb-4 d-flex align-items-start gap-3"
+     style="background:rgba(245,158,11,0.12); border:1px solid #f59e0b; border-radius:14px;">
+    <span style="font-size:1.5rem;">🔨</span>
+    <div>
+        <strong style="color:#fbbf24;">AUCTION LISTING</strong>
+        <div class="small mt-1" style="color:#fde68a;">This is a timed auction — final price not guaranteed. Factor in bidding competition and fees.</div>
+        {% if report.deal_signals.is_best_offer %}
+        <div class="small mt-1" style="color:#94a3b8;">Best Offer accepted — negotiate below asking.</div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+{% if report.deal_signals and report.deal_signals.regional_signal %}
+<div class="alert mb-4 d-flex align-items-center gap-3"
+     style="background:rgba(34,197,94,0.08); border:1px solid #22c55e44; border-radius:10px;">
+    <span style="font-size:1.3rem;">📍</span>
+    <div class="small" style="color:#86efac;">
+        <strong>Regional Signal:</strong>
+        {% if report.deal_signals.regional_signal == "cheaper_region" %}
+            Listed in a cheaper region — may be priced below national market average.
+        {% elif report.deal_signals.regional_signal == "premium_region" %}
+            Listed in a premium region — expect higher asking prices than average.
+        {% else %}
+            {{ report.deal_signals.regional_signal }}
+        {% endif %}
+        <span class="ms-2" style="color:#4b5563;">{{ report.location or "" }}</span>
+    </div>
+</div>
+{% endif %}
+
 {% if report.deal_signals and report.deal_signals.is_price_drop_alert %}
 <div class="alert mb-4 d-flex align-items-center gap-3"
      style="background:rgba(239,68,68,0.12); border:1px solid #ef4444; border-radius:8px; color:#fca5a5;">
@@ -294,13 +326,27 @@
             {% endif %}
             <p class="mb-3"></p>
 
-            {% if report.listing_url %}
+            <div class="d-flex flex-wrap gap-2 mb-4">
+                {% if report.listing_url %}
                 <a href="{{ report.listing_url }}"
                    target="_blank"
-                   class="btn btn-outline-light mb-4">
+                   class="btn btn-outline-light">
                     View Original Listing
                 </a>
-            {% endif %}
+                {% endif %}
+                {% if deal.reg %}
+                <a href="https://www.check-mot.service.gov.uk/results?registration={{ deal.reg }}"
+                   target="_blank"
+                   class="btn btn-outline-info">
+                    🔎 Check MOT (GOV.UK)
+                </a>
+                <a href="https://www.gov.uk/check-vehicle-tax"
+                   target="_blank"
+                   class="btn btn-outline-warning">
+                    📋 Check Tax / SORN
+                </a>
+                {% endif %}
+            </div>
 
             {% set all_images = report.images if report.images else ([report.primary_image] if report.primary_image else []) %}
             {% if all_images %}
@@ -614,6 +660,147 @@
     document.getElementById('offerInput').addEventListener('input', recalculate);
     recalculate();
 </script>
+
+<!-- SCORE BREAKDOWN -->
+{% if report.score_breakdown %}
+<div class="card p-4 mt-4">
+    <div class="fw-semibold mb-3" style="color:#94a3b8; font-size:0.85rem; text-transform:uppercase; letter-spacing:0.05em;">
+        📊 Score Breakdown
+    </div>
+    <div class="row g-2">
+        {% for label, pts in report.score_breakdown.items() %}
+        <div class="col-md-6">
+            <div class="d-flex justify-content-between align-items-center px-3 py-2 rounded"
+                 style="background:#0f172a; border:1px solid #1f2937;">
+                <span class="small text-secondary">{{ label }}</span>
+                <span class="fw-bold {% if pts > 0 %}text-success{% elif pts < 0 %}text-danger{% else %}text-secondary{% endif %}">
+                    {% if pts > 0 %}+{% endif %}{{ pts }}
+                </span>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    <div class="mt-3 pt-2" style="border-top:1px solid #1f2937;">
+        <div class="d-flex justify-content-between align-items-center">
+            <span class="fw-semibold">Total Score</span>
+            <span class="fs-4 fw-bold text-info">{{ "%.1f"|format(report.scoring.score or 0) }}</span>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- DVLA DATA PANEL -->
+{% if report.dvla_data %}
+{% set dvla = report.dvla_data %}
+<div class="card p-4 mt-4">
+    <div class="fw-semibold mb-3" style="color:#94a3b8; font-size:0.85rem; text-transform:uppercase; letter-spacing:0.05em;">
+        🚗 DVLA Vehicle Record
+    </div>
+
+    {% if dvla.is_sorn %}
+    <div class="alert py-2 mb-3" style="background:rgba(239,68,68,0.12); border:1px solid #ef4444; border-radius:8px; color:#fca5a5;">
+        ⚠️ <strong>SORN</strong> — This vehicle is declared off-road. It cannot be legally driven until re-taxed.
+    </div>
+    {% endif %}
+
+    {% if dvla.marked_for_export %}
+    <div class="alert py-2 mb-3" style="background:rgba(239,68,68,0.12); border:1px solid #ef4444; border-radius:8px; color:#fca5a5;">
+        ⚠️ <strong>Marked for Export</strong> — DVLA records show this vehicle is intended for export.
+    </div>
+    {% endif %}
+
+    <div class="row g-3">
+        <div class="col-md-4">
+            <div class="small text-secondary mb-1">Tax Status</div>
+            <span class="badge {% if dvla.tax_status == 'Taxed' %}bg-success{% else %}bg-danger{% endif %} px-2 py-1">
+                {{ dvla.tax_status or "Unknown" }}
+            </span>
+        </div>
+        {% if dvla.tax_due_date %}
+        <div class="col-md-4">
+            <div class="small text-secondary mb-1">Tax Due</div>
+            <div>{{ dvla.tax_due_date[:10] }}</div>
+        </div>
+        {% endif %}
+        {% if dvla.co2_emissions %}
+        <div class="col-md-4">
+            <div class="small text-secondary mb-1">CO₂ Emissions</div>
+            <div>{{ dvla.co2_emissions }} g/km</div>
+        </div>
+        {% endif %}
+        {% if dvla.euro_status %}
+        <div class="col-md-4">
+            <div class="small text-secondary mb-1">Euro Emissions Standard</div>
+            <div class="fw-semibold {% if 'Euro 6' in dvla.euro_status %}text-success{% elif 'Euro 4' in dvla.euro_status or 'Euro 5' in dvla.euro_status %}text-warning{% else %}text-danger{% endif %}">
+                {{ dvla.euro_status }}
+            </div>
+        </div>
+        {% endif %}
+        <div class="col-md-4">
+            <div class="small text-secondary mb-1">ULEZ Compliance</div>
+            {% if dvla.is_ulez_compliant %}
+                <span class="badge bg-success px-2 py-1">✅ ULEZ Compliant</span>
+            {% else %}
+                <span class="badge bg-danger px-2 py-1">❌ Not ULEZ Compliant</span>
+            {% endif %}
+        </div>
+        {% if dvla.annual_road_tax %}
+        <div class="col-md-4">
+            <div class="small text-secondary mb-1">Annual Road Tax (CO₂-based)</div>
+            <div class="fw-semibold text-info">£{{ dvla.annual_road_tax }}/yr</div>
+        </div>
+        {% endif %}
+        {% if dvla.date_of_last_v5c %}
+        <div class="col-md-4">
+            <div class="small text-secondary mb-1">Last V5C Issued</div>
+            <div>{{ dvla.date_of_last_v5c[:10] }}</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+<!-- COMPARABLE SOLD LISTINGS -->
+{% if report.comparable_listings %}
+<div class="card p-4 mt-4">
+    <div class="fw-semibold mb-3" style="color:#94a3b8; font-size:0.85rem; text-transform:uppercase; letter-spacing:0.05em;">
+        📈 Comparable Sold Listings (eBay)
+    </div>
+    <p class="small text-secondary mb-3">These are the actual sold eBay listings used to calculate this vehicle's market valuation.</p>
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>Title</th>
+                    <th class="text-end">Sold Price</th>
+                    <th class="text-end">Mileage</th>
+                    <th>Date</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for comp in report.comparable_listings %}
+                <tr>
+                    <td class="small">{{ comp.title or "—" }}</td>
+                    <td class="text-end fw-bold text-success">
+                        £{{ "%.0f"|format(comp.price or 0) }}
+                    </td>
+                    <td class="text-end small text-secondary">
+                        {% if comp.mileage %}{{ "{:,}".format(comp.mileage|int) }}{% else %}—{% endif %}
+                    </td>
+                    <td class="text-secondary small">{{ comp.date or "—" }}</td>
+                    <td>
+                        {% if comp.url %}
+                        <a href="{{ comp.url }}" target="_blank" class="btn btn-sm btn-outline-secondary py-0 px-2">View</a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
 
 <!-- DEAL NOTES -->
 <div class="card p-4 mt-4" id="notes">

@@ -7,12 +7,12 @@ import re
 from datetime import datetime, timezone
 from app.celery_app import celery
 from app.database import SessionLocal
-from app.models import Dealer, DealerSettings, ScanRun
+from app.models import Deal, Dealer, DealerSettings, ScanRun
 from app.services.deal_engine import process_listing
 from app.services.listing_sources.factory import get_listing_source
 from app.services.pdf_service import generate_deal_pdf
 from app.services.telegram_service import send_telegram_document
-from app.services.ebay_browse_service import sniper_search, search_sniper_windows
+from app.services.ebay_browse_service import sniper_search, search_sniper_windows, get_item_detail
 from app.services.market_valuation_service import get_market_price_from_sold
 
 
@@ -1314,5 +1314,203 @@ def process_facebook_listing(data: dict, dealer_id: int = 1):
             "market_value": deal.market_value,
             "reg": deal.reg or "Not detected",
         }
+
+
+# =====================================================
+# ARCHIVE STALE DEALS
+# Runs nightly — marks deals older than 30 days with
+# no lifecycle action as "expired" so the main list
+# stays clean without deleting historical data.
+# =====================================================
+
+@celery.task(name="archive_stale_deals")
+def archive_stale_deals():
+    """
+    Archive deals that are older than 30 days and have not been
+    actioned (no lifecycle stage set, or stage is still 'watching').
+    Sets lifecycle.stage = 'expired' so they're filterable.
+    """
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+
+    db = SessionLocal()
+    try:
+        # Find old deals with no meaningful lifecycle action
+        old_deals = db.query(Deal).filter(
+            Deal.created_at < cutoff,
+        ).all()
+
+        archived = 0
+        for deal in old_deals:
+            lc = (deal.report or {}).get("deal_lifecycle", {})
+            stage = lc.get("stage")
+            # Only archive if no action taken or still watching
+            if stage in (None, "", "watching"):
+                _report = dict(deal.report or {})
+                _lc = dict(_report.get("deal_lifecycle", {}))
+                _lc["stage"] = "expired"
+                _lc["expired_date"] = datetime.utcnow().strftime("%Y-%m-%d")
+                _report["deal_lifecycle"] = _lc
+                deal.report = _report
+                archived += 1
+
+        if archived:
+            db.commit()
+            print(f"🗃️ Archived {archived} stale deals (>30 days, no action)")
+        else:
+            print(f"🗃️ No stale deals to archive")
+
+    except Exception as e:
+        print(f"❌ archive_stale_deals error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+# =====================================================
+# LISTING EXPIRY DETECTION
+# Checks a sample of recent deals to see if their
+# eBay listings have ended (sold/removed). Marks
+# expired listings so the main list stays current.
+# Uses minimal eBay API calls (sample only).
+# =====================================================
+
+@celery.task(name="check_listing_expiry")
+def check_listing_expiry(sample_size: int = 15):
+    """
+    Check a sample of recent active deals to see if their eBay
+    listings are still live. If getItem returns None (404), the
+    listing has ended — mark as 'expired' in lifecycle.
+    Sample size kept small to conserve API budget.
+    """
+    from datetime import datetime, timedelta, timezone
+    cutoff_recent = datetime.now(timezone.utc) - timedelta(days=14)
+    cutoff_old = datetime.now(timezone.utc) - timedelta(days=1)
+
+    db = SessionLocal()
+    expired_count = 0
+    checked_count = 0
+
+    try:
+        # Sample recent deals: created in last 14 days, not yet actioned
+        recent_deals = db.query(Deal).filter(
+            Deal.created_at >= cutoff_old,
+            Deal.created_at <= cutoff_recent,
+            Deal.source == "ebay_browse",
+        ).limit(sample_size).all()
+
+        for deal in recent_deals:
+            if not deal.external_id:
+                continue
+            lc = (deal.report or {}).get("deal_lifecycle", {})
+            if lc.get("stage") in ("purchased", "sold", "expired"):
+                continue  # Already resolved
+
+            try:
+                item_detail = get_item_detail(deal.external_id)
+                checked_count += 1
+                if item_detail is None:
+                    # Listing has ended
+                    _report = dict(deal.report or {})
+                    _lc = dict(_report.get("deal_lifecycle", {}))
+                    _lc["stage"] = "expired"
+                    _lc["expired_date"] = datetime.utcnow().strftime("%Y-%m-%d")
+                    _lc["expired_reason"] = "listing_ended"
+                    _report["deal_lifecycle"] = _lc
+                    deal.report = _report
+                    expired_count += 1
+                    print(f"   💀 Listing ended: {deal.title[:50]}")
+            except Exception:
+                pass
+
+        if expired_count:
+            db.commit()
+
+        print(f"✅ Expiry check: {checked_count} checked, {expired_count} expired")
+
+    except Exception as e:
+        print(f"❌ check_listing_expiry error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+# =====================================================
+# DEAL AGING ALERTS
+# Sends a Telegram reminder for high-confidence deals
+# that have been sitting for 7 days with no action.
+# Run daily — won't spam since it checks for first alert.
+# =====================================================
+
+@celery.task(name="send_deal_aging_alerts")
+def send_deal_aging_alerts():
+    """
+    Find high-confidence deals that are 7-14 days old with no lifecycle
+    action and send a Telegram reminder. Tracks which deals have been
+    alerted in Redis to avoid repeat notifications.
+    """
+    from datetime import datetime, timedelta, timezone
+    import json as _json
+
+    ALERT_KEY_PREFIX = "deal_aging_alert:"
+    ALERT_TTL = 86400 * 14  # 14 days — same TTL as the window
+
+    cutoff_start = datetime.now(timezone.utc) - timedelta(days=14)
+    cutoff_end = datetime.now(timezone.utc) - timedelta(days=7)
+
+    TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ deal_aging_alerts: Telegram not configured")
+        return
+
+    db = SessionLocal()
+    alerted = 0
+
+    try:
+        aging_deals = db.query(Deal).filter(
+            Deal.created_at >= cutoff_start,
+            Deal.created_at <= cutoff_end,
+            Deal.status.in_(["high", "very_high"]),
+        ).all()
+
+        for deal in aging_deals:
+            lc = (deal.report or {}).get("deal_lifecycle", {})
+            if lc.get("stage") not in (None, "", "watching"):
+                continue  # Already actioned
+
+            alert_key = f"{ALERT_KEY_PREFIX}{deal.id}"
+            if redis_client.get(alert_key):
+                continue  # Already alerted
+
+            # Send Telegram reminder
+            try:
+                days_old = (datetime.now(timezone.utc) - deal.created_at.replace(tzinfo=timezone.utc)).days
+                msg = (
+                    f"⏰ AGING DEAL REMINDER\n\n"
+                    f"📌 {deal.title}\n"
+                    f"💰 Profit: £{int(deal.profit or 0):,} | Score: {deal.score}\n"
+                    f"🏷️ Asking: £{int(deal.listing_price or 0):,}\n"
+                    f"📅 Listed {days_old} days ago — still no action taken\n\n"
+                    f"Check it before it sells!"
+                )
+                requests = __import__("requests")
+                requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                    json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
+                    timeout=10,
+                )
+                redis_client.set(alert_key, "1", ex=ALERT_TTL)
+                alerted += 1
+            except Exception as e:
+                print(f"   ⚠️ Aging alert Telegram error for deal {deal.id}: {e}")
+
+        print(f"⏰ Deal aging alerts sent: {alerted}")
+
+    except Exception as e:
+        print(f"❌ send_deal_aging_alerts error: {e}")
+    finally:
+        db.close()
 
     return {"status": "filtered"}

@@ -162,3 +162,106 @@ def calculate_score(
             score -= 5
 
     return round(score, 1)
+
+
+def calculate_score_breakdown(
+    profit,
+    risk_penalty,
+    mileage,
+    seller_type=None,
+    price_drop_pct=None,
+    days_on_market=None,
+    market_depth=-1,
+    motivated_seller=False,
+    fsh=False,
+    mot_months_remaining=None,
+    ulez_diesel_risk=False,
+    one_owner=False,
+    valuation_confidence=None,
+    is_auction=False,
+    regional_signal=None,
+):
+    """
+    Returns (score, breakdown_dict) where breakdown_dict maps
+    label -> point contribution for display in the deal detail UI.
+    """
+    breakdown = {}
+
+    _confidence_multiplier = {"high": 1.0, "medium": 0.90, "low": 0.75}.get(
+        (valuation_confidence or "").lower(), 1.0
+    )
+    effective_profit = profit * _confidence_multiplier
+
+    if effective_profit >= 3000:
+        pts = 40; label = "Profit ≥£3,000"
+    elif effective_profit >= 2000:
+        pts = 30; label = "Profit ≥£2,000"
+    elif effective_profit >= 1500:
+        pts = 22; label = "Profit ≥£1,500"
+    elif effective_profit >= 1000:
+        pts = 15; label = "Profit ≥£1,000"
+    elif effective_profit >= 500:
+        pts = 8;  label = "Profit ≥£500"
+    elif effective_profit >= 250:
+        pts = 3;  label = "Profit ≥£250"
+    else:
+        pts = 0;  label = "Profit <£250"
+    breakdown[label] = pts
+
+    risk_pts = -round(risk_penalty / 80, 1)
+    if risk_pts:
+        breakdown["Risk Penalty"] = risk_pts
+
+    if mileage and mileage > 120000:
+        breakdown["Very High Mileage (120k+)"] = -15
+    elif mileage and mileage > 80000:
+        breakdown["High Mileage (80k+)"] = -5
+
+    if seller_type == "INDIVIDUAL":
+        breakdown["Private Seller"] = 5
+    elif seller_type == "BUSINESS":
+        breakdown["Business Seller"] = -2
+
+    if motivated_seller:
+        breakdown["Motivated Seller"] = 10
+
+    if fsh:
+        breakdown["Full Service History"] = 5
+
+    if one_owner:
+        breakdown["One Previous Owner"] = 5
+
+    if price_drop_pct is not None and price_drop_pct > 0:
+        if price_drop_pct >= 20:    breakdown["Price Drop ≥20%"] = 12
+        elif price_drop_pct >= 10:  breakdown["Price Drop ≥10%"] = 8
+        elif price_drop_pct >= 5:   breakdown["Price Drop ≥5%"] = 5
+        else:                       breakdown["Price Drop"] = 3
+
+    if days_on_market is not None:
+        if days_on_market <= 1:         breakdown["Fresh Listing (≤1d)"] = 5
+        elif days_on_market <= 7:       breakdown["Recent Listing (≤7d)"] = 2
+        elif days_on_market >= 45:      breakdown["Stale Listing (45d+)"] = -3
+
+    if mot_months_remaining is not None:
+        if mot_months_remaining >= 10:  breakdown["Long MOT Remaining"] = 3
+        elif mot_months_remaining < 3:  breakdown["Short MOT (<3 months)"] = -5
+
+    if ulez_diesel_risk:
+        breakdown["ULEZ Diesel Risk"] = -8
+
+    if market_depth >= 0:
+        if market_depth <= 2:       breakdown["Very Low Competition (≤2)"] = 8
+        elif market_depth <= 5:     breakdown["Low Competition (≤5)"] = 4
+        elif market_depth <= 10:    breakdown["Moderate Competition (≤10)"] = 1
+        elif market_depth >= 25:    breakdown["High Competition (25+)"] = -5
+
+    if is_auction:
+        breakdown["Auction Listing (uncertain price)"] = -3
+
+    if regional_signal == "discount_region":
+        breakdown["Discount Region (arbitrage opportunity)"] = 3
+    elif regional_signal == "premium_region":
+        breakdown["Premium Region (price may be inflated)"] = -2
+
+    score = round(sum(breakdown.values()), 1)
+    return score, breakdown

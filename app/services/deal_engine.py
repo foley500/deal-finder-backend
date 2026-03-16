@@ -1,6 +1,7 @@
 from app.margin import calculate_true_profit, calculate_costs
 from app.risk import description_risk, motivated_seller_signal, fsh_signal, is_ulez_diesel_risk, one_owner_signal
-from app.scoring import calculate_score
+from app.scoring import calculate_score, calculate_score_breakdown
+from app.services.dvla_service import get_dvla_vehicle_data, is_sorn, is_marked_for_export, get_annual_road_tax_from_co2
 from app.registration import extract_registration
 from app.models import Deal, DealerSettings
 from app.database import SessionLocal
@@ -37,6 +38,44 @@ KNOWN_MAKES = [
     "Jaguar", "Subaru", "Mitsubishi", "Suzuki", "Dacia", "Alfa Romeo", "Jeep",
     "Tesla", "Lexus", "Porsche", "Isuzu", "DS", "MG", "Cupra", "Genesis",
 ]
+
+
+# Regional pricing signals — UK regions where cars consistently sell
+# cheaper (arbitrage opportunity) or more expensive (price may be inflated)
+_CHEAPER_REGIONS = [
+    "scotland", "glasgow", "edinburgh", "aberdeen", "dundee",
+    "wales", "cardiff", "swansea", "newport", "wrexham",
+    "northern ireland", "belfast",
+    "sunderland", "newcastle", "middlesbrough", "gateshead",
+    "hull", "bradford", "leeds", "sheffield", "rotherham", "barnsley",
+    "manchester", "salford", "oldham", "rochdale", "wigan",
+    "liverpool", "birkenhead", "st helens",
+    "wolverhampton", "walsall", "dudley", "west bromwich",
+    "stoke-on-trent", "stoke on trent",
+    "blackpool", "blackburn", "burnley", "accrington",
+]
+
+_PREMIUM_REGIONS = [
+    "london", "kensington", "chelsea", "richmond", "wimbledon",
+    "surrey", "guildford", "woking", "reigate", "epsom",
+    "kent", "sevenoaks", "tonbridge wells", "tunbridge",
+    "essex", "chelmsford", "brentwood", "chigwell",
+    "hertfordshire", "st albans", "watford", "harpenden",
+    "buckinghamshire", "beaconsfield", "gerrards cross",
+    "oxfordshire", "berkshire", "windsor", "maidenhead",
+    "bath", "cambridge",
+]
+
+def get_regional_signal(location: str):
+    """Returns 'discount_region', 'premium_region', or None."""
+    if not location:
+        return None
+    loc = location.lower()
+    if any(r in loc for r in _CHEAPER_REGIONS):
+        return "discount_region"
+    if any(r in loc for r in _PREMIUM_REGIONS):
+        return "premium_region"
+    return None
 
 
 # ---------------------------------
@@ -460,6 +499,19 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         location = raw_item.get("location")
         image_urls = raw_item.get("image_urls", [])
         primary_image = image_urls[0] if image_urls else None
+
+        # Auction vs BIN detection
+        buying_options = raw_item.get("buying_options") or raw_item.get("buyingOptions") or []
+        is_auction = "AUCTION" in buying_options
+        is_best_offer = "BEST_OFFER" in buying_options
+        if is_auction:
+            print(f"   🔨 Auction listing detected")
+
+        # Regional pricing signal
+        regional_signal = get_regional_signal(raw_item.get("location") or "")
+        if regional_signal:
+            print(f"   📍 Regional signal: {regional_signal}")
+
         listing_date_raw = raw_item.get("listing_date")
         price_drop_amount = raw_item.get("price_drop_amount")
         price_drop_pct = raw_item.get("price_drop_pct")
@@ -552,6 +604,27 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         # DO NOT HARD FAIL IF DVSA FAILS
         if not vehicle_data:
             print("⚠️ DVSA lookup failed — continuing with listing data")
+
+        # ---------------------------------
+        # DVLA Vehicle Enquiry Service
+        # Supplementary data: tax status, SORN, CO2, Euro status, V5C date
+        # Requires DVLA_API_KEY env var — gracefully skipped if not set
+        # ---------------------------------
+        dvla_data = {}
+        if reg:
+            try:
+                dvla_data = get_dvla_vehicle_data(reg)
+                if dvla_data:
+                    if is_sorn(dvla_data):
+                        print(f"   ⚠️ SORN — car is off the road")
+                    if is_marked_for_export(dvla_data):
+                        print(f"   🚩 Marked for export")
+                    if dvla_data.get("euro_status"):
+                        print(f"   🔬 Euro status: {dvla_data['euro_status']}")
+                    if dvla_data.get("co2_emissions"):
+                        print(f"   💨 CO2: {dvla_data['co2_emissions']}g/km")
+            except Exception as e:
+                print(f"   ⚠️ DVLA VES failed: {e}")
 
         # ---------------------------------
         # Final Field Resolution (DVSA First)
@@ -656,7 +729,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         profit_result = calculate_true_profit(
             market_value,
             price,
-            risk_penalty=risk_penalty
+            risk_penalty=risk_penalty,
+            make=make or "",
         )
 
         gross_profit = profit_result["gross_profit"]
@@ -698,11 +772,36 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 pass
 
         # ULEZ diesel risk — pre-2015 diesel faces structural UK resale discount
+        # Override with authoritative DVLA Euro status if available
         fuel_type_for_ulez = vehicle_data.get("fuel_type") or aspects.get("Fuel Type")
         ulez_risk = is_ulez_diesel_risk(fuel_type_for_ulez, year)
+        if dvla_data.get("is_ulez_compliant") is not None:
+            # DVLA Euro status is authoritative — overrides year-based heuristic
+            ulez_risk = not dvla_data["is_ulez_compliant"]
+            print(f"   🔬 ULEZ override from DVLA: {'compliant' if dvla_data['is_ulez_compliant'] else 'non-compliant'}")
 
         # One owner — single keeper history boosts retail appeal and price
         has_one_owner = one_owner_signal(title, description)
+
+        # MOT advisory trend analysis — recurring advisories on same component = higher risk
+        mot_recurring_advisories = []
+        if mot_full_data and len(mot_full_data) >= 2:
+            try:
+                advisory_counts = {}
+                for test in mot_full_data:
+                    for item in test.get("defects", []) or []:
+                        text = (item.get("text") or "").lower()
+                        # Extract component keyword (first 30 chars normalised)
+                        key = " ".join(text.split()[:4])  # first 4 words
+                        if key and item.get("type") in ("ADVISORY", "MAJOR", "DANGEROUS"):
+                            advisory_counts[key] = advisory_counts.get(key, 0) + 1
+                mot_recurring_advisories = [
+                    k for k, v in advisory_counts.items() if v >= 2
+                ]
+                if mot_recurring_advisories:
+                    print(f"   ⚠️ Recurring MOT advisories: {mot_recurring_advisories[:3]}")
+            except Exception:
+                pass
 
         if is_motivated:
             print(f"   🚨 Motivated seller detected")
@@ -778,6 +877,12 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         else:
             road_tax_annual = 160  # Engine-size based (pre-2001)
 
+        # Road tax — use accurate CO2 data from DVLA if available, else estimate
+        _co2 = dvla_data.get("co2_emissions")
+        _ft_for_tax = vehicle_data.get("fuel_type") or aspects.get("Fuel Type") or ""
+        if _co2:
+            road_tax_annual = get_annual_road_tax_from_co2(_co2, _ft_for_tax, year) or road_tax_annual
+
         # ---------------------------------
         # Buy-below-trade: can you buy cheaper than auction value?
         # ---------------------------------
@@ -786,6 +891,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
             print(f"   🏆 Buy below trade: £{buy_below_trade} under auction value")
 
         valuation_confidence = valuation_result.get("confidence") if valuation_result else None
+
+        # Store comparable sold listings for deal detail display
+        comparable_listings = valuation_result.get("sample_comps", []) if valuation_result else []
 
         score = calculate_score(
             profit=gross_profit,
@@ -801,6 +909,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
             one_owner=has_one_owner,
             valuation_confidence=valuation_confidence,
         )
+        score_breakdown = {}
         confidence = assign_confidence(score)
 
         # Filter on GROSS profit — costs are shown separately, not used as a gate
@@ -824,7 +933,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 budget_fn=budget_fn,
             )
             # Re-score with market depth signal
-            score = calculate_score(
+            score, score_breakdown = calculate_score_breakdown(
                 profit=gross_profit,
                 risk_penalty=risk_penalty,
                 mileage=mileage,
@@ -838,6 +947,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 ulez_diesel_risk=ulez_risk,
                 one_owner=has_one_owner,
                 valuation_confidence=valuation_confidence,
+                is_auction=is_auction,
+                regional_signal=regional_signal,
             )
             confidence = assign_confidence(score)
 
@@ -902,8 +1013,15 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                     "insurance_group_est": insurance_group_est,
                     "road_tax_annual_est": road_tax_annual,
                     "buy_below_trade": buy_below_trade,
+                    "is_auction": is_auction,
+                    "is_best_offer": is_best_offer,
+                    "regional_signal": regional_signal,
+                    "mot_recurring_advisories": mot_recurring_advisories,
                 },
                 "images": image_urls,
+                "comparable_listings": comparable_listings,
+                "score_breakdown": score_breakdown,
+                "dvla_data": dvla_data,
                 "mot_summary": mot_summary,
                 "mot_full_data": mot_full_data,
                 "vehicle_data": vehicle_data,
