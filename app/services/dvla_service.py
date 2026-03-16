@@ -17,7 +17,7 @@ Set DVLA_API_KEY in your environment/Render config.
 import os
 import requests
 
-DVLA_API_KEY = os.getenv("DVLA_API_KEY", "")
+DVLA_API_KEY = os.getenv("DVLA_APP_KEY", os.getenv("DVLA_API_KEY", ""))
 DVLA_VES_URL = "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles"
 DVLA_TIMEOUT = 5  # seconds
 
