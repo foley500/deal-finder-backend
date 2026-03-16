@@ -1,0 +1,232 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<div class="mb-5">
+    <h2 class="fw-semibold">💰 Completed Deals</h2>
+    <p class="text-secondary mb-0">Real-world P&amp;L — what you paid, what you sold for, actual profit.</p>
+</div>
+
+<!-- KPI SUMMARY ROW -->
+<div class="row g-4 mb-5">
+
+    <div class="col-md-3">
+        <div class="card p-4">
+            <div class="muted">In Pipeline</div>
+            <div class="metric text-info">{{ active_deals | length + sold_deals | length }}</div>
+            <div class="small text-secondary mt-1">purchased + sold</div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <div class="card p-4">
+            <div class="muted">Total Invested</div>
+            <div class="metric text-warning">£{{ "%.0f"|format(total_invested) }}</div>
+            <div class="small text-secondary mt-1">sum of purchase prices</div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <div class="card p-4">
+            <div class="muted">Total Returned</div>
+            <div class="metric text-success">£{{ "%.0f"|format(total_returned) }}</div>
+            <div class="small text-secondary mt-1">sum of sale prices (sold only)</div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <div class="card p-4" {% if total_actual_profit > 0 %}style="border-color:#22c55e;"{% elif total_actual_profit < 0 %}style="border-color:#ef4444;"{% endif %}>
+            <div class="muted">Actual Profit</div>
+            <div class="metric {% if total_actual_profit >= 0 %}text-success{% else %}text-danger{% endif %}">
+                £{{ "%.0f"|format(total_actual_profit) }}
+            </div>
+            <div class="small text-secondary mt-1">avg margin {{ avg_margin }}%</div>
+        </div>
+    </div>
+
+</div>
+
+<!-- ACTIVE INVENTORY (purchased, not sold) -->
+<div class="mb-5">
+    <h5 class="mb-3">🚗 Active Inventory <span class="badge bg-secondary ms-2">{{ active_deals | length }}</span></h5>
+
+    {% if active_deals %}
+    <div class="card p-0">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>Vehicle</th>
+                    <th class="text-end">Paid</th>
+                    <th class="text-end">Est. Private Value</th>
+                    <th class="text-end">Est. Net Profit</th>
+                    <th>Purchased</th>
+                    <th>Notes</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for deal in active_deals %}
+                {% set lc = (deal.report or {}).get("deal_lifecycle", {}) %}
+                {% set fin = (deal.report or {}).get("financials", {}) %}
+                <tr>
+                    <td>
+                        <a href="/deals/{{ deal.id }}">{{ deal.title }}</a>
+                        <div class="small text-secondary">{{ deal.reg or "—" }}</div>
+                    </td>
+                    <td class="text-end fw-bold text-warning">
+                        £{{ "%.0f"|format(lc.purchase_price or 0) }}
+                    </td>
+                    <td class="text-end text-info">
+                        £{{ "%.0f"|format(fin.price_private or fin.market_value or 0) }}
+                    </td>
+                    <td class="text-end {% if deal.net_profit and deal.net_profit > 0 %}text-success{% else %}text-danger{% endif %}">
+                        £{{ "%.0f"|format(deal.net_profit or 0) }}
+                    </td>
+                    <td class="text-secondary small">{{ lc.purchase_date or "—" }}</td>
+                    <td class="text-secondary small">{{ lc.notes or "—" }}</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-success"
+                                onclick="openTrackModal({{ deal.id }}, '{{ deal.title | replace("'", "\\'") }}', {{ lc | tojson }})">
+                            Update
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-secondary">No vehicles currently in active inventory.</div>
+    {% endif %}
+</div>
+
+<!-- SOLD / COMPLETED -->
+<div class="mb-5">
+    <h5 class="mb-3">✅ Sold <span class="badge bg-secondary ms-2">{{ sold_deals | length }}</span></h5>
+
+    {% if sold_deals %}
+    <div class="card p-0">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>Vehicle</th>
+                    <th class="text-end">Paid</th>
+                    <th class="text-end">Sold For</th>
+                    <th class="text-end">Actual Profit</th>
+                    <th class="text-end">Margin</th>
+                    <th>Date Sold</th>
+                    <th>Notes</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for deal in sold_deals %}
+                {% set lc = (deal.report or {}).get("deal_lifecycle", {}) %}
+                {% set ap = lc.actual_profit or 0 %}
+                {% set pp = lc.purchase_price or 0 %}
+                {% set margin = (ap / pp * 100) if pp else 0 %}
+                <tr>
+                    <td>
+                        <a href="/deals/{{ deal.id }}">{{ deal.title }}</a>
+                        <div class="small text-secondary">{{ deal.reg or "—" }}</div>
+                    </td>
+                    <td class="text-end text-warning">£{{ "%.0f"|format(pp) }}</td>
+                    <td class="text-end text-info">£{{ "%.0f"|format(lc.sale_price or 0) }}</td>
+                    <td class="text-end fw-bold {% if ap >= 0 %}text-success{% else %}text-danger{% endif %}">
+                        {% if ap >= 0 %}+{% endif %}£{{ "%.0f"|format(ap) }}
+                    </td>
+                    <td class="text-end small {% if margin >= 0 %}text-success{% else %}text-danger{% endif %}">
+                        {{ "%.1f"|format(margin) }}%
+                    </td>
+                    <td class="text-secondary small">{{ lc.sale_date or "—" }}</td>
+                    <td class="text-secondary small">{{ lc.notes or "—" }}</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-secondary"
+                                onclick="openTrackModal({{ deal.id }}, '{{ deal.title | replace("'", "\\'") }}', {{ lc | tojson }})">
+                            Edit
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-secondary">No completed sales yet.</div>
+    {% endif %}
+</div>
+
+<!-- TRACK MODAL (shared, JS-populated) -->
+<div class="modal fade" id="trackModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content" style="background:#111827; border:1px solid #1f2937; color:#f1f5f9;">
+            <div class="modal-header" style="border-bottom:1px solid #1f2937;">
+                <h5 class="modal-title">Track Deal</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="trackForm" method="post">
+                <input type="hidden" name="redirect_to" value="/completed">
+                <div class="modal-body">
+                    <p class="text-secondary small mb-3" id="trackDealTitle"></p>
+
+                    <div class="mb-3">
+                        <label class="form-label">Stage</label>
+                        <select name="stage" id="trackStage" class="form-select bg-dark text-light border-secondary">
+                            <option value="watching">Watching</option>
+                            <option value="offered">Offered</option>
+                            <option value="purchased">Purchased</option>
+                            <option value="sold">Sold</option>
+                            <option value="passed">Passed</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Offer Price (£)</label>
+                        <input type="number" name="offer_price" id="trackOfferPrice"
+                               class="form-control bg-dark text-light border-secondary"
+                               placeholder="e.g. 11500" min="0" step="50">
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Purchase Price — what you actually paid (£)</label>
+                        <input type="number" name="purchase_price" id="trackPurchasePrice"
+                               class="form-control bg-dark text-light border-secondary"
+                               placeholder="e.g. 11200" min="0" step="50">
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Sale Price — what you sold it for (£)</label>
+                        <input type="number" name="sale_price" id="trackSalePrice"
+                               class="form-control bg-dark text-light border-secondary"
+                               placeholder="e.g. 14800" min="0" step="50">
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Notes</label>
+                        <input type="text" name="notes" id="trackNotes"
+                               class="form-control bg-dark text-light border-secondary"
+                               placeholder="Optional notes">
+                    </div>
+                </div>
+                <div class="modal-footer" style="border-top:1px solid #1f2937;">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-success">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function openTrackModal(dealId, title, lc) {
+    document.getElementById('trackForm').action = '/deals/' + dealId + '/track';
+    document.getElementById('trackDealTitle').textContent = title;
+    document.getElementById('trackStage').value = lc.stage || 'watching';
+    document.getElementById('trackOfferPrice').value = lc.offer_price || '';
+    document.getElementById('trackPurchasePrice').value = lc.purchase_price || '';
+    document.getElementById('trackSalePrice').value = lc.sale_price || '';
+    document.getElementById('trackNotes').value = lc.notes || '';
+    new bootstrap.Modal(document.getElementById('trackModal')).show();
+}
+</script>
+
+{% endblock %}

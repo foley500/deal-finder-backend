@@ -5,6 +5,7 @@ import re
 import io
 import hashlib
 import time
+from datetime import datetime
 
 from PIL import Image
 from app.routes import settings as settings_router
@@ -67,12 +68,16 @@ def get_nav_counts(db: Session) -> dict:
     price_drop_count = db.query(Deal).filter(
         Deal.report.op("->")("deal_signals").op("->>")("is_price_drop_alert") == "true"
     ).count()
+    completed_count = db.query(Deal).filter(
+        Deal.report.op("->")("deal_lifecycle").op("->>")("stage").in_(["purchased", "sold"])
+    ).count()
     return {
         "all_deals": all_deals,
         "ebay_deals": ebay_deals,
         "facebook_deals": facebook_deals,
         "van_deals": van_deals,
         "price_drop_count": price_drop_count,
+        "completed_count": completed_count,
     }
 
 
@@ -196,6 +201,56 @@ def all_deals(
 
 
 # =====================================================
+# COMPLETED DEALS — P&L TRACKER
+# =====================================================
+
+@app.get("/completed", response_class=HTMLResponse)
+def completed_deals(request: Request, db: Session = Depends(get_db)):
+    # Fetch all deals that have a deal_lifecycle stage of purchased or sold
+    pipeline_deals = db.query(Deal).filter(
+        Deal.report.op("->")("deal_lifecycle").op("->>")("stage").in_(["purchased", "sold"])
+    ).order_by(Deal.created_at.desc()).all()
+
+    active = []    # purchased but not yet sold
+    sold = []      # sold
+
+    total_invested = 0.0
+    total_returned = 0.0
+    total_actual_profit = 0.0
+
+    for deal in pipeline_deals:
+        lc = (deal.report or {}).get("deal_lifecycle", {})
+        stage = lc.get("stage")
+        if stage == "purchased":
+            active.append(deal)
+            total_invested += lc.get("purchase_price") or 0
+        elif stage == "sold":
+            sold.append(deal)
+            total_invested += lc.get("purchase_price") or 0
+            total_returned += lc.get("sale_price") or 0
+            total_actual_profit += lc.get("actual_profit") or 0
+
+    avg_margin = (
+        round((total_actual_profit / total_invested) * 100, 1)
+        if total_invested else 0
+    )
+
+    return templates.TemplateResponse(
+        "completed.html",
+        {
+            "request": request,
+            "active_deals": active,
+            "sold_deals": sold,
+            "total_invested": round(total_invested, 2),
+            "total_returned": round(total_returned, 2),
+            "total_actual_profit": round(total_actual_profit, 2),
+            "avg_margin": avg_margin,
+            "nav_counts": get_nav_counts(db),
+        },
+    )
+
+
+# =====================================================
 # VANS
 # =====================================================
 
@@ -236,6 +291,69 @@ def van_deals(
             "total_count": total_count,
         },
     )
+
+
+# =====================================================
+# DEAL LIFECYCLE TRACKER
+# =====================================================
+
+VALID_STAGES = {"watching", "offered", "purchased", "sold", "passed"}
+
+@app.post("/deals/{deal_id}/track")
+def track_deal(
+    deal_id: int,
+    stage: str = Form(...),
+    offer_price: str = Form(""),
+    purchase_price: str = Form(""),
+    sale_price: str = Form(""),
+    notes: str = Form(""),
+    redirect_to: str = Form("/deals"),
+    db: Session = Depends(get_db),
+):
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if not deal:
+        return RedirectResponse(url=redirect_to, status_code=303)
+
+    stage = stage.strip().lower()
+    if stage not in VALID_STAGES:
+        stage = "watching"
+
+    def _float(val):
+        try:
+            v = float(val)
+            return v if v > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    _report = dict(deal.report or {})
+    lc = dict(_report.get("deal_lifecycle", {}))
+
+    lc["stage"] = stage
+    if _float(offer_price) is not None:
+        lc["offer_price"] = _float(offer_price)
+        if not lc.get("offer_date"):
+            lc["offer_date"] = datetime.utcnow().strftime("%Y-%m-%d")
+    if _float(purchase_price) is not None:
+        lc["purchase_price"] = _float(purchase_price)
+        if not lc.get("purchase_date"):
+            lc["purchase_date"] = datetime.utcnow().strftime("%Y-%m-%d")
+    if _float(sale_price) is not None:
+        lc["sale_price"] = _float(sale_price)
+        if not lc.get("sale_date"):
+            lc["sale_date"] = datetime.utcnow().strftime("%Y-%m-%d")
+
+    # Calculate actual profit when both prices are known
+    if lc.get("purchase_price") and lc.get("sale_price"):
+        lc["actual_profit"] = round(lc["sale_price"] - lc["purchase_price"], 2)
+
+    if notes.strip():
+        lc["notes"] = notes.strip()
+
+    _report["deal_lifecycle"] = lc
+    deal.report = _report
+    db.commit()
+
+    return RedirectResponse(url=redirect_to, status_code=303)
 
 
 # =====================================================

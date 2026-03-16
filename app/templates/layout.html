@@ -181,6 +181,12 @@
         {% endif %}
     </a>
     <a href="/analytics">Analytics</a>
+    <a href="/completed">
+        <span>💰 Completed Deals</span>
+        {% if nav_counts.completed_count %}
+            <span class="nav-badge" style="background:rgba(34,197,94,0.15);color:#22c55e;">{{ nav_counts.completed_count }}</span>
+        {% endif %}
+    </a>
 </div>
 
 <div class="topbar d-flex justify-content-between align-items-center">

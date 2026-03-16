@@ -50,6 +50,7 @@
         <tbody>
             {% for deal in deals %}
             {% set ds = deal.report.deal_signals if deal.report and deal.report.deal_signals else {} %}
+            {% set lc = deal.report.deal_lifecycle if deal.report and deal.report.deal_lifecycle else {} %}
             {% set is_drop = ds.is_price_drop_alert %}
             <tr {% if is_drop %}style="border-left: 3px solid #ef4444;"{% endif %}>
                 <td>
@@ -133,10 +134,25 @@
                         {% elif ds.valuation_confidence == "medium" %}
                             <span class="badge" style="background:rgba(234,179,8,0.10);color:#fde047;font-size:0.7rem;">📐 Med Val</span>
                         {% endif %}
+                        {# Lifecycle stage badge #}
+                        {% if lc.stage == "offered" %}
+                            <span class="badge" style="background:rgba(99,102,241,0.15);color:#a5b4fc;font-size:0.7rem;">🤝 Offered</span>
+                        {% elif lc.stage == "purchased" %}
+                            <span class="badge" style="background:rgba(234,179,8,0.15);color:#fde047;font-size:0.7rem;">🔑 Purchased</span>
+                        {% elif lc.stage == "sold" %}
+                            <span class="badge" style="background:rgba(34,197,94,0.15);color:#86efac;font-size:0.7rem;">💰 Sold</span>
+                        {% elif lc.stage == "passed" %}
+                            <span class="badge" style="background:rgba(148,163,184,0.10);color:#94a3b8;font-size:0.7rem;">❌ Passed</span>
+                        {% endif %}
                     </div>
                 </td>
 
-                <td class="text-end">
+                <td class="text-end" style="white-space:nowrap;">
+                    <button type="button"
+                            class="btn btn-sm btn-outline-success p-0 px-2 me-1"
+                            onclick="openTrackModal({{ deal.id }}, '{{ deal.title | replace("'", "\\'") }}', {{ lc | tojson }})">
+                        Track
+                    </button>
                     <button type="submit"
                             name="deal_ids"
                             value="{{ deal.id }}"
@@ -245,6 +261,81 @@ document.getElementById("select-all").addEventListener("change", function() {
     document.querySelectorAll(".deal-checkbox")
         .forEach(cb => cb.checked = this.checked);
 });
+</script>
+
+<!-- DEAL LIFECYCLE TRACK MODAL -->
+<div class="modal fade" id="trackModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content" style="background:#111827; border:1px solid #1f2937; color:#f1f5f9;">
+            <div class="modal-header" style="border-bottom:1px solid #1f2937;">
+                <h5 class="modal-title">📋 Track Deal</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="trackForm" method="post">
+                <input type="hidden" name="redirect_to" value="/deals">
+                <div class="modal-body">
+                    <p class="fw-semibold mb-3" id="trackDealTitle" style="color:#94a3b8;"></p>
+
+                    <div class="mb-3">
+                        <label class="form-label small text-secondary">Stage</label>
+                        <select name="stage" id="trackStage" class="form-select form-select-sm" style="background:#1e293b;color:#f1f5f9;border-color:#334155;">
+                            <option value="watching">👁 Watching</option>
+                            <option value="offered">🤝 Offered</option>
+                            <option value="purchased">🔑 Purchased</option>
+                            <option value="sold">💰 Sold</option>
+                            <option value="passed">❌ Passed</option>
+                        </select>
+                    </div>
+
+                    <div class="row g-2 mb-3">
+                        <div class="col">
+                            <label class="form-label small text-secondary">Offer Price (£)</label>
+                            <input type="number" name="offer_price" id="trackOfferPrice"
+                                   class="form-control form-control-sm" style="background:#1e293b;color:#f1f5f9;border-color:#334155;"
+                                   placeholder="e.g. 11500" min="0" step="50">
+                        </div>
+                        <div class="col">
+                            <label class="form-label small text-secondary">Purchase Price — paid (£)</label>
+                            <input type="number" name="purchase_price" id="trackPurchasePrice"
+                                   class="form-control form-control-sm" style="background:#1e293b;color:#f1f5f9;border-color:#334155;"
+                                   placeholder="e.g. 11200" min="0" step="50">
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small text-secondary">Sale Price — sold for (£)</label>
+                        <input type="number" name="sale_price" id="trackSalePrice"
+                               class="form-control form-control-sm" style="background:#1e293b;color:#f1f5f9;border-color:#334155;"
+                               placeholder="e.g. 14800" min="0" step="50">
+                    </div>
+
+                    <div class="mb-2">
+                        <label class="form-label small text-secondary">Notes</label>
+                        <input type="text" name="notes" id="trackNotes"
+                               class="form-control form-control-sm" style="background:#1e293b;color:#f1f5f9;border-color:#334155;"
+                               placeholder="Optional">
+                    </div>
+                </div>
+                <div class="modal-footer" style="border-top:1px solid #1f2937;">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-sm btn-success">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function openTrackModal(dealId, title, lc) {
+    document.getElementById('trackForm').action = '/deals/' + dealId + '/track';
+    document.getElementById('trackDealTitle').textContent = title;
+    document.getElementById('trackStage').value = lc.stage || 'watching';
+    document.getElementById('trackOfferPrice').value = lc.offer_price || '';
+    document.getElementById('trackPurchasePrice').value = lc.purchase_price || '';
+    document.getElementById('trackSalePrice').value = lc.sale_price || '';
+    document.getElementById('trackNotes').value = lc.notes || '';
+    new bootstrap.Modal(document.getElementById('trackModal')).show();
+}
 </script>
 
 {% endblock %}
