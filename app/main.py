@@ -64,13 +64,15 @@ def get_nav_counts(db: Session) -> dict:
     ebay_deals = db.query(Deal).filter(Deal.source == "ebay_browse").count()
     facebook_deals = db.query(Deal).filter(Deal.source == "facebook_extension").count()
     van_deals = db.query(Deal).filter(Deal.source == "ebay_vans").count()
-    van_deals = db.query(Deal).filter(Deal.source == "ebay_vans").count()
+    price_drop_count = db.query(Deal).filter(
+        Deal.report["deal_signals"]["is_price_drop_alert"].astext == "true"
+    ).count()
     return {
         "all_deals": all_deals,
         "ebay_deals": ebay_deals,
         "facebook_deals": facebook_deals,
         "van_deals": van_deals,
-        "van_deals": van_deals,
+        "price_drop_count": price_drop_count,
     }
 
 

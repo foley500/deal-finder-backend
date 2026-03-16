@@ -40,14 +40,18 @@
                 <th>Source</th>
                 <th class="text-end">Profit</th>
                 <th class="text-end">Score</th>
+                <th class="text-center" style="width:50px;">DOM</th>
                 <th>Status</th>
+                <th>Signals</th>
                 <th style="width:90px;" class="text-end">Action</th>
             </tr>
         </thead>
 
         <tbody>
             {% for deal in deals %}
-            <tr>
+            {% set ds = deal.report.deal_signals if deal.report and deal.report.deal_signals else {} %}
+            {% set is_drop = ds.is_price_drop_alert %}
+            <tr {% if is_drop %}style="border-left: 3px solid #ef4444;"{% endif %}>
                 <td>
                     <input type="checkbox"
                            name="deal_ids"
@@ -56,6 +60,9 @@
                 </td>
 
                 <td>
+                    {% if is_drop %}
+                        <span class="me-1" title="Price dropped">🔻</span>
+                    {% endif %}
                     <a href="/deals/{{ deal.id }}"
                        style="color:#e2e8f0; text-decoration:none;">
                         {{ deal.title }}
@@ -87,10 +94,46 @@
                     </span>
                 </td>
 
+                <td class="text-center" style="color:#64748b; font-size:0.8rem;">
+                    {% if ds.days_on_market is not none %}
+                        {{ ds.days_on_market }}d
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+
                 <td>
                     <span class="status-badge status-{{ deal.status }}">
                         {{ deal.status }}
                     </span>
+                </td>
+
+                <td>
+                    <div class="d-flex flex-wrap gap-1">
+                        {% if is_drop %}
+                            <span class="badge" style="background:rgba(239,68,68,0.15);color:#f87171;font-size:0.7rem;"
+                                  title="Price dropped −£{{ ds.price_drop_amount }} ({{ ds.price_drop_pct }}%)">
+                                🔻 −£{{ ds.price_drop_amount | int }}
+                            </span>
+                        {% endif %}
+                        {% if ds.motivated_seller %}
+                            <span class="badge" style="background:rgba(239,68,68,0.10);color:#fca5a5;font-size:0.7rem;">🚨 Motivated</span>
+                        {% endif %}
+                        {% if ds.fsh %}
+                            <span class="badge" style="background:rgba(34,197,94,0.10);color:#86efac;font-size:0.7rem;">📋 FSH</span>
+                        {% endif %}
+                        {% if ds.one_owner %}
+                            <span class="badge" style="background:rgba(14,165,233,0.10);color:#7dd3fc;font-size:0.7rem;">🔑 1 Owner</span>
+                        {% endif %}
+                        {% if ds.ulez_diesel_risk %}
+                            <span class="badge" style="background:rgba(234,179,8,0.10);color:#fde047;font-size:0.7rem;">⚠️ ULEZ</span>
+                        {% endif %}
+                        {% if ds.valuation_confidence == "low" %}
+                            <span class="badge" style="background:rgba(239,68,68,0.10);color:#fca5a5;font-size:0.7rem;">📐 Low Val</span>
+                        {% elif ds.valuation_confidence == "medium" %}
+                            <span class="badge" style="background:rgba(234,179,8,0.10);color:#fde047;font-size:0.7rem;">📐 Med Val</span>
+                        {% endif %}
+                    </div>
                 </td>
 
                 <td class="text-end">

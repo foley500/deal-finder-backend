@@ -347,10 +347,32 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                     _signals["is_price_drop_alert"] = True
                     _report["deal_signals"] = _signals
 
+                    # Recalculate score with the improved profit after price drop.
+                    # Carry all existing signals forward so nothing is lost.
+                    new_score = calculate_score(
+                        profit=new_gross,
+                        risk_penalty=existing.risk_penalty or 0,
+                        mileage=existing.mileage,
+                        seller_type=_signals.get("seller_type"),
+                        price_drop_pct=drop_pct,
+                        days_on_market=_signals.get("days_on_market"),
+                        market_depth=_signals.get("market_depth", -1),
+                        motivated_seller=_signals.get("motivated_seller", False),
+                        fsh=_signals.get("fsh", False),
+                        mot_months_remaining=_signals.get("mot_months_remaining"),
+                        ulez_diesel_risk=_signals.get("ulez_diesel_risk", False),
+                        one_owner=_signals.get("one_owner", False),
+                        valuation_confidence=_signals.get("valuation_confidence"),
+                    )
+                    new_confidence = assign_confidence(new_score)
+                    existing.score = new_score
+                    existing.status = new_confidence
+                    _report["scoring"] = {"score": new_score, "confidence_level": new_confidence}
+
                     existing.report = _report
                     db.commit()
                     db.refresh(existing)
-                    print(f"   🔻 Price drop on deal {existing.id}: −£{drop_amount} ({drop_pct}%) → alerting")
+                    print(f"   🔻 Price drop on deal {existing.id}: −£{drop_amount} ({drop_pct}%) score {new_score} ({new_confidence}) → alerting")
                     return existing
             return None
 
