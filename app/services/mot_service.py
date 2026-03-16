@@ -96,7 +96,20 @@ def get_mot_data(registration: str, asking_price: float = None):
 
         if response.status_code == 200:
             result = parse_mot_trade_response(response.json(), asking_price=asking_price)
-            redis_client.set(cache_key, json.dumps(result), ex=DVSA_CACHE_TTL)
+            # Use expiry-aware TTL: cache until MOT expiry + 7 days so we don't
+            # serve stale data right after an MOT test. Fall back to 24h if unknown.
+            mot_expiry = result.get("mot_expiry_date")
+            ttl = DVSA_CACHE_TTL
+            if mot_expiry:
+                try:
+                    from datetime import date
+                    expiry_date = datetime.strptime(mot_expiry, "%Y-%m-%d").date()
+                    days_until = (expiry_date - date.today()).days + 7
+                    if days_until > 0:
+                        ttl = days_until * 86400
+                except Exception:
+                    pass
+            redis_client.set(cache_key, json.dumps(result), ex=ttl)
             return result
         else:
             print("❌ DVSA MOT error body:", response.text)
@@ -251,7 +264,19 @@ def parse_mot_trade_response(data, asking_price=None):
         chronic_bonus = 150
         print(f"   🟡 Repeat failer: {consecutive_fail_years} consecutive years with real MOT fails → +£{chronic_bonus} penalty")
 
-    raw_penalty = fail_penalty + advisory_penalty + chronic_bonus
+    # --- Clean history discount ---
+    # If the car has ZERO real failures across its entire MOT history,
+    # it has a clean record — reduce the advisory penalty slightly.
+    # This differentiates a genuinely well-maintained car from a problem car
+    # that happened to pass its most recent test.
+    clean_history = len(all_real_fails) == 0 and len(mot_tests) >= 2
+    clean_discount = 0
+    if clean_history:
+        # Reduce advisory penalty by 20% — clean car, advisories are routine wear
+        clean_discount = round(advisory_penalty * 0.20, 2)
+        print(f"   ✅ Clean MOT history (0 real fails, {len(mot_tests)} tests) → advisory discount £{clean_discount}")
+
+    raw_penalty = fail_penalty + advisory_penalty + chronic_bonus - clean_discount
 
     # Age factor: older cars get a further overall reduction
     # because some risk is already priced in at the purchase price
@@ -280,20 +305,32 @@ def parse_mot_trade_response(data, asking_price=None):
     print(f"   🔧 fail_penalty=£{fail_penalty}, advisory_penalty=£{round(advisory_penalty,2)}, age_factor={age_factor}")
     print(f"   🔧 raw=£{round(raw_penalty,2)}, adjusted=£{round(adjusted_penalty,2)}, final=£{round(final_penalty,2)}")
 
+    # Find the most recent MOT expiry date for cache TTL calculation
+    mot_expiry_date = None
+    passed_tests = [t for t in mot_tests if t.get("testResult") == "PASSED"]
+    if passed_tests:
+        latest_pass = max(passed_tests, key=lambda t: t.get("completedDate", ""))
+        mot_expiry_date = latest_pass.get("expiryDate")
+        if mot_expiry_date:
+            # DVSA returns expiryDate in format YYYY-MM-DD
+            mot_expiry_date = str(mot_expiry_date)[:10]
+
     return {
         "mot_summary": {
             "fail_count": recent_fails + medium_fails,
             "advisory_count": recent_advisories + medium_advisories,
             "mot_penalty": round(final_penalty, 2),
+            "clean_history": clean_history,
         },
         "mot_full_data": mot_tests,
+        "mot_expiry_date": mot_expiry_date,
         "vehicle_data": {
             "make": data.get("make"),
             "model": data.get("model"),
             "first_used_date": data.get("firstUsedDate"),
             "fuel_type": data.get("fuelType"),
             "engine_size": data.get("engineSize"),
-            "colour": data.get("primaryColour")
+            "colour": data.get("primaryColour"),
         }
     }
 

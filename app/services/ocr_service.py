@@ -37,8 +37,10 @@ BANNED_PLATE_STRINGS = {
 }
 
 def is_banned_plate(plate: str) -> bool:
-    if plate in BANNED_PLATE_STRINGS:
+    # Substring match — catches "CARDEALER", "MYAUTO_DEALER", watermark-style strings
+    if any(banned in plate for banned in BANNED_PLATE_STRINGS):
         return True
+    # All-alpha plates 6+ chars are almost certainly not real registrations
     if plate.isalpha() and len(plate) >= 6:
         return True
     return False
@@ -359,8 +361,21 @@ def _run_ocr_on_image(image: Image.Image, high_res: bool = False) -> str | None:
 
             h_crop, w_crop = plate_crop.shape[:2]
             aspect_ratio = w_crop / float(h_crop)
-            if aspect_ratio < 1.2 or aspect_ratio > 8.0:
-                continue
+
+            # Angled/mounted plates can have very low or very high aspect ratios.
+            # Before discarding, try a perspective correction — if deskew brings
+            # the ratio into a plausible range, use the corrected crop going forward.
+            if aspect_ratio < 0.9 or aspect_ratio > 10.0:
+                deskewed_early = deskew_plate(plate_crop)
+                if deskewed_early is not None:
+                    h_d, w_d = deskewed_early.shape[:2]
+                    fixed_ratio = w_d / float(h_d)
+                    if 0.9 <= fixed_ratio <= 10.0:
+                        plate_crop = deskewed_early  # use corrected geometry
+                    else:
+                        continue  # too distorted even after deskew
+                else:
+                    continue
 
             variants = preprocess_variants(plate_crop)
 

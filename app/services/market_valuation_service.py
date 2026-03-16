@@ -148,23 +148,22 @@ def normalise_base_model(make: str, base_model: str) -> str:
 
 
 def calculate_mileage_adjustment(base_price: float, listing_mileage: int, target_mileage: int) -> float:
+    """
+    Adjusts a comparable listing's price to what it would be worth at the target mileage.
+
+    Only the linear mileage differential is applied here.
+    The extreme mileage penalty (for when the TARGET car itself is extreme) is applied
+    once at the final result level — applying it per-comparable would double-count it
+    when the target and comparable are both in the extreme mileage range.
+    """
     mileage_diff = listing_mileage - target_mileage
     abs_diff = abs(mileage_diff)
 
     blocks = min(abs_diff / MILEAGE_BLOCK_SIZE, MAX_LINEAR_BLOCKS)
     linear_adjustment = base_price * MILEAGE_BLOCK_RATE * blocks
 
-    extreme_penalty = 0.0
-    if listing_mileage > EXTREME_MILEAGE_THRESHOLD:
-        excess = listing_mileage - EXTREME_MILEAGE_THRESHOLD
-        extra_blocks = min(excess / 10000, 15)
-        extreme_penalty = base_price * 0.02 * extra_blocks
-        print(f"   ⚠️ Extreme mileage penalty: {listing_mileage}mi → −£{round(extreme_penalty, 2)}")
-
-    total_adjustment = linear_adjustment + extreme_penalty
-
     if mileage_diff > 0:
-        return base_price - total_adjustment
+        return base_price - linear_adjustment
     else:
         return base_price + linear_adjustment
 
@@ -172,25 +171,24 @@ def calculate_mileage_adjustment(base_price: float, listing_mileage: int, target
 def mileage_proximity_weight(listing_mileage: int, target_mileage: int, tolerance: int) -> int:
     """
     Returns a repeat count (weight) for a comparable based on how close
-    its mileage is to the target. Closer = higher weight in the median pool.
+    its mileage is to the target. Uses a continuous linear scale rather than
+    fixed steps — avoids the cliff-edge where a car 1 mile outside the 25%
+    band drops from weight 3 to weight 2.
 
-    Weight 3 = very close  (within 25% of tolerance)
-    Weight 2 = close       (within 60% of tolerance)
-    Weight 1 = acceptable  (within tolerance)
-
-    Cars with no mileage data get weight 1 (neutral).
+    Scale: 1 (at tolerance boundary) → 3 (exact match)
+    Cars with no mileage data get weight 1 (neutral, not excluded).
     """
     if listing_mileage is None:
         return 1
 
     abs_diff = abs(listing_mileage - target_mileage)
-
-    if abs_diff <= tolerance * 0.25:
-        return 3
-    elif abs_diff <= tolerance * 0.60:
-        return 2
-    else:
+    if tolerance <= 0:
         return 1
+
+    # Linear interpolation: 3 at diff=0, 1 at diff=tolerance
+    ratio = abs_diff / tolerance
+    weight = 3.0 - (2.0 * ratio)
+    return max(1, round(weight))
 
 
 def check_spread(prices: list, label: str) -> float:
@@ -637,7 +635,9 @@ def get_market_price_from_sold(
         except:
             pass
 
-    mileage_bucket = int(mileage / 20000) * 20000
+    # Clamp to minimum 20k so low-mileage cars (under 20k) map to the 20k bucket
+    # rather than bucket 0, which is never seeded by prewarm.
+    mileage_bucket = max(20000, int(mileage / 20000) * 20000)
     engine_bucket = bucket_engine_size(engine_litre)
     cache_key = f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}"
     print(f"   🔑 Cache key: {cache_key}")

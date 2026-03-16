@@ -1,44 +1,163 @@
-WRITE_OFF_KEYWORDS = [
-    "cat s",
-    "cat n",
-    "category s",
-    "category n",
-    "write off",
-    "insurance payout",
-    "damaged",
-    "spares or repair"
-]
+# ============================================================
+# RISK ENGINE — description-based penalty scoring
+#
+# Two tiers:
+#   CRITICAL  — deal-killers (write-offs, salvage, stolen, flooded).
+#               Apply once only, large penalty. Dealers should avoid these entirely.
+#   HIGH      — serious mechanical or legal risk. Per-keyword penalty.
+#   MEDIUM    — condition issues that add reconditioning cost.
+#   LOW       — minor items worth noting.
+#
+# All penalties are capped at MAX_RISK_PERCENTAGE of asking price.
+# ============================================================
 
-MINOR_RISK_WORDS = {
-    "misfire": 400,
-    "engine light": 300,
-    "needs service": 200
+# Write-off / total loss categories — DVLA categories A/B/S/N
+CRITICAL_KEYWORDS = {
+    "cat a":            2000,
+    "cat b":            2000,
+    "category a":       2000,
+    "category b":       2000,
+    "cat s":            1500,
+    "cat n":            1200,
+    "category s":       1500,
+    "category n":       1200,
+    "write off":        1500,
+    "write-off":        1500,
+    "written off":      1500,
+    "insurance write":  1500,
+    "insurance payout": 1200,
+    "total loss":       1200,
+    "salvage title":    1500,
+    "salvage vehicle":  1200,
 }
 
-MAX_RISK_PERCENTAGE = 0.4  # 40% of listing price hard cap
+HIGH_RISK_KEYWORDS = {
+    # Structural / flood / fire
+    "flood damage":     1500,
+    "flood damaged":    1500,
+    "water damage":     1200,
+    "fire damage":      1200,
+    "fire damaged":     1200,
+    "structural damage":1000,
+
+    # Theft / legal status
+    "stolen recovery":  1000,
+    "recovered stolen":  900,
+    "vin changed":       800,
+    "chassis altered":   800,
+
+    # Documentation issues — serious for dealers
+    "no v5":             600,
+    "no log book":       600,
+    "no documents":      500,
+    "no paperwork":      500,
+    "log book lost":     500,
+    "v5 applied for":    400,
+
+    # Key issues
+    "no keys":           500,
+    "key unknown":       400,
+    "no key":            400,
+    "1 key":             200,
+    "one key":           200,
+
+    # Odometer / mileage integrity
+    "odometer broken":   600,
+    "speedo broken":     500,
+    "mileage unknown":   400,
+    "miles unknown":     400,
+    "clocked":           800,
+    "mileage not guaranteed": 400,
+
+    # Auction / trade flags (not necessarily bad but adds risk premium)
+    "auction":           300,
+    "trade sale":        300,
+    "trade only":        300,
+    "sold as seen":      400,
+    "no warranty":       200,
+}
+
+MEDIUM_RISK_KEYWORDS = {
+    # Engine / drivetrain
+    "misfire":           400,
+    "engine light":      300,
+    "check engine":      300,
+    "engine noise":      350,
+    "gearbox fault":     400,
+    "gearbox noise":     350,
+    "clutch slip":       300,
+    "clutch judder":     250,
+    "timing chain":      400,
+    "timing belt":       300,
+    "head gasket":       600,
+    "overheating":       400,
+    "oil leak":          250,
+    "coolant leak":      250,
+    "transmission fault":400,
+    "dpf fault":         350,
+    "turbo fault":       400,
+    "turbo noise":       300,
+
+    # Service / maintenance
+    "needs service":     200,
+    "service overdue":   250,
+    "service light":     200,
+    "no service history":200,
+    "no history":        150,
+    "unknown history":   150,
+
+    # Cosmetic / structural
+    "airbag fault":      400,
+    "abs fault":         300,
+    "brake fault":       350,
+    "damaged":           300,
+    "accident damage":   400,
+    "spares or repair":  500,
+    "spares or repairs": 500,
+    "not running":       600,
+    "non runner":        600,
+    "seized":            500,
+}
+
+LOW_RISK_KEYWORDS = {
+    "rust":              150,
+    "corrosion":         150,
+    "bodywork needed":   150,
+    "paint needed":      100,
+    "dent":              100,
+    "scratch":            75,
+    "scuff":              75,
+    "advisory":          100,
+    "advisories":        100,
+    "worn tyres":        150,
+    "needs tyres":       150,
+    "battery fault":     150,
+}
+
+MAX_RISK_PERCENTAGE = 0.40  # Hard cap: never more than 40% of asking price
 
 
-def description_risk(description: str, listing_price: float = 0):
-
+def description_risk(description: str, listing_price: float = 0) -> float:
     if not description:
         return 0
 
-    description = description.lower()
-    penalty = 0
+    text = description.lower()
+    penalty = 0.0
 
-    # Write-off detection (only apply once)
-    for word in WRITE_OFF_KEYWORDS:
-        if word in description:
-            penalty += 1000
-            break  # stop stacking write-off terms
+    # Critical keywords — apply once only (don't stack multiple write-off terms)
+    for phrase, amount in CRITICAL_KEYWORDS.items():
+        if phrase in text:
+            penalty += amount
+            break  # one critical penalty only
 
-    # Minor risks
-    for word, value in MINOR_RISK_WORDS.items():
-        if word in description:
-            penalty += value
+    # High, medium, low — cumulative but no double-counting per phrase
+    for keywords in (HIGH_RISK_KEYWORDS, MEDIUM_RISK_KEYWORDS, LOW_RISK_KEYWORDS):
+        for phrase, amount in keywords.items():
+            if phrase in text:
+                penalty += amount
 
-    # Hard cap based on listing price
-    if listing_price:
+    # Hard cap relative to asking price
+    if listing_price and listing_price > 0:
         max_allowed = listing_price * MAX_RISK_PERCENTAGE
         penalty = min(penalty, max_allowed)
 

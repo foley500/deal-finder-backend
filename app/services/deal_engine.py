@@ -4,15 +4,23 @@ from app.scoring import calculate_score
 from app.registration import extract_registration
 from app.models import Deal, DealerSettings
 from app.database import SessionLocal
-from app.services.ocr_service import extract_plate_from_images
+from app.services.ocr_service import extract_plate_from_images, generate_fuzzy_variants, is_valid_uk_plate, score_plate_candidate
 from app.services.mot_service import get_mot_data
 from app.services.ebay_browse_service import get_item_detail
 from app.services.market_valuation_service import get_market_price_from_sold
 
 from math import radians, sin, cos, sqrt, atan2
 import datetime
+import unicodedata
+import os
+import redis
+import json
 import requests
 import re
+
+REDIS_URL = os.getenv("CELERY_BROKER_URL")
+_redis = redis.from_url(REDIS_URL)
+POSTCODE_CACHE_TTL = 60 * 60 * 24 * 30  # 30 days
 
 
 TARGET_POSTCODE = "S43 4TW"
@@ -106,12 +114,33 @@ def assign_confidence(score: float) -> str:
 
 
 def get_lat_long(postcode: str):
+    if not postcode:
+        return None, None
+    clean = re.sub(r"\s+", "", postcode.upper())
+    cache_key = f"postcode:{clean}"
     try:
-        response = requests.get(f"https://api.postcodes.io/postcodes/{postcode}")
+        cached = _redis.get(cache_key)
+        if cached:
+            data = json.loads(cached)
+            return data.get("lat"), data.get("lon")
+    except Exception:
+        pass
+    try:
+        response = requests.get(
+            f"https://api.postcodes.io/postcodes/{clean}",
+            timeout=5,
+        )
         if response.status_code != 200:
             return None, None
-        data = response.json().get("result", {})
-        return data.get("latitude"), data.get("longitude")
+        result = response.json().get("result", {})
+        lat = result.get("latitude")
+        lon = result.get("longitude")
+        if lat and lon:
+            try:
+                _redis.set(cache_key, json.dumps({"lat": lat, "lon": lon}), ex=POSTCODE_CACHE_TTL)
+            except Exception:
+                pass
+        return lat, lon
     except Exception:
         return None, None
 
@@ -244,6 +273,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
             return None
 
         title = raw_item.get("title", "") or ""
+        # Normalise unicode — eBay sometimes returns smart quotes, em-dashes, etc.
+        # Without this, year/make regexes fail silently on non-ASCII titles.
+        title = unicodedata.normalize("NFKD", title)
         price = float(raw_item.get("price", 0) or 0)
 
         if not price:
@@ -357,13 +389,18 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
             try:
                 mot_response = get_mot_data(reg, asking_price=price)
 
-                # If exact plate fails DVSA, try fuzzy variants
+                # If exact plate fails DVSA, try top-5 fuzzy variants scored by confidence.
+                # Limit is critical — each DVSA call is a live API hit.
                 if mot_response and not mot_response.get("vehicle_data"):
-                    from app.services.ocr_service import generate_fuzzy_variants, is_valid_uk_plate
-                    variants = generate_fuzzy_variants(reg)
-                    for variant in variants:
-                        if not is_valid_uk_plate(variant):
-                            continue
+                    raw_variants = generate_fuzzy_variants(reg)
+                    # Score and sort: prefer valid UK formats, then by edit distance proxy
+                    scored = sorted(
+                        [(v, score_plate_candidate(v, 0.8, 0.8)) for v in raw_variants if is_valid_uk_plate(v)],
+                        key=lambda x: x[1],
+                        reverse=True,
+                    )
+                    top_variants = [v for v, _ in scored[:5]]
+                    for variant in top_variants:
                         print(f"   🔁 Trying fuzzy DVSA variant: {variant}")
                         fuzzy_response = get_mot_data(variant, asking_price=price)
                         if fuzzy_response and fuzzy_response.get("vehicle_data"):

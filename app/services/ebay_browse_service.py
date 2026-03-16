@@ -33,34 +33,50 @@ def _trip_circuit():
     print(f"⚡ Browse circuit tripped — pausing all browse calls for {BROWSE_CIRCUIT_TTL}s")
 
 
+EBAY_TOKEN_LOCK_KEY = "ebay:token_fetch_lock"
+
 def get_ebay_access_token():
     cached = redis_client.get(EBAY_TOKEN_KEY)
     if cached:
         return cached.decode()
 
-    credentials = f"{EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}"
-    encoded = base64.b64encode(credentials.encode()).decode()
+    # Atomic lock — only one worker fetches a new token when the cache is cold.
+    # Without this, concurrent workers all request new tokens simultaneously,
+    # burning auth calls and risking transient credential blocks.
+    lock_acquired = redis_client.set(EBAY_TOKEN_LOCK_KEY, "1", nx=True, ex=15)
+    if not lock_acquired:
+        # Another worker is fetching — wait briefly then read from cache
+        import time
+        time.sleep(2)
+        cached = redis_client.get(EBAY_TOKEN_KEY)
+        return cached.decode() if cached else None
 
-    headers = {
-        "Authorization": f"Basic {encoded}",
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    data = {
-        "grant_type": "client_credentials",
-        "scope": "https://api.ebay.com/oauth/api_scope"
-    }
+    try:
+        credentials = f"{EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}"
+        encoded = base64.b64encode(credentials.encode()).decode()
 
-    response = requests.post(TOKEN_URL, headers=headers, data=data)
-    if response.status_code != 200:
-        print("❌ eBay OAuth error:", response.text)
-        return None
+        headers = {
+            "Authorization": f"Basic {encoded}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        data = {
+            "grant_type": "client_credentials",
+            "scope": "https://api.ebay.com/oauth/api_scope"
+        }
 
-    token_data = response.json()
-    token = token_data.get("access_token")
-    expires_in = int(token_data.get("expires_in", 7200)) - 60
+        response = requests.post(TOKEN_URL, headers=headers, data=data)
+        if response.status_code != 200:
+            print("❌ eBay OAuth error:", response.text)
+            return None
 
-    redis_client.set(EBAY_TOKEN_KEY, token, ex=expires_in)
-    return token
+        token_data = response.json()
+        token = token_data.get("access_token")
+        expires_in = int(token_data.get("expires_in", 7200)) - 60
+
+        redis_client.set(EBAY_TOKEN_KEY, token, ex=expires_in)
+        return token
+    finally:
+        redis_client.delete(EBAY_TOKEN_LOCK_KEY)
 
 
 def search_ebay_browse(
