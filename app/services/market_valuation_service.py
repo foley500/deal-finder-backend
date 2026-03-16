@@ -70,14 +70,15 @@ def get_trade_multiplier(mileage: int, make: str = "") -> float:
 ACTIVE_SALE_DISCOUNT = 0.92
 
 # Mileage bands for dynamic layer_1 tolerance scaling.
-# Low mileage cars have plenty of comparables — keep tight.
-# High mileage cars have thin comparable pools — widen to compensate.
+# Layer 1 is always ±15k miles — tight first pass to get like-for-like comparables.
+# Layer 2+ progressively widens as fallback when comparable pools are thin.
+# High mileage cars have thin pools — only layer 2+ widens to compensate.
 # Format: (mileage_threshold, layer_1_tolerance, layer_2_tolerance)
 MILEAGE_TOLERANCE_BANDS = [
-    (60000,  15000, 25000),   # <60k miles  — tight, plenty of comparables
-    (100000, 18000, 28000),   # 60k-100k    — slightly wider
-    (140000, 25000, 35000),   # 100k-140k   — wider, pool is thinner
-    (float("inf"), 32000, 45000),  # 140k+  — wide, very thin pool at this mileage
+    (60000,  15000, 25000),   # <60k miles  — tight pool, plenty of comparables
+    (100000, 15000, 28000),   # 60k-100k    — l1 stays ±15k, l2 widens
+    (140000, 15000, 35000),   # 100k-140k   — l1 stays ±15k, l2 widens more
+    (float("inf"), 15000, 45000),  # 140k+  — l1 stays ±15k, l2 very wide
 ]
 
 
@@ -142,6 +143,10 @@ def normalise_base_model(make: str, base_model: str, full_model: str = "") -> st
     full_model: the complete model string before splitting (e.g. "C Class", "Range Rover Sport").
     Without it, DVSA multi-word models like "C CLASS" only pass "C" as base_model,
     making Mercedes/Land Rover queries far too vague.
+
+    DVSA API returns make/model/fuelType/engineSize as separate JSON fields — they
+    are NOT embedded in the model string. Model can contain variant/trim (e.g.
+    "GOLF GTI", "TRANSIT CUSTOM", "320D M SPORT") but NOT engine size or fuel type.
     """
     make_lower = make.lower()
     model_lower = base_model.lower().strip()
@@ -154,10 +159,13 @@ def normalise_base_model(make: str, base_model: str, full_model: str = "") -> st
                 series_num = model_lower[0]
                 return f"{series_num} Series"
             return f"{base_model} Series"
-        # Handle variants like "118d", "320i" etc
+        # Handle variants like "118d", "320i", "320D M Sport" etc
         m = re.match(r'^([1-9])\d{2}', model_lower)
         if m:
             return f"{m.group(1)} Series"
+        # X models: "X1", "X3", "X5" — uppercase is correct for eBay
+        if re.match(r'^x[1-9]$', model_lower):
+            return base_model.upper()
         # MINI models that ended up under BMW make
         if model_lower in ["hatch", "cooper", "one", "john cooper works", "jcw"]:
             return "Mini"
@@ -192,6 +200,56 @@ def normalise_base_model(make: str, base_model: str, full_model: str = "") -> st
             return "Discovery Sport"
         # Defender, Freelander, Discovery — first word is correct
         return base_model
+
+    if make_lower == "ford":
+        # Ford Transit family — all are distinct vehicles with separate eBay pools.
+        # "TRANSIT CUSTOM" → "Transit" loses thousands of relevant comparables.
+        if full_lower.startswith("transit custom"):
+            return "Transit Custom"
+        if full_lower.startswith("transit connect"):
+            return "Transit Connect"
+        if full_lower.startswith("transit courier"):
+            return "Transit Courier"
+        if full_lower.startswith("transit tourneo"):
+            return "Tourneo Custom"
+        if full_lower.startswith("mustang mach"):
+            return "Mustang Mach-E"
+
+    if make_lower == "toyota":
+        # Yaris Cross and Proace family are distinct from base Yaris/Proace
+        if full_lower.startswith("yaris cross"):
+            return "Yaris Cross"
+        if full_lower.startswith("proace city"):
+            return "Proace City"
+        if full_lower.startswith("proace verso"):
+            return "Proace Verso"
+        if full_lower.startswith("proace"):
+            return "Proace"
+        # C-HR — hyphen makes first word "C-Hr", restore correct form
+        if full_lower.startswith("c-hr") or full_lower.startswith("chr"):
+            return "C-HR"
+
+    if make_lower == "hyundai":
+        # Ioniq 5 and 6 are separate models, not variants of "Ioniq"
+        if full_lower.startswith("ioniq 5"):
+            return "Ioniq 5"
+        if full_lower.startswith("ioniq 6"):
+            return "Ioniq 6"
+        if full_lower.startswith("ioniq 9"):
+            return "Ioniq 9"
+
+    if make_lower in ["mg", "mg motor"]:
+        # MG model names are typically already single strings (MG ZS, MG HS etc)
+        # but DVSA may return "ZS", "HS", "MG5" etc. Ensure clean uppercase.
+        if model_lower in ["zs", "hs", "mg5", "mg4", "mg3", "zst", "zs ev"]:
+            return base_model.upper()
+
+    if make_lower == "volkswagen":
+        # DVSA sometimes prefixes VW commercial models differently
+        if full_lower.startswith("caddy maxi"):
+            return "Caddy Maxi"
+        if full_lower.startswith("grand california"):
+            return "Grand California"
 
     return base_model
 
@@ -815,8 +873,12 @@ def get_market_price_from_sold(
                 except:
                     pass
 
-    # Include year in the query to anchor eBay results to the right vintage.
-    # Include fuel type to separate diesel/petrol pools — they can differ by 15-20%.
+    # Do NOT include year in the eBay query — it narrows the result pool too
+    # aggressively for rare models and causes complete misses on cache-miss live searches.
+    # Year filtering is handled precisely by the 4-layer filter cascade (±2yr tolerance).
+    # Prewarm uses the same approach (make + model only).
+    #
+    # Include fuel type to separate diesel/petrol pools — they differ by 15-20%.
     # Do NOT add fuel type for hybrids (too niche, too few comparables).
     fuel_suffix = ""
     if fuel_type:
@@ -828,7 +890,7 @@ def get_market_price_from_sold(
         elif "electric" in ft and "hybrid" not in ft:
             fuel_suffix = " electric"
 
-    query = f"{make} {base_model} {year}{fuel_suffix}"
+    query = f"{make} {base_model}{fuel_suffix}"
 
     # Dynamically scale mileage tolerance based on target mileage.
     # High mileage cars have thin comparable pools — widen tolerance to compensate.
