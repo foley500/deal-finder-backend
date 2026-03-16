@@ -47,28 +47,3 @@ def calculate_true_profit(
     }
 
 
-def calculate_score(profit, risk_penalty, mileage):
-    # profit here is gross profit
-    score = 0
-
-    if profit > 3000:
-        score += 30
-    elif profit > 2000:
-        score += 25
-    elif profit > 1000:
-        score += 15
-    elif profit > 500:
-        score += 8
-    elif profit > 0:
-        score += 3
-
-    # Risk penalty
-    score -= risk_penalty / 150
-
-    # Mileage penalty
-    if mileage > 120000:
-        score -= 15
-    elif mileage > 80000:
-        score -= 5
-
-    return round(score, 2)

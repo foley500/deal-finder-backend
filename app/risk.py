@@ -137,6 +137,86 @@ LOW_RISK_KEYWORDS = {
 MAX_RISK_PERCENTAGE = 0.40  # Hard cap: never more than 40% of asking price
 
 
+# ============================================================
+# POSITIVE SIGNAL DETECTION
+# ============================================================
+
+MOTIVATED_SELLER_PHRASES = [
+    "quick sale",
+    "need quick sale",
+    "need gone",
+    "needs to go",
+    "need to sell",
+    "must sell",
+    "reduced to sell",
+    "priced to sell",
+    "moving abroad",
+    "relocating",
+    "emigrating",
+    "divorce",
+    "separation",
+    "reluctant sale",
+    "sadly selling",
+    "forced to sell",
+    "health reasons",
+    "unfortunately selling",
+    "any offers",
+    "offers considered",
+    "open to offers",
+    "no offers refused",
+    "below market",
+    "genuine bargain",
+    "too cheap",
+    "selling below",
+]
+
+FSH_PHRASES = [
+    "full service history",
+    "full dealer service history",
+    "full main dealer service",
+    "full stamped service",
+    "complete service history",
+    " fsh",
+    "fsh ",
+    "(fsh)",
+    "stamped service book",
+    "all stamps present",
+    "all services present",
+    "dealer serviced throughout",
+    "main dealer serviced",
+]
+
+
+def motivated_seller_signal(title: str, description: str) -> bool:
+    """
+    Returns True if title or description contains motivated seller language.
+    These phrases strongly indicate a seller willing to accept below-market offers.
+    """
+    combined = (title + " " + description).lower()
+    return any(phrase in combined for phrase in MOTIVATED_SELLER_PHRASES)
+
+
+def fsh_signal(title: str, description: str) -> bool:
+    """
+    Returns True if title or description indicates full service history.
+    FSH cars are easier to retail and command a small premium over no-history cars.
+    """
+    combined = (title + " " + description).lower()
+    return any(phrase in combined for phrase in FSH_PHRASES)
+
+
+def is_ulez_diesel_risk(fuel_type: str, year: int) -> bool:
+    """
+    Returns True if the vehicle is a pre-2015 diesel facing ongoing ULEZ resale risk.
+    Euro 5 diesel vehicles (registered before September 2015) are non-compliant with
+    the London ULEZ and growing number of UK Clean Air Zones.
+    This structurally reduces their resale values, particularly in urban markets.
+    """
+    if not fuel_type or not year:
+        return False
+    return "diesel" in fuel_type.lower() and year < 2015
+
+
 def description_risk(description: str, listing_price: float = 0) -> float:
     if not description:
         return 0

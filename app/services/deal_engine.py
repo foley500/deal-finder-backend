@@ -1,5 +1,5 @@
 from app.margin import calculate_true_profit
-from app.risk import description_risk
+from app.risk import description_risk, motivated_seller_signal, fsh_signal, is_ulez_diesel_risk
 from app.scoring import calculate_score
 from app.registration import extract_registration
 from app.models import Deal, DealerSettings
@@ -598,8 +598,52 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         net_profit = profit_result["net_profit"]
         est_costs = profit_result["costs"]
 
+        # Retail-based profit — what a dealer can make selling at forecourt price.
+        # Gross: retail value minus buying price.
+        # Net: after costs and risk penalty.
+        profit_retail = round(price_retail - price, 2) if price_retail else None
+        net_profit_retail = round(profit_retail - profit_result["total_deductions"], 2) if profit_retail is not None else None
+
         print(f"   📊 Values — Trade: £{price_trade} | Private: £{market_value} | Retail: £{price_retail}")
-        print(f"   💷 Gross profit: £{gross_profit} | Est costs: £{profit_result['total_deductions']} | Net profit: £{net_profit}")
+        print(f"   💷 Private gross: £{gross_profit} | Retail gross: £{profit_retail} | Net (private): £{net_profit} | Net (retail): £{net_profit_retail}")
+
+        # ------------------------------------------------------------------
+        # Detect positive deal signals from title + description
+        # ------------------------------------------------------------------
+        is_motivated = motivated_seller_signal(title, description)
+        has_fsh = fsh_signal(title, description)
+
+        # MOT months remaining — derived from most recent MOT expiry date.
+        # Used to score deals where the dealer needs immediate MOT spend.
+        mot_months_remaining = None
+        if mot_full_data:
+            try:
+                latest_mot = sorted(
+                    mot_full_data,
+                    key=lambda x: x.get("completedDate", ""),
+                    reverse=True
+                )[0]
+                expiry_str = latest_mot.get("expiryDate")
+                if expiry_str:
+                    expiry_date = datetime.datetime.strptime(expiry_str[:10], "%Y-%m-%d").date()
+                    today = datetime.datetime.now().date()
+                    days_remaining = (expiry_date - today).days
+                    mot_months_remaining = max(0, days_remaining // 30)
+            except Exception:
+                pass
+
+        # ULEZ diesel risk — pre-2015 diesel faces structural UK resale discount
+        fuel_type_for_ulez = vehicle_data.get("fuel_type") or aspects.get("Fuel Type")
+        ulez_risk = is_ulez_diesel_risk(fuel_type_for_ulez, year)
+
+        if is_motivated:
+            print(f"   🚨 Motivated seller detected")
+        if has_fsh:
+            print(f"   📋 Full service history detected")
+        if ulez_risk:
+            print(f"   ⚠️ ULEZ diesel risk: {fuel_type_for_ulez} {year}")
+        if mot_months_remaining is not None:
+            print(f"   🔧 MOT months remaining: {mot_months_remaining}")
 
         score = calculate_score(
             profit=gross_profit,
@@ -608,6 +652,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
             seller_type=seller_type,
             price_drop_pct=price_drop_pct,
             days_on_market=days_on_market,
+            motivated_seller=is_motivated,
+            fsh=has_fsh,
+            mot_months_remaining=mot_months_remaining,
+            ulez_diesel_risk=ulez_risk,
         )
         confidence = assign_confidence(score)
 
@@ -640,6 +688,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 price_drop_pct=price_drop_pct,
                 days_on_market=days_on_market,
                 market_depth=market_depth,
+                motivated_seller=is_motivated,
+                fsh=has_fsh,
+                mot_months_remaining=mot_months_remaining,
+                ulez_diesel_risk=ulez_risk,
             )
             confidence = assign_confidence(score)
 
@@ -664,8 +716,12 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                     "price_private": market_value,
                     "price_retail":  price_retail,
                     "price_trade":   price_trade,
+                    # Private-based profit (vs eBay private sold market)
                     "gross_profit": gross_profit,
                     "net_profit": net_profit,
+                    # Retail-based profit (vs dealer forecourt price)
+                    "profit_retail": profit_retail,
+                    "net_profit_retail": net_profit_retail,
                     "est_transport": est_costs["transport"],
                     "est_prep": est_costs["prep"],
                     "est_warranty": est_costs["warranty"],
@@ -689,6 +745,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                     "days_on_market": days_on_market,
                     "market_depth": market_depth,
                     "listing_date": listing_date_raw,
+                    "motivated_seller": is_motivated,
+                    "fsh": has_fsh,
+                    "mot_months_remaining": mot_months_remaining,
+                    "ulez_diesel_risk": ulez_risk,
                 },
                 "mot_summary": mot_summary,
                 "mot_full_data": mot_full_data,

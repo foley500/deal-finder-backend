@@ -57,26 +57,48 @@
 
             <hr>
 
-            <!-- GROSS PROFIT -->
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <div>
-                    <span class="fw-bold fs-5">Gross Profit</span>
-                    <div class="small text-secondary">Market value minus asking price</div>
+            <!-- PROFIT — PRIVATE (vs eBay private sold market) -->
+            <div class="rounded p-3 mb-2" style="background:#0f172a; border-left: 4px solid #38bdf8;">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <div>
+                        <span class="fw-bold">If Sold Privately</span>
+                        <div class="small text-secondary">vs eBay private sold market</div>
+                    </div>
+                    <div class="text-end">
+                        <div class="fs-5 fw-bold {% if report.financials.gross_profit and report.financials.gross_profit > 0 %}text-info{% else %}text-danger{% endif %}">
+                            £{{ report.financials.gross_profit or 0 }}
+                            <span class="small text-secondary fw-normal">gross</span>
+                        </div>
+                        <div class="small {% if report.financials.net_profit and report.financials.net_profit > 0 %}text-success{% else %}text-danger{% endif %}">
+                            £{{ report.financials.net_profit or 0 }} net
+                        </div>
+                    </div>
                 </div>
-                <strong class="fs-4 {% if report.financials.gross_profit and report.financials.gross_profit > 0 %}text-success{% else %}text-danger{% endif %}">
-                    £{{ report.financials.gross_profit or 0 }}
-                </strong>
             </div>
 
-            <!-- NET PROFIT -->
-            <div class="d-flex justify-content-between align-items-center mb-3">
-                <div>
-                    <span class="fw-bold fs-5">Net Profit</span>
-                    <div class="small text-secondary">After costs and risk</div>
+            <!-- PROFIT — RETAIL (vs dealer forecourt price) -->
+            <div class="rounded p-3 mb-3" style="background:#0f172a; border-left: 4px solid #22c55e;">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <div>
+                        <span class="fw-bold">If Sold at Retail</span>
+                        <div class="small text-secondary">vs dealer forecourt price</div>
+                    </div>
+                    <div class="text-end">
+                        {% set rp = report.financials.profit_retail %}
+                        {% set rnp = report.financials.net_profit_retail %}
+                        {% if rp is not none %}
+                            <div class="fs-5 fw-bold {% if rp > 0 %}text-success{% else %}text-danger{% endif %}">
+                                £{{ rp }}
+                                <span class="small text-secondary fw-normal">gross</span>
+                            </div>
+                            <div class="small {% if rnp and rnp > 0 %}text-success{% else %}text-danger{% endif %}">
+                                £{{ rnp or "—" }} net
+                            </div>
+                        {% else %}
+                            <div class="text-secondary small">—</div>
+                        {% endif %}
+                    </div>
                 </div>
-                <strong class="fs-4 {% if report.financials.net_profit and report.financials.net_profit > 0 %}text-success{% else %}text-danger{% endif %}">
-                    £{{ report.financials.net_profit or 0 }}
-                </strong>
             </div>
 
             {% set mv = report.financials.market_value or 0 %}
@@ -84,16 +106,16 @@
             {% set margin = (gross / mv * 100) if mv else 0 %}
 
             <div class="mb-3">
-                <div class="small text-secondary mb-1">Gross Margin</div>
+                <div class="small text-secondary mb-1">Private Gross Margin</div>
                 <div class="progress bg-dark" style="height: 8px;">
-                    <div class="progress-bar bg-success"
+                    <div class="progress-bar bg-info"
                          style="width: {{ [margin, 0]|max }}%;">
                     </div>
                 </div>
                 <div class="small mt-1">{{ "%.1f"|format(margin) }}%</div>
             </div>
 
-            <div class="d-flex gap-2 align-items-center">
+            <div class="d-flex gap-2 align-items-center flex-wrap">
                 <div class="badge bg-dark border border-light px-3 py-2">
                     Score: {{ "%.1f"|format(report.scoring.score or 0) }}
                 </div>
@@ -106,6 +128,17 @@
                     <div class="badge bg-secondary px-3 py-2">MEDIUM</div>
                 {% else %}
                     <div class="badge bg-danger px-3 py-2">LOW</div>
+                {% endif %}
+                {% if report.deal_signals %}
+                    {% if report.deal_signals.motivated_seller %}
+                        <div class="badge bg-danger px-2 py-1">🚨 Motivated Seller</div>
+                    {% endif %}
+                    {% if report.deal_signals.fsh %}
+                        <div class="badge bg-success px-2 py-1">📋 FSH</div>
+                    {% endif %}
+                    {% if report.deal_signals.ulez_diesel_risk %}
+                        <div class="badge bg-warning text-dark px-2 py-1">⚠️ ULEZ Risk</div>
+                    {% endif %}
                 {% endif %}
             </div>
 
@@ -135,14 +168,22 @@
                     <strong id="offerDisplay">£—</strong>
                 </div>
 
-                <div class="d-flex justify-content-between mb-2">
+                <div class="d-flex justify-content-between mb-1">
                     <span class="text-secondary small">Private Value</span>
-                    <strong>£{{ report.financials.price_private or report.financials.market_value or 0 }}</strong>
+                    <strong class="text-info">£{{ report.financials.price_private or report.financials.market_value or 0 }}</strong>
+                </div>
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-secondary small">Retail Value</span>
+                    <strong class="text-success">£{{ report.financials.price_retail or "—" }}</strong>
                 </div>
 
+                <div class="d-flex justify-content-between mb-1">
+                    <span class="text-secondary small">Gross Profit (private)</span>
+                    <strong id="offerGrossProfit" class="text-info">£—</strong>
+                </div>
                 <div class="d-flex justify-content-between mb-2">
-                    <span class="text-secondary small">Gross Profit at Offer</span>
-                    <strong id="offerGrossProfit">£—</strong>
+                    <span class="text-secondary small">Gross Profit (retail)</span>
+                    <strong id="offerGrossProfitRetail" class="text-success">£—</strong>
                 </div>
 
                 <hr style="border-color:#334155;">
@@ -159,13 +200,17 @@
 
                 <hr style="border-color:#334155;">
 
+                <div class="d-flex justify-content-between mb-1">
+                    <span class="fw-bold">Net Profit (private)</span>
+                    <strong id="offerProfit" class="fs-6 text-info">£—</strong>
+                </div>
                 <div class="d-flex justify-content-between align-items-center">
-                    <span class="fw-bold">Net Profit at Offer Price</span>
-                    <strong id="offerProfit" class="fs-5">£—</strong>
+                    <span class="fw-bold">Net Profit (retail)</span>
+                    <strong id="offerProfitRetail" class="fs-5 text-success">£—</strong>
                 </div>
 
                 <div class="mt-2">
-                    <div class="small text-secondary mb-1">Net Margin</div>
+                    <div class="small text-secondary mb-1">Retail Net Margin</div>
                     <div class="progress bg-dark" style="height:6px;">
                         <div id="offerMarginBar" class="progress-bar bg-success" style="width:0%;"></div>
                     </div>
@@ -364,10 +409,11 @@
 </div>
 
 <script>
-    const MARKET_VALUE = {{ report.financials.market_value or 0 }};
-    const RISK_PENALTY = {{ report.risk_breakdown.total_risk_penalty or 0 }};
-    const LISTING_PRICE = {{ report.financials.listing_price or 0 }};
-    const ORIGINAL_NET = {{ report.financials.net_profit or 0 }};
+    const PRIVATE_VALUE  = {{ report.financials.price_private or report.financials.market_value or 0 }};
+    const RETAIL_VALUE   = {{ report.financials.price_retail or 0 }};
+    const RISK_PENALTY   = {{ report.risk_breakdown.total_risk_penalty or 0 }};
+    const LISTING_PRICE  = {{ report.financials.listing_price or 0 }};
+    const ORIGINAL_NET   = {{ report.financials.net_profit or 0 }};
 
     function getCosts(offerPrice) {
         if (offerPrice < 2000)      return { prep: 200, warranty: 150, transport: 100 };
@@ -380,7 +426,8 @@
         const offerPrice = parseFloat(document.getElementById('offerInput').value);
 
         if (isNaN(offerPrice) || offerPrice <= 0) {
-            ['offerDisplay','offerGrossProfit','offerCosts','offerProfit','offerMarginLabel'].forEach(id => {
+            ['offerDisplay','offerGrossProfit','offerGrossProfitRetail',
+             'offerCosts','offerProfit','offerProfitRetail','offerMarginLabel'].forEach(id => {
                 document.getElementById(id).textContent = '£—';
             });
             document.getElementById('offerSaving').textContent = '';
@@ -389,23 +436,45 @@
 
         const costs = getCosts(offerPrice);
         const totalCosts = costs.prep + costs.warranty + costs.transport;
-        const grossProfit = MARKET_VALUE - offerPrice;
-        const netProfit = grossProfit - totalCosts - RISK_PENALTY;
-        const netMargin = MARKET_VALUE > 0 ? (netProfit / MARKET_VALUE * 100) : 0;
-        const saving = LISTING_PRICE - offerPrice;
-        const netGain = netProfit - ORIGINAL_NET;
+        const totalDeductions = totalCosts + RISK_PENALTY;
+
+        const grossPrivate = PRIVATE_VALUE - offerPrice;
+        const netPrivate   = grossPrivate - totalDeductions;
+
+        const grossRetail  = RETAIL_VALUE > 0 ? (RETAIL_VALUE - offerPrice) : null;
+        const netRetail    = grossRetail !== null ? (grossRetail - totalDeductions) : null;
+
+        const netMargin    = RETAIL_VALUE > 0 ? (netRetail / RETAIL_VALUE * 100) : (PRIVATE_VALUE > 0 ? (netPrivate / PRIVATE_VALUE * 100) : 0);
+        const saving       = LISTING_PRICE - offerPrice;
+        const netGain      = netPrivate - ORIGINAL_NET;
 
         document.getElementById('offerDisplay').textContent = '£' + offerPrice.toLocaleString();
 
-        const grossEl = document.getElementById('offerGrossProfit');
-        grossEl.textContent = '£' + grossProfit.toFixed(2);
-        grossEl.className = grossProfit > 0 ? 'text-success' : 'text-danger';
+        const gpEl = document.getElementById('offerGrossProfit');
+        gpEl.textContent = '£' + grossPrivate.toFixed(0);
+        gpEl.className = 'text-' + (grossPrivate > 0 ? 'info' : 'danger');
+
+        const gpRetailEl = document.getElementById('offerGrossProfitRetail');
+        if (grossRetail !== null) {
+            gpRetailEl.textContent = '£' + grossRetail.toFixed(0);
+            gpRetailEl.className = 'text-' + (grossRetail > 0 ? 'success' : 'danger');
+        } else {
+            gpRetailEl.textContent = '£—';
+        }
 
         document.getElementById('offerCosts').textContent = '£' + totalCosts.toLocaleString();
 
         const profitEl = document.getElementById('offerProfit');
-        profitEl.textContent = '£' + netProfit.toFixed(2);
-        profitEl.className = 'fs-5 ' + (netProfit > 0 ? 'text-success' : 'text-danger');
+        profitEl.textContent = '£' + netPrivate.toFixed(0);
+        profitEl.className = 'fs-6 text-' + (netPrivate > 0 ? 'info' : 'danger');
+
+        const profitRetailEl = document.getElementById('offerProfitRetail');
+        if (netRetail !== null) {
+            profitRetailEl.textContent = '£' + netRetail.toFixed(0);
+            profitRetailEl.className = 'fs-5 text-' + (netRetail > 0 ? 'success' : 'danger');
+        } else {
+            profitRetailEl.textContent = '£—';
+        }
 
         const clampedMargin = Math.max(netMargin, 0);
         document.getElementById('offerMarginBar').style.width = Math.min(clampedMargin, 100) + '%';

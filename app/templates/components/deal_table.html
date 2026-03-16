@@ -37,6 +37,12 @@
     <span class="{% if deal.profit and deal.profit >= 0 %}profit-positive{% else %}profit-negative{% endif %}">
         £{{ "%.0f"|format(deal.profit or 0) }}
     </span>
+    {% set rp = (deal.report or {}).get('financials', {}).get('profit_retail') %}
+    {% if rp is not none %}
+    <div class="small {% if rp >= 0 %}text-success{% else %}text-danger{% endif %}">
+        £{{ "%.0f"|format(rp) }} retail
+    </div>
+    {% endif %}
 </td>
 
                 <td class="text-end">

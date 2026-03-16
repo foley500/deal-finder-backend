@@ -6,6 +6,10 @@ def calculate_score(
     price_drop_pct=None,
     days_on_market=None,
     market_depth=-1,
+    motivated_seller=False,
+    fsh=False,
+    mot_months_remaining=None,
+    ulez_diesel_risk=False,
 ):
     """
     Dealer-grade deal scoring. Returns a float score.
@@ -15,8 +19,8 @@ def calculate_score(
       ≥10  → medium confidence
       <10  → low confidence
 
-    Typical ceiling for a perfect deal: ~50 (£2k+ profit, private seller,
-    recent price drop, fresh listing, scarce inventory, low mileage, clean MOT).
+    Typical ceiling for a perfect deal: ~65 (£2k+ profit, private seller,
+    motivated seller, FSH, fresh listing, scarce inventory, low mileage, clean MOT).
     """
     score = 0
 
@@ -54,43 +58,68 @@ def calculate_score(
     # ------------------------------------------------------------------
     # SELLER TYPE — individual (private) selling cheap is a stronger
     # deal signal than a dealer listing at the same price.
-    # Dealers price at retail; a private seller £800 below private clean
-    # is motivated. A dealer at the same price is just trying market rate.
     # ------------------------------------------------------------------
     if seller_type == "INDIVIDUAL":
         score += 5
     elif seller_type == "BUSINESS":
-        score -= 2  # Slight discount — dealer at private-deal price = needs investigation
+        score -= 2
+
+    # ------------------------------------------------------------------
+    # MOTIVATED SELLER — strongest buying opportunity signal.
+    # Phrases like "quick sale", "moving abroad", "reluctant sale" indicate
+    # a seller willing to accept below-market offers.
+    # ------------------------------------------------------------------
+    if motivated_seller:
+        score += 10
+
+    # ------------------------------------------------------------------
+    # FULL SERVICE HISTORY — easier to retail, commands a small premium.
+    # Reduces reconditioning risk and buyer objections at the forecourt.
+    # ------------------------------------------------------------------
+    if fsh:
+        score += 5
 
     # ------------------------------------------------------------------
     # PRICE DROP SIGNAL — value sweep killer feature.
-    # A listing that was £2,500 and is now £1,900 has a motivated seller.
-    # The drop size indicates urgency. This is NOT captured by current profit
-    # since profit is calculated against market value, not original asking price.
     # ------------------------------------------------------------------
     if price_drop_pct is not None and price_drop_pct > 0:
         if price_drop_pct >= 20:
-            score += 12  # Aggressive cut — seller needs to move it
+            score += 12
         elif price_drop_pct >= 10:
             score += 8
         elif price_drop_pct >= 5:
             score += 5
         else:
-            score += 3  # Even a small drop signals flexibility
+            score += 3
 
     # ------------------------------------------------------------------
     # DAYS ON MARKET — fresh is better for sniper; stale needs a reason.
-    # Very fresh (<1 day) = sniper opportunity. Old without sale = red flag.
-    # Note: sniper age gate (90 min) largely handles this for sniper runs.
-    # This signal is most useful for value sweep.
     # ------------------------------------------------------------------
     if days_on_market is not None:
         if days_on_market <= 1:
-            score += 5   # Just listed — first-mover advantage
+            score += 5
         elif days_on_market <= 7:
-            score += 2   # Still fresh
+            score += 2
         elif days_on_market >= 45:
-            score -= 3   # Sat for 6+ weeks — ask why
+            score -= 3
+
+    # ------------------------------------------------------------------
+    # MOT MONTHS REMAINING — affects dealer's immediate cost and retail ease.
+    # >10 months = no action needed before resale. <3 months = immediate cost.
+    # ------------------------------------------------------------------
+    if mot_months_remaining is not None:
+        if mot_months_remaining >= 10:
+            score += 3
+        elif mot_months_remaining < 3:
+            score -= 5
+
+    # ------------------------------------------------------------------
+    # ULEZ / DIESEL RISK — pre-2015 Euro 5 diesels face structural
+    # resale headwinds in the UK. Harder to retail in London and growing
+    # Clean Air Zones. Penalty reflects reduced buyer pool.
+    # ------------------------------------------------------------------
+    if ulez_diesel_risk:
+        score -= 8
 
     # ------------------------------------------------------------------
     # MARKET DEPTH — how many competing listings exist at ≤ asking + 15%.
@@ -99,12 +128,12 @@ def calculate_score(
     # ------------------------------------------------------------------
     if market_depth >= 0:
         if market_depth <= 2:
-            score += 8   # Rare — few alternatives for buyers
+            score += 8
         elif market_depth <= 5:
-            score += 4   # Reasonably scarce
+            score += 4
         elif market_depth <= 10:
-            score += 1   # Some competition
+            score += 1
         elif market_depth >= 25:
-            score -= 5   # It's just market price, not underpriced
+            score -= 5
 
     return round(score, 1)

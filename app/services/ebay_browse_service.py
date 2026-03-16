@@ -238,21 +238,39 @@ def search_sniper_windows(make, model):
 def get_model_variants(make, model):
     """
     Generates common typo / shorthand search variants.
+    Broader coverage = more mispriced listings found by sniper.
+    Typo listings get fewer views → lower competition → cheaper prices.
     """
 
     variants = [(make, model)]
 
     make_lower = make.lower()
 
+    # Common UK eBay make abbreviations and typos.
+    # Each entry adds 1 extra search term × 4 price windows = 4 more API calls.
     replacements = {
-        "mercedes": ["merc"],
-        "volkswagen": ["vw", "volkswagon"],
-        "bmw": ["bm"],
-        "land rover": ["landrover"],
+        "mercedes-benz": ["mercedes", "merc", "mersedes"],
+        "mercedes":      ["merc", "mersedes"],
+        "volkswagen":    ["vw", "volkswagon", "volksvagen"],
+        "bmw":           ["bm"],
+        "land rover":    ["landrover", "land-rover"],
+        "vauxhall":      ["vauxhal", "vaxhaul"],
+        "audi":          ["adi"],
+        "toyota":        ["toyata", "toyot"],
+        "ford":          ["foord"],
+        "nissan":        ["nissan"],   # keep original only — rare typos
+        "hyundai":       ["hundai", "hyundia"],
+        "kia":           [],           # short name — typos don't help
+        "renault":       ["renult", "renualt"],
+        "peugeot":       ["peugot", "puegot"],
+        "citroen":       ["citron", "citreon"],
+        "skoda":         ["schkoda"],
+        "seat":          [],           # too short
+        "mini":          [],           # too generic
+        "porsche":       ["porche", "porshe"],
     }
 
     if make_lower in replacements:
-
         for variant in replacements[make_lower]:
             variants.append((variant, model))
 
