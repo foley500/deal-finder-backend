@@ -136,8 +136,17 @@
                     {% if report.deal_signals.fsh %}
                         <div class="badge bg-success px-2 py-1">📋 FSH</div>
                     {% endif %}
+                    {% if report.deal_signals.one_owner %}
+                        <div class="badge bg-info text-dark px-2 py-1">🔑 One Owner</div>
+                    {% endif %}
                     {% if report.deal_signals.ulez_diesel_risk %}
                         <div class="badge bg-warning text-dark px-2 py-1">⚠️ ULEZ Risk</div>
+                    {% endif %}
+                    {% set vconf = report.deal_signals.valuation_confidence %}
+                    {% if vconf == "low" %}
+                        <div class="badge bg-danger px-2 py-1">📐 Low Val. Confidence</div>
+                    {% elif vconf == "medium" %}
+                        <div class="badge bg-warning text-dark px-2 py-1">📐 Med Val. Confidence</div>
                     {% endif %}
                 {% endif %}
             </div>
