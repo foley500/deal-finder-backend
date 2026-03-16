@@ -326,27 +326,13 @@
             {% endif %}
             <p class="mb-3"></p>
 
-            <div class="d-flex flex-wrap gap-2 mb-4">
-                {% if report.listing_url %}
+            {% if report.listing_url %}
                 <a href="{{ report.listing_url }}"
                    target="_blank"
-                   class="btn btn-outline-light">
+                   class="btn btn-outline-light mb-4">
                     View Original Listing
                 </a>
-                {% endif %}
-                {% if deal.reg %}
-                <a href="https://www.check-mot.service.gov.uk/results?registration={{ deal.reg }}"
-                   target="_blank"
-                   class="btn btn-outline-info">
-                    🔎 Check MOT (GOV.UK)
-                </a>
-                <a href="https://www.gov.uk/check-vehicle-tax"
-                   target="_blank"
-                   class="btn btn-outline-warning">
-                    📋 Check Tax / SORN
-                </a>
-                {% endif %}
-            </div>
+            {% endif %}
 
             {% set all_images = report.images if report.images else ([report.primary_image] if report.primary_image else []) %}
             {% if all_images %}
