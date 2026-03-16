@@ -180,6 +180,7 @@ def search_sniper_windows(make, model):
         (1500, 4000),
         (4000, 8000),
         (8000, 20000),
+        (20000, 35000),  # Catches BMW 3/5 Series, Merc C/E-Class, Land Rover — all hit £20k+
     ]
 
     # Build deduplicated search terms — reversed order only adds value when

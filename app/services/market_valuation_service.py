@@ -91,7 +91,16 @@ def get_mileage_tolerances(target_mileage: int) -> tuple:
     for threshold, l1, l2 in MILEAGE_TOLERANCE_BANDS:
         if target_mileage < threshold:
             return l1, l2
-    return 32000, 45000
+    return 15000, 45000  # Should never be reached — float("inf") band covers everything
+
+
+# Make normalisation applied before building cache keys.
+# Must match the aliases applied in deal_engine.py so prewarm and live
+# valuations always generate identical cache keys for the same vehicle.
+_MAKE_CACHE_ALIASES = {
+    "Mercedes-Benz": "Mercedes",   # deal_engine aliases DVSA "MERCEDES-BENZ" → "Mercedes"
+    "Vw":            "Volkswagen", # DVSA "VW" (rare) → eBay-standard "Volkswagen"
+}
 
 def bucket_engine_size(engine_litre):
     """
@@ -802,6 +811,11 @@ def get_market_price_from_sold(
         mileage = 100000
 
     make = str(make).strip().title()
+    # Normalise make name so prewarm and live valuations share the same cache key.
+    # deal_engine.py aliases "MERCEDES-BENZ" → "Mercedes" before calling here,
+    # but prewarm calls this directly with "Mercedes-Benz" from PREWARM_TARGETS.
+    # Without this, every Mercedes car is a cache miss — prewarm is completely wasted.
+    make = _MAKE_CACHE_ALIASES.get(make, make)
     model = str(model).strip().title()
     model_words = model.split()
     base_model = model_words[0]

@@ -97,6 +97,12 @@ SCAN_QUERY_GROUPS = [
     "Volvo",
     "Mini",
     "Citroen",
+    "Jaguar",      # XE/XF/F-Pace hit deal range regularly
+    "Fiat",        # 500, Panda — high volume budget market
+    "Alfa Romeo",  # mispriced by sellers unfamiliar with model values
+    "Dacia",       # Duster/Sandero — strong value, often underpriced
+    "MG",          # ZS/HS — growing volume, resale values still stabilising
+    "Mitsubishi",  # Outlander PHEV in particular — niche but frequent deals
 ]
 
 YEAR_SNIPER_QUERIES = [
@@ -106,6 +112,10 @@ YEAR_SNIPER_QUERIES = [
     "2016",
     "2017",
     "2018",
+    "2019",  # 2019-2022 models now reach the dealer sweet-spot price range
+    "2020",
+    "2021",
+    "2022",
 ]
 
 ENGINE_SNIPER_QUERIES = [
@@ -114,6 +124,7 @@ ENGINE_SNIPER_QUERIES = [
     "1.6",
     "1.8",
     "2.0",
+    "2.5",   # common on prestige (BMW, Audi, Volvo)
 ]
 
 GENERIC_SNIPER_QUERIES = [
@@ -125,6 +136,9 @@ GENERIC_SNIPER_QUERIES = [
     "cheap vehicle",
     "cheap hatchback",
     "cheap automatic",
+    "low mileage car",    # attracts well-maintained underpriced vehicles
+    "urgent sale car",    # motivated sellers — deal signal
+    "quick sale car",     # motivated sellers — deal signal
 ]
 
 SNIPER_ROTATION_KEY = "sniper_query_rotation_idx"
@@ -281,17 +295,21 @@ PREWARM_TARGETS = [
     ("Bmw", "X3",       [2013, 2014, 2015, 2016, 2017, 2018],                [20000, 40000, 60000, 80000, 100000]),
     ("Bmw", "X5",       [2013, 2014, 2015, 2016, 2017],                      [40000, 60000, 80000, 100000]),
 
-    # ── MERCEDES-BENZ ─────────────────────────────────────────────────────
-    ("Mercedes-Benz", "A-Class",  [2013, 2014, 2015, 2016, 2017, 2018],      [20000, 40000, 60000, 80000]),
-    ("Mercedes-Benz", "B-Class",  [2013, 2014, 2015, 2016, 2017, 2018],      [20000, 40000, 60000, 80000]),
-    ("Mercedes-Benz", "C-Class",  [2013, 2014, 2015, 2016, 2017, 2018],      [20000, 40000, 60000, 80000, 100000]),
-    ("Mercedes-Benz", "E-Class",  [2013, 2014, 2015, 2016, 2017, 2018],      [40000, 60000, 80000, 100000, 120000]),
-    ("Mercedes-Benz", "GLA",      [2014, 2015, 2016, 2017, 2018],            [20000, 40000, 60000, 80000]),
-    ("Mercedes-Benz", "GLC",      [2015, 2016, 2017, 2018, 2019],            [20000, 40000, 60000, 80000]),
-    ("Mercedes-Benz", "Gle",      [2015, 2016, 2017, 2018],                  [20000, 40000, 60000, 80000, 100000]),
-    ("Mercedes-Benz", "Cla",      [2013, 2014, 2015, 2016, 2017, 2018],      [20000, 40000, 60000, 80000]),
-    ("Mercedes-Benz", "Sprinter", [2014, 2015, 2016, 2017, 2018],            [60000, 80000, 100000, 120000]),
-    ("Mercedes-Benz", "Vito",     [2014, 2015, 2016, 2017, 2018],            [60000, 80000, 100000, 120000]),
+    # ── MERCEDES ──────────────────────────────────────────────────────────
+    # IMPORTANT: Use "Mercedes" not "Mercedes-Benz" — deal_engine aliases DVSA
+    # "MERCEDES-BENZ" → "Mercedes" before calling get_market_price_from_sold.
+    # Cache keys must match: sold_cache:Mercedes:C-Class:... not Mercedes-Benz.
+    ("Mercedes", "A-Class",  [2013, 2014, 2015, 2016, 2017, 2018, 2019],    [20000, 40000, 60000, 80000]),
+    ("Mercedes", "B-Class",  [2013, 2014, 2015, 2016, 2017, 2018],          [20000, 40000, 60000, 80000]),
+    ("Mercedes", "C-Class",  [2013, 2014, 2015, 2016, 2017, 2018, 2019],    [20000, 40000, 60000, 80000, 100000]),
+    ("Mercedes", "E-Class",  [2013, 2014, 2015, 2016, 2017, 2018],          [40000, 60000, 80000, 100000, 120000]),
+    ("Mercedes", "GLA",      [2014, 2015, 2016, 2017, 2018, 2019],          [20000, 40000, 60000, 80000]),
+    ("Mercedes", "GLC",      [2015, 2016, 2017, 2018, 2019, 2020],          [20000, 40000, 60000, 80000]),
+    ("Mercedes", "GLE",      [2015, 2016, 2017, 2018, 2019],                [20000, 40000, 60000, 80000, 100000]),
+    ("Mercedes", "CLA",      [2013, 2014, 2015, 2016, 2017, 2018, 2019],    [20000, 40000, 60000, 80000]),
+    # Vans kept as Mercedes-Benz — they don't go through the car deal engine aliases
+    ("Mercedes-Benz", "Sprinter", [2014, 2015, 2016, 2017, 2018],           [60000, 80000, 100000, 120000]),
+    ("Mercedes-Benz", "Vito",     [2014, 2015, 2016, 2017, 2018],           [60000, 80000, 100000, 120000]),
 
     # ── TOYOTA ────────────────────────────────────────────────────────────
     ("Toyota", "Yaris",   [2012, 2013, 2014, 2015, 2016, 2017, 2018],        [20000, 40000, 60000, 80000]),
