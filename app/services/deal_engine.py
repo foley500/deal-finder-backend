@@ -463,17 +463,22 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
             print(f"   ❌ Cannot value — make={make}, model={model} — skipping")
 
         if valuation_result:
-            market_value = valuation_result["market_price"]
+            market_value = valuation_result.get("price_private") or valuation_result["market_price"]
+            price_retail = valuation_result.get("price_retail")
+            price_trade  = valuation_result.get("price_trade")
         else:
             print("⚠️ No cached valuation found — skipping listing (prewarm will fill cache)")
             return None
 
         valuation_data = {
-            "market_price": market_value,
-            "source": valuation_result["source"] if valuation_result else "fallback_model",
-            "source_label": valuation_result.get("source_label") if valuation_result else None,
-            "sample_size": valuation_result.get("sample_size") if valuation_result else None,
-            "confidence": valuation_result.get("confidence") if valuation_result else None,
+            "market_price":  market_value,
+            "price_private": market_value,
+            "price_retail":  price_retail,
+            "price_trade":   price_trade,
+            "source":        valuation_result["source"] if valuation_result else "fallback_model",
+            "source_label":  valuation_result.get("source_label") if valuation_result else None,
+            "sample_size":   valuation_result.get("sample_size") if valuation_result else None,
+            "confidence":    valuation_result.get("confidence") if valuation_result else None,
         }
 
         description_penalty = description_risk(description, price)
@@ -489,6 +494,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         net_profit = profit_result["net_profit"]
         est_costs = profit_result["costs"]
 
+        print(f"   📊 Values — Trade: £{price_trade} | Private: £{market_value} | Retail: £{price_retail}")
         print(f"   💷 Gross profit: £{gross_profit} | Est costs: £{profit_result['total_deductions']} | Net profit: £{net_profit}")
 
         score = calculate_score(gross_profit, risk_penalty, mileage)
@@ -521,6 +527,9 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 "financials": {
                     "listing_price": price,
                     "market_value": market_value,
+                    "price_private": market_value,
+                    "price_retail":  price_retail,
+                    "price_trade":   price_trade,
                     "gross_profit": gross_profit,
                     "net_profit": net_profit,
                     "est_transport": est_costs["transport"],
