@@ -10,6 +10,7 @@ from app.services.ebay_browse_service import (
     get_ebay_access_token,
     get_item_detail,
     _trip_circuit,
+    _is_circuit_open,
 )
 
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
@@ -250,8 +251,15 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
         collected = []
         seen_ids = set()
 
-        # fetch up to 3 pages of sold results
+        # fetch up to 5 pages of sold results
         for offset in [0, 50, 100, 150, 200]:
+
+            # Circuit check FIRST — if open, stop immediately.
+            # Without this, each request gets 429, resets the 90s TTL,
+            # and the circuit never actually expires during an active run.
+            if _is_circuit_open():
+                print(f"⚡ [{label}] Circuit open — aborting pagination")
+                break
 
             if budget_fn and not budget_fn(1):
                 print(f"🛑 Budget exhausted — stopping [{label}] pagination")
@@ -363,11 +371,20 @@ def get_active_listings(query: str, limit: int = 40, budget_fn=None):
         "category_ids": "9801"
     }
 
+    if _is_circuit_open():
+        print("⚡ Active listing fallback — circuit open, skipping")
+        return []
+
     if budget_fn and not budget_fn(1):
         return []
 
     throttle_ebay()
     response = requests.get(SEARCH_URL, headers=headers, params=params)
+
+    if response.status_code == 429:
+        _trip_circuit()
+        print("⚡ Active listing fallback — rate limited, circuit tripped")
+        return []
 
     if response.status_code != 200:
         return []

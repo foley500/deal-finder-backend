@@ -619,8 +619,13 @@ def prewarm_valuation_cache(targets_override=None):
             continue
 
         # Enrich summaries once — reused across all year/mileage combinations below
+        # budget_fn passed so detail calls count toward the daily budget guard.
         try:
-            enriched_summaries = _pre_expand_details(all_summaries, prewarm_mode=True)  # Year-only expansion, capped at 15
+            enriched_summaries = _pre_expand_details(
+                all_summaries,
+                budget_fn=lambda n: _check_budget(n, "prewarm"),
+                prewarm_mode=True,   # Year-only expansion, capped at MAX_PREWARM_EXPANSIONS
+            )
         except Exception as e:
             print(f"❌ Expansion failed for {query}: {e}")
             continue
@@ -947,7 +952,10 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     task_name = "van_sniper" if source_override == "ebay_vans" else "sniper"
 
                     if source_name == "ebay_browse":
-                        if not _check_budget(1, task_name):
+                        # search_sniper_windows fires 4 price-window calls — count all 4
+                        # so the budget tracker stays accurate. Counting 1 was causing
+                        # the daily budget to appear 4× healthier than reality.
+                        if not _check_budget(4, task_name):
                             print("Daily API budget reached - stopping sniper")
                             break
 
