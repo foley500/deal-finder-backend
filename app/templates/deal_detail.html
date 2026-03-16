@@ -304,6 +304,20 @@
 
             <p class="mb-1"><strong>Registration:</strong> {{ deal.reg or "Not detected" }}</p>
             <p class="mb-1"><strong>Mileage:</strong> {{ deal.mileage or "Not provided" }}</p>
+            {% if report.dvla_data and report.dvla_data.tax_status %}
+            <p class="mb-1"><strong>Road Tax:</strong>
+                {% if report.dvla_data.tax_status == "Taxed" %}
+                    <span class="badge bg-success ms-1">✅ Taxed</span>
+                    {% if report.dvla_data.tax_due_date %}
+                        <span class="text-secondary small ms-1">until {{ report.dvla_data.tax_due_date[:10] }}</span>
+                    {% endif %}
+                {% elif report.dvla_data.tax_status == "SORN" %}
+                    <span class="badge bg-danger ms-1">🚫 SORN</span>
+                {% else %}
+                    <span class="badge bg-danger ms-1">❌ Untaxed</span>
+                {% endif %}
+            </p>
+            {% endif %}
             <p class="mb-1"><strong>Transmission:</strong> {{ report.listing_details.transmission or "Not provided" }}</p>
             <p class="mb-1"><strong>Fuel Type:</strong> {{ report.listing_details.fuel_type or "Not provided" }}</p>
             <p class="mb-1"><strong>Exterior Colour:</strong> {{ report.listing_details.exterior_color or "Not provided" }}</p>
