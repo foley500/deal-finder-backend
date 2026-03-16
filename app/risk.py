@@ -205,6 +205,33 @@ def fsh_signal(title: str, description: str) -> bool:
     return any(phrase in combined for phrase in FSH_PHRASES)
 
 
+ONE_OWNER_PHRASES = [
+    "one owner",
+    "1 owner",
+    "1 previous owner",
+    "one previous owner",
+    "single owner",
+    "only owner",
+    "sole owner",
+    "first owner",
+    "1 former keeper",
+    "one former keeper",
+    "only one keeper",
+    "1 keeper",
+    "one keeper",
+]
+
+
+def one_owner_signal(title: str, description: str) -> bool:
+    """
+    Returns True if title or description indicates single previous owner.
+    One-owner cars are easier to retail — buyers pay a small premium and
+    the vehicle history is simpler to verify. Reduces reconditioning risk.
+    """
+    combined = (title + " " + description).lower()
+    return any(phrase in combined for phrase in ONE_OWNER_PHRASES)
+
+
 def is_ulez_diesel_risk(fuel_type: str, year: int) -> bool:
     """
     Returns True if the vehicle is a pre-2015 diesel facing ongoing ULEZ resale risk.

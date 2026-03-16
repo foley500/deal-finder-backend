@@ -1,5 +1,5 @@
-from app.margin import calculate_true_profit
-from app.risk import description_risk, motivated_seller_signal, fsh_signal, is_ulez_diesel_risk
+from app.margin import calculate_true_profit, calculate_costs
+from app.risk import description_risk, motivated_seller_signal, fsh_signal, is_ulez_diesel_risk, one_owner_signal
 from app.scoring import calculate_score
 from app.registration import extract_registration
 from app.models import Deal, DealerSettings
@@ -309,6 +309,49 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         ).first()
 
         if existing:
+            # Price drop detection — fire a fresh alert if the price has
+            # dropped ≥£200 OR ≥5% since we last saved it.
+            _new_price = float(raw_item.get("price", 0) or 0)
+            if existing.listing_price and _new_price and _new_price < existing.listing_price:
+                drop_amount = round(existing.listing_price - _new_price, 2)
+                drop_pct = round((drop_amount / existing.listing_price) * 100, 1)
+                if drop_amount >= 200 or drop_pct >= 5.0:
+                    new_costs = calculate_costs(_new_price)
+                    new_gross = round((existing.market_value or 0) - _new_price, 2)
+                    new_net = round(new_gross - new_costs["total"] - (existing.risk_penalty or 0), 2)
+
+                    existing.listing_price = _new_price
+                    existing.profit = new_gross
+                    existing.net_profit = new_net
+
+                    _report = dict(existing.report or {})
+                    _fin = dict(_report.get("financials", {}))
+                    _fin.update({
+                        "listing_price": _new_price,
+                        "gross_profit":  new_gross,
+                        "net_profit":    new_net,
+                    })
+                    _price_retail = _fin.get("price_retail")
+                    if _price_retail:
+                        _new_profit_retail = round(_price_retail - _new_price, 2)
+                        _new_net_retail = round(
+                            _new_profit_retail - new_costs["total"] - (existing.risk_penalty or 0), 2
+                        )
+                        _fin["profit_retail"] = _new_profit_retail
+                        _fin["net_profit_retail"] = _new_net_retail
+                    _report["financials"] = _fin
+
+                    _signals = dict(_report.get("deal_signals", {}))
+                    _signals["price_drop_amount"] = drop_amount
+                    _signals["price_drop_pct"] = drop_pct
+                    _signals["is_price_drop_alert"] = True
+                    _report["deal_signals"] = _signals
+
+                    existing.report = _report
+                    db.commit()
+                    db.refresh(existing)
+                    print(f"   🔻 Price drop on deal {existing.id}: −£{drop_amount} ({drop_pct}%) → alerting")
+                    return existing
             return None
 
         settings = db.query(DealerSettings).filter(
@@ -636,14 +679,21 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         fuel_type_for_ulez = vehicle_data.get("fuel_type") or aspects.get("Fuel Type")
         ulez_risk = is_ulez_diesel_risk(fuel_type_for_ulez, year)
 
+        # One owner — single keeper history boosts retail appeal and price
+        has_one_owner = one_owner_signal(title, description)
+
         if is_motivated:
             print(f"   🚨 Motivated seller detected")
         if has_fsh:
             print(f"   📋 Full service history detected")
+        if has_one_owner:
+            print(f"   👤 One owner detected")
         if ulez_risk:
             print(f"   ⚠️ ULEZ diesel risk: {fuel_type_for_ulez} {year}")
         if mot_months_remaining is not None:
             print(f"   🔧 MOT months remaining: {mot_months_remaining}")
+
+        valuation_confidence = valuation_result.get("confidence") if valuation_result else None
 
         score = calculate_score(
             profit=gross_profit,
@@ -656,6 +706,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
             fsh=has_fsh,
             mot_months_remaining=mot_months_remaining,
             ulez_diesel_risk=ulez_risk,
+            one_owner=has_one_owner,
+            valuation_confidence=valuation_confidence,
         )
         confidence = assign_confidence(score)
 
@@ -692,6 +744,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 fsh=has_fsh,
                 mot_months_remaining=mot_months_remaining,
                 ulez_diesel_risk=ulez_risk,
+                one_owner=has_one_owner,
+                valuation_confidence=valuation_confidence,
             )
             confidence = assign_confidence(score)
 
@@ -747,8 +801,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                     "listing_date": listing_date_raw,
                     "motivated_seller": is_motivated,
                     "fsh": has_fsh,
+                    "one_owner": has_one_owner,
                     "mot_months_remaining": mot_months_remaining,
                     "ulez_diesel_risk": ulez_risk,
+                    "valuation_confidence": valuation_confidence,
                 },
                 "mot_summary": mot_summary,
                 "mot_full_data": mot_full_data,

@@ -473,6 +473,51 @@ PREWARM_TARGETS = [
     # ── CITROEN DS ────────────────────────────────────────────────────────
     ("Citroen", "Ds3", [2010, 2011, 2012, 2013, 2014, 2015, 2016],           [20000, 40000, 60000, 80000, 100000, 120000]),
     ("Citroen", "Ds4", [2011, 2012, 2013, 2014, 2015, 2016],                 [20000, 40000, 60000, 80000, 100000]),
+
+    # ── TESLA ─────────────────────────────────────────────────────────────
+    ("Tesla", "Model Y", [2020, 2021, 2022, 2023],                           [20000, 40000, 60000]),
+    ("Tesla", "Model S", [2014, 2015, 2016, 2017, 2018, 2019],               [20000, 40000, 60000, 80000, 100000]),
+
+    # ── BMW (ADDITIONAL) ──────────────────────────────────────────────────
+    ("BMW", "6 Series",  [2012, 2013, 2014, 2015, 2016, 2017, 2018],         [20000, 40000, 60000, 80000]),
+    ("BMW", "7 Series",  [2013, 2014, 2015, 2016, 2017, 2018],               [20000, 40000, 60000, 80000]),
+    ("BMW", "i3",        [2015, 2016, 2017, 2018, 2019, 2020],               [20000, 40000, 60000, 80000]),
+
+    # ── AUDI (ADDITIONAL) ─────────────────────────────────────────────────
+    ("Audi", "Q7",       [2013, 2014, 2015, 2016, 2017, 2018],               [20000, 40000, 60000, 80000]),
+    ("Audi", "A7",       [2012, 2013, 2014, 2015, 2016, 2017],               [20000, 40000, 60000, 80000]),
+    ("Audi", "A8",       [2012, 2013, 2014, 2015, 2016, 2017],               [20000, 40000, 60000]),
+
+    # ── VOLKSWAGEN (ADDITIONAL) ───────────────────────────────────────────
+    ("Volkswagen", "Arteon", [2017, 2018, 2019, 2020],                       [20000, 40000, 60000]),
+    ("Volkswagen", "ID4",    [2021, 2022, 2023],                             [20000, 40000, 60000]),
+
+    # ── MERCEDES (ADDITIONAL) ─────────────────────────────────────────────
+    ("Mercedes-Benz", "S-Class", [2014, 2015, 2016, 2017, 2018],             [20000, 40000, 60000, 80000]),
+
+    # ── HYUNDAI (ADDITIONAL) ──────────────────────────────────────────────
+    ("Hyundai", "Ioniq",     [2016, 2017, 2018, 2019, 2020],                 [20000, 40000, 60000, 80000]),
+    ("Hyundai", "Santa Fe",  [2013, 2014, 2015, 2016, 2017, 2018],           [20000, 40000, 60000, 80000, 100000]),
+
+    # ── KIA (ADDITIONAL) ──────────────────────────────────────────────────
+    ("Kia", "e-Niro",    [2019, 2020, 2021, 2022],                           [20000, 40000, 60000]),
+    ("Kia", "EV6",       [2021, 2022, 2023],                                 [20000, 40000]),
+
+    # ── VOLVO (ADDITIONAL) ────────────────────────────────────────────────
+    ("Volvo", "V90",     [2016, 2017, 2018, 2019, 2020],                     [20000, 40000, 60000, 80000]),
+    ("Volvo", "XC60",    [2013, 2014, 2015, 2016, 2017, 2018],               [20000, 40000, 60000, 80000, 100000]),
+
+    # ── TOYOTA (ADDITIONAL) ───────────────────────────────────────────────
+    ("Toyota", "Land Cruiser", [2013, 2014, 2015, 2016, 2017, 2018],         [20000, 40000, 60000, 80000, 100000]),
+
+    # ── FORD (ADDITIONAL) ─────────────────────────────────────────────────
+    ("Ford", "Mustang",  [2015, 2016, 2017, 2018, 2019, 2020],               [20000, 40000, 60000, 80000]),
+
+    # ── NISSAN (ADDITIONAL) ───────────────────────────────────────────────
+    ("Nissan", "Leaf",   [2013, 2014, 2015, 2016, 2017, 2018, 2019],         [20000, 40000, 60000, 80000]),
+
+    # ── PORSCHE (ADDITIONAL) ──────────────────────────────────────────────
+    ("Porsche", "Panamera", [2013, 2014, 2015, 2016, 2017, 2018],            [20000, 40000, 60000, 80000]),
 ]
 
 
@@ -495,6 +540,8 @@ def notify_deal(deal_id: int):
         financials = report.get("financials", {})
         gross_profit = financials.get("gross_profit", deal.profit)
         net_profit = financials.get("net_profit", "N/A")
+        profit_retail = financials.get("profit_retail")
+        net_profit_retail = financials.get("net_profit_retail")
         est_prep = financials.get("est_prep", "N/A")
         est_transport = financials.get("est_transport", "N/A")
         est_warranty = financials.get("est_warranty", "N/A")
@@ -506,16 +553,50 @@ def notify_deal(deal_id: int):
         price_drop_pct = signals.get("price_drop_pct")
         days_on_market = signals.get("days_on_market")
         market_depth = signals.get("market_depth", -1)
+        is_price_drop_alert = signals.get("is_price_drop_alert", False)
+        is_motivated = signals.get("motivated_seller", False)
+        has_fsh = signals.get("fsh", False)
+        has_one_owner = signals.get("one_owner", False)
+        ulez_risk = signals.get("ulez_diesel_risk", False)
+        mot_months = signals.get("mot_months_remaining")
+        val_confidence = signals.get("valuation_confidence")
 
-        seller_line = f"👤 Seller: {seller_type}" if seller_type else ""
-        drop_line = f"📉 Price Drop: −£{price_drop_amount} ({price_drop_pct}%)" if price_drop_amount else ""
-        dom_line = f"📅 Listed: {days_on_market}d ago" if days_on_market is not None else ""
-        depth_line = f"🌊 Competitors: {market_depth}" if market_depth >= 0 else ""
+        # Header — price drop alert overrides confidence label
+        if is_price_drop_alert:
+            header = f"🔻 PRICE DROP ALERT — {deal.status.upper()} CONFIDENCE"
+        else:
+            header = f"🚗 {deal.status.upper()} CONFIDENCE DEAL"
 
-        signals_block = "\n".join(x for x in [seller_line, drop_line, dom_line, depth_line] if x)
+        # Signal badge lines
+        seller_line   = f"👤 Seller: {seller_type}" if seller_type else ""
+        drop_line     = f"📉 Price Drop: −£{price_drop_amount} ({price_drop_pct}%)" if price_drop_amount else ""
+        dom_line      = f"📅 Listed: {days_on_market}d ago" if days_on_market is not None else ""
+        depth_line    = f"🌊 Competitors: {market_depth}" if market_depth >= 0 else ""
+        mot_line      = f"🔧 MOT: {mot_months} months remaining" if mot_months is not None else ""
+        ulez_line     = "⚠️ ULEZ Risk (pre-2015 diesel)" if ulez_risk else ""
+        motivated_line = "🚨 Motivated Seller" if is_motivated else ""
+        fsh_line      = "📋 Full Service History" if has_fsh else ""
+        owner_line    = "👤 One Owner" if has_one_owner else ""
+        conf_line     = f"📐 Valuation: {val_confidence.upper()} confidence" if val_confidence else ""
+
+        signals_block = "\n".join(
+            x for x in [
+                seller_line, drop_line, dom_line, depth_line,
+                mot_line, ulez_line, motivated_line, fsh_line, owner_line, conf_line,
+            ] if x
+        )
+
+        retail_block = ""
+        if profit_retail is not None:
+            retail_sign = "+" if profit_retail >= 0 else ""
+            net_retail_sign = "+" if (net_profit_retail or 0) >= 0 else ""
+            retail_block = f"""
+💹 If Sold Retail:
+  • Gross: £{retail_sign}{profit_retail}
+  • Net:   £{net_retail_sign}{net_profit_retail}"""
 
         caption = f"""
-🚗 {deal.status.upper()} CONFIDENCE DEAL
+{header}
 
 {deal.title}
 
@@ -524,7 +605,7 @@ def notify_deal(deal_id: int):
 
 💰 Asking: £{deal.listing_price}
 📈 Market Value: £{deal.market_value}
-📊 Gross Profit: £{gross_profit}
+📊 Gross Profit (private): £{gross_profit}{retail_block}
 
 🔧 Est. Costs:
   • Transport: £{est_transport}
@@ -533,7 +614,7 @@ def notify_deal(deal_id: int):
   • Risk: £{deal.risk_penalty}
   • Total: £{est_total}
 
-💵 Net Profit: £{net_profit}
+💵 Net Profit (private): £{net_profit}
 🎯 Score: {deal.score}
 {signals_block}
 

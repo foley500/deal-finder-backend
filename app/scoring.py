@@ -10,6 +10,8 @@ def calculate_score(
     fsh=False,
     mot_months_remaining=None,
     ulez_diesel_risk=False,
+    one_owner=False,
+    valuation_confidence=None,
 ):
     """
     Dealer-grade deal scoring. Returns a float score.
@@ -19,26 +21,42 @@ def calculate_score(
       ≥10  → medium confidence
       <10  → low confidence
 
-    Typical ceiling for a perfect deal: ~65 (£2k+ profit, private seller,
-    motivated seller, FSH, fresh listing, scarce inventory, low mileage, clean MOT).
+    Typical ceiling for a perfect deal: ~70 (£2k+ profit, private seller,
+    motivated seller, FSH, one owner, fresh listing, scarce inventory, low mileage, clean MOT).
+
+    valuation_confidence: "high" | "medium" | "low" | None
+      Scales effective profit used in tier selection only — displayed values are unchanged.
+      High=1.0, Medium=0.90, Low=0.75. Unknown/None defaults to 1.0.
     """
     score = 0
 
     # ------------------------------------------------------------------
+    # CONFIDENCE-ADJUSTED EFFECTIVE PROFIT
+    # When valuation data is thin (few sold comps), the market value
+    # estimate is less reliable. Discount effective profit for scoring
+    # without changing the displayed figures.
+    # ------------------------------------------------------------------
+    _confidence_multiplier = {"high": 1.0, "medium": 0.90, "low": 0.75}.get(
+        (valuation_confidence or "").lower(), 1.0
+    )
+    effective_profit = profit * _confidence_multiplier
+
+    # ------------------------------------------------------------------
     # PROFIT TIER — primary deal quality signal
     # Gross profit tiers sized for UK used car trade reality.
+    # Uses confidence-adjusted effective profit, not raw profit.
     # ------------------------------------------------------------------
-    if profit >= 3000:
+    if effective_profit >= 3000:
         score += 40
-    elif profit >= 2000:
+    elif effective_profit >= 2000:
         score += 30
-    elif profit >= 1500:
+    elif effective_profit >= 1500:
         score += 22
-    elif profit >= 1000:
+    elif effective_profit >= 1000:
         score += 15
-    elif profit >= 500:
+    elif effective_profit >= 500:
         score += 8
-    elif profit >= 250:
+    elif effective_profit >= 250:
         score += 3
 
     # ------------------------------------------------------------------
@@ -77,6 +95,13 @@ def calculate_score(
     # Reduces reconditioning risk and buyer objections at the forecourt.
     # ------------------------------------------------------------------
     if fsh:
+        score += 5
+
+    # ------------------------------------------------------------------
+    # ONE OWNER — single keeper history reduces risk and boosts retail
+    # appeal. Buyers pay a premium; provenance is simpler to verify.
+    # ------------------------------------------------------------------
+    if one_owner:
         score += 5
 
     # ------------------------------------------------------------------
