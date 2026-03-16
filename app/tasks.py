@@ -4,6 +4,7 @@ import redis
 import time
 import random
 import re
+from datetime import datetime, timezone
 from app.celery_app import celery
 from app.database import SessionLocal
 from app.models import Dealer, DealerSettings, ScanRun
@@ -20,6 +21,11 @@ from app.services.market_valuation_service import get_market_price_from_sold
 # ==========================================
 SOURCES = ["ebay_browse"]
 PRICE_TRACK_KEY = "listing_price"
+FIRST_PRICE_KEY = "listing_first_price"   # First-ever seen price (7-day TTL)
+FIRST_PRICE_TTL = 7 * 86400               # 7 days — value sweep needs cross-week memory
+SNIPER_SEEN_KEY = "sniper:seen"            # Cross-run dedup — 6hr TTL
+SNIPER_SEEN_TTL = 6 * 3600               # 6 hours — covers 36 sniper rotations
+SNIPER_AGE_GATE_MINUTES = 90             # Only evaluate listings ≤90 min old in sniper
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
@@ -494,6 +500,20 @@ def notify_deal(deal_id: int):
         est_warranty = financials.get("est_warranty", "N/A")
         est_total = financials.get("est_total_costs", "N/A")
 
+        signals = report.get("deal_signals", {})
+        seller_type = signals.get("seller_type", "")
+        price_drop_amount = signals.get("price_drop_amount")
+        price_drop_pct = signals.get("price_drop_pct")
+        days_on_market = signals.get("days_on_market")
+        market_depth = signals.get("market_depth", -1)
+
+        seller_line = f"👤 Seller: {seller_type}" if seller_type else ""
+        drop_line = f"📉 Price Drop: −£{price_drop_amount} ({price_drop_pct}%)" if price_drop_amount else ""
+        dom_line = f"📅 Listed: {days_on_market}d ago" if days_on_market is not None else ""
+        depth_line = f"🌊 Competitors: {market_depth}" if market_depth >= 0 else ""
+
+        signals_block = "\n".join(x for x in [seller_line, drop_line, dom_line, depth_line] if x)
+
         caption = f"""
 🚗 {deal.status.upper()} CONFIDENCE DEAL
 
@@ -515,6 +535,7 @@ def notify_deal(deal_id: int):
 
 💵 Net Profit: £{net_profit}
 🎯 Score: {deal.score}
+{signals_block}
 
 🔗 Listing: {report.get("listing_url", "N/A")}
 """
@@ -987,27 +1008,78 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
 
                 processed_ids.add(external_id)
 
+                # -------------------------------------------------------
+                # SNIPER: listing age gate
+                # Only evaluate listings created in the last 90 minutes.
+                # This ensures the sniper is doing what it says — catching
+                # cars within an hour of listing. Without this, it re-scores
+                # the same inventory on every rotation, burning budget.
+                # -------------------------------------------------------
+                if mode_name == "sniper":
+                    listing_date_raw = item.get("listing_date")
+                    if listing_date_raw:
+                        try:
+                            listed_at = datetime.fromisoformat(listing_date_raw.replace("Z", "+00:00"))
+                            age_minutes = (datetime.now(timezone.utc) - listed_at).total_seconds() / 60
+                            if age_minutes > SNIPER_AGE_GATE_MINUTES:
+                                continue  # Too old for sniper — skip silently
+                        except Exception:
+                            pass  # Can't parse date — let it through
+
+                # -------------------------------------------------------
+                # SNIPER: cross-run deduplication via Redis
+                # Prevents re-evaluating the same listing across consecutive
+                # 10-minute sniper rotations. 6hr TTL covers a full day cycle.
+                # Without this, a £3k Ford is re-evaluated every 30 minutes.
+                # -------------------------------------------------------
+                if mode_name == "sniper":
+                    seen_key = f"{SNIPER_SEEN_KEY}:{external_id}"
+                    if redis_client.exists(seen_key):
+                        continue  # Already evaluated this run cycle
+                    redis_client.set(seen_key, "1", ex=SNIPER_SEEN_TTL)
+
                 price_val = item.get("price")
 
                 if not price_val:
                     continue
-                
+
                 rough_price = float(price_val)
 
                 item_id = item.get("id")
-                price_key = f"{PRICE_TRACK_KEY}:{item_id}"
 
-                previous_price = redis_client.get(price_key)
+                # -------------------------------------------------------
+                # PRICE DROP TRACKING
+                # Store first-seen price with 7-day TTL. On each subsequent
+                # sweep, compare against first-seen to detect price reductions.
+                # A drop >£200 or >5% is a real signal — motivated seller.
+                # -------------------------------------------------------
+                price_drop_amount = None
+                price_drop_pct = None
 
-                if previous_price:
-                    previous_price = float(previous_price)
+                if item_id:
+                    first_price_key = f"{FIRST_PRICE_KEY}:{item_id}"
+                    first_price_raw = redis_client.get(first_price_key)
 
-                    drop_pct = (previous_price - rough_price) / previous_price
+                    if first_price_raw:
+                        first_price_val = float(first_price_raw)
+                        if rough_price < first_price_val:
+                            drop_amount = first_price_val - rough_price
+                            drop_pct_val = drop_amount / first_price_val
+                            if drop_amount >= 200 or drop_pct_val >= 0.05:
+                                price_drop_amount = round(drop_amount, 2)
+                                price_drop_pct = round(drop_pct_val * 100, 1)
+                                print(f"📉 Price drop: £{first_price_val} → £{rough_price} (−£{price_drop_amount} / −{price_drop_pct}%)")
+                    else:
+                        # First time we see this listing — record original price
+                        redis_client.set(first_price_key, rough_price, ex=FIRST_PRICE_TTL)
 
-                    if drop_pct > 0.07:
-                        print(f"📉 Price drop detected: {previous_price} → {rough_price}")
+                    # Always update last-seen price for sweep comparisons
+                    last_price_key = f"{PRICE_TRACK_KEY}:{item_id}"
+                    redis_client.set(last_price_key, rough_price, ex=86400)
 
-                redis_client.set(price_key, rough_price, ex=86400)
+                # Attach price drop signals to item for deal_engine to surface
+                item["price_drop_amount"] = price_drop_amount
+                item["price_drop_pct"] = price_drop_pct
 
                 if not rough_price:
                     continue

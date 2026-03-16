@@ -5,6 +5,7 @@ import json
 import requests
 import re
 import time
+from datetime import datetime, timezone
 from app.services.ebay_rate_limiter import throttle_ebay
 from app.services.ebay_browse_service import (
     get_ebay_access_token,
@@ -168,6 +169,34 @@ def calculate_mileage_adjustment(base_price: float, listing_mileage: int, target
         return base_price + linear_adjustment
 
 
+def recency_weight(sold_date) -> int:
+    """
+    Returns a weight multiplier based on how recently the comparable sold.
+    Recent sales reflect the current market; older sales may be stale.
+
+    ≤30 days  → 3 (recent, most relevant)
+    31-60 days → 2 (still current)
+    >60 days   → 1 (neutral — don't discard, just don't overweight)
+
+    Markets can shift fast (diesel collapse, EV premiums eroding) so
+    a 5-month-old sale should carry less weight than last week's.
+    """
+    if sold_date is None:
+        return 1
+    try:
+        now = datetime.now(timezone.utc)
+        if sold_date.tzinfo is None:
+            sold_date = sold_date.replace(tzinfo=timezone.utc)
+        days_ago = (now - sold_date).days
+        if days_ago <= 30:
+            return 3
+        elif days_ago <= 60:
+            return 2
+        return 1
+    except Exception:
+        return 1
+
+
 def mileage_proximity_weight(listing_mileage: int, target_mileage: int, tolerance: int) -> int:
     """
     Returns a repeat count (weight) for a comparable based on how close
@@ -310,6 +339,17 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
 
         return collected
 
+    def _parse_sold_date(item):
+        """Extract sold date from eBay item summary. Returns datetime or None."""
+        for field in ("itemEndDate", "endDate", "soldDate"):
+            raw = item.get(field)
+            if raw:
+                try:
+                    return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except Exception:
+                    pass
+        return None
+
     # Pass 1: private sold listings — most accurate price signal
     for item in run_sold_search(",sellerAccountTypes:{INDIVIDUAL}", "sold_private"):
         item_id = item.get("itemId") or item.get("title", "")[:60]
@@ -317,6 +357,7 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
             item["_source_type"] = "sold"
             item["_seller_pool"] = "private"
             item["_resolved_id"] = item_id
+            item["_sold_date"] = _parse_sold_date(item)
             combined_seen_ids.add(item_id)
             all_items.append(item)
     print(f"📦 Private sold: {sum(1 for i in all_items if i['_seller_pool'] == 'private')}")
@@ -328,6 +369,7 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
             item["_source_type"] = "sold"
             item["_seller_pool"] = "all"
             item["_resolved_id"] = item_id
+            item["_sold_date"] = _parse_sold_date(item)
             combined_seen_ids.add(item_id)
             all_items.append(item)
     print(f"📦 Total blended sold: {len(all_items)}")
@@ -529,7 +571,12 @@ def run_filter_layer(
             # Dealer-sold prices reflect retail, not trade/private values — downweight heavily.
             seller_pool = summary.get("_seller_pool", "all")
             pool_weight = 3 if seller_pool == "private" else 1
-            sold_prices.extend([adjusted_price] * (weight * pool_weight))
+            # Recency weight: recent sales (≤30 days) matter more than old ones.
+            # Markets shift — a diesel collapse or EV correction shows up immediately
+            # in recent sales but is masked when older data dominates.
+            r_weight = recency_weight(summary.get("_sold_date"))
+            total_weight = weight * pool_weight * r_weight
+            sold_prices.extend([adjusted_price] * total_weight)
             accepted_sold += 1
 
     print(f"📊 FILTER DEBUG [{layer_name}{'|private_only' if private_only else ''}]:")

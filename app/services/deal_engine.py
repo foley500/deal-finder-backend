@@ -6,7 +6,7 @@ from app.models import Deal, DealerSettings
 from app.database import SessionLocal
 from app.services.ocr_service import extract_plate_from_images, generate_fuzzy_variants, is_valid_uk_plate, score_plate_candidate
 from app.services.mot_service import get_mot_data
-from app.services.ebay_browse_service import get_item_detail
+from app.services.ebay_browse_service import get_item_detail, search_ebay_browse
 from app.services.market_valuation_service import get_market_price_from_sold
 
 from math import radians, sin, cos, sqrt, atan2
@@ -235,6 +235,52 @@ def extract_make_model_from_title(title: str):
 # MAIN ENGINE
 # ---------------------------------
 
+def check_market_depth(make: str, model: str, year: int, asking_price: float, budget_fn=None) -> int:
+    """
+    Counts competing active eBay listings at ≤ asking_price × 1.15 for
+    the same make/model/year. Uses one API call, cached for 30 minutes.
+
+    Returns number of competing listings (int). Returns -1 on failure.
+
+    A deal with 2 competitors is rare. A deal with 30 competitors is just
+    market price — it only looks cheap because it's the market floor.
+    """
+    if not make or not model or not year:
+        return -1
+
+    cache_key = f"market_depth:{make.lower()}:{model.lower()}:{year}:{int(asking_price)}"
+    try:
+        cached = _redis.get(cache_key)
+        if cached:
+            return int(cached)
+    except Exception:
+        pass
+
+    if budget_fn and not budget_fn(1):
+        return -1
+
+    try:
+        ceiling = round(asking_price * 1.15)
+        results = search_ebay_browse(
+            keywords=f"{make} {model} {year}",
+            limit=50,
+            min_price=500,
+            max_price=ceiling,
+            sort="price",
+            offset=0,
+        )
+        depth = len(results)
+        print(f"   🌊 Market depth: {depth} competing listings for {make} {model} {year} ≤ £{ceiling}")
+        try:
+            _redis.set(cache_key, depth, ex=1800)  # 30 min cache
+        except Exception:
+            pass
+        return depth
+    except Exception as e:
+        print(f"   ⚠️ Market depth check failed: {e}")
+        return -1
+
+
 def upgrade_image_resolution(url: str):
     if not url:
         return url
@@ -303,7 +349,13 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                     aspect_dict[name] = value[0] if isinstance(value, list) else value
 
             raw_item["aspects"] = aspect_dict
-            raw_item["seller"] = detail.get("seller", {}).get("username")
+            detail_seller = detail.get("seller", {})
+            raw_item["seller"] = detail_seller.get("username")
+            # Prefer authoritative seller type from item detail over heuristic from summary
+            detail_account_type = detail.get("sellerAccountType") or detail_seller.get("sellerAccountType")
+            if detail_account_type:
+                seller_type = detail_account_type
+                raw_item["seller_type"] = seller_type
 
             image_urls = []
 
@@ -339,9 +391,24 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         aspects = raw_item.get("aspects", {}) or {}
         listing_url = raw_item.get("view_url")
         seller = raw_item.get("seller")
+        seller_type = raw_item.get("seller_type")  # INDIVIDUAL / BUSINESS from summary
         location = raw_item.get("location")
         image_urls = raw_item.get("image_urls", [])
         primary_image = image_urls[0] if image_urls else None
+        listing_date_raw = raw_item.get("listing_date")
+        price_drop_amount = raw_item.get("price_drop_amount")
+        price_drop_pct = raw_item.get("price_drop_pct")
+
+        # Days on market — how long since this listing was first spotted
+        days_on_market = None
+        if listing_date_raw:
+            try:
+                listed_at = datetime.datetime.fromisoformat(listing_date_raw.replace("Z", "+00:00"))
+                if listed_at.tzinfo is None:
+                    listed_at = listed_at.replace(tzinfo=datetime.timezone.utc)
+                days_on_market = (datetime.datetime.now(datetime.timezone.utc) - listed_at).days
+            except Exception:
+                pass
 
         # ---------------------------------
         # Initial extraction from listing
@@ -534,7 +601,14 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         print(f"   📊 Values — Trade: £{price_trade} | Private: £{market_value} | Retail: £{price_retail}")
         print(f"   💷 Gross profit: £{gross_profit} | Est costs: £{profit_result['total_deductions']} | Net profit: £{net_profit}")
 
-        score = calculate_score(gross_profit, risk_penalty, mileage)
+        score = calculate_score(
+            profit=gross_profit,
+            risk_penalty=risk_penalty,
+            mileage=mileage,
+            seller_type=seller_type,
+            price_drop_pct=price_drop_pct,
+            days_on_market=days_on_market,
+        )
         confidence = assign_confidence(score)
 
         # Filter on GROSS profit — costs are shown separately, not used as a gate
@@ -545,6 +619,29 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         if settings.min_score is not None and score < settings.min_score:
             print("❌ Filtered by score:", score)
             return None
+
+        # Market depth check — done AFTER profit/score gates to keep API cost minimal.
+        # Only confirmed deals trigger this single extra call. Cached 30 minutes.
+        market_depth = -1
+        if make and model and year:
+            market_depth = check_market_depth(
+                make=make,
+                model=model,
+                year=year,
+                asking_price=price,
+                budget_fn=budget_fn,
+            )
+            # Re-score with market depth signal
+            score = calculate_score(
+                profit=gross_profit,
+                risk_penalty=risk_penalty,
+                mileage=mileage,
+                seller_type=seller_type,
+                price_drop_pct=price_drop_pct,
+                days_on_market=days_on_market,
+                market_depth=market_depth,
+            )
+            confidence = assign_confidence(score)
 
         deal = Deal(
             dealer_id=dealer_id,
@@ -584,6 +681,14 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 "scoring": {
                     "score": score,
                     "confidence_level": confidence,
+                },
+                "deal_signals": {
+                    "seller_type": seller_type,
+                    "price_drop_amount": price_drop_amount,
+                    "price_drop_pct": price_drop_pct,
+                    "days_on_market": days_on_market,
+                    "market_depth": market_depth,
+                    "listing_date": listing_date_raw,
                 },
                 "mot_summary": mot_summary,
                 "mot_full_data": mot_full_data,

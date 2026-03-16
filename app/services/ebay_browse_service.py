@@ -102,7 +102,8 @@ def search_ebay_browse(
         "offset": offset,
         "sort": sort,
         "category_ids": "9801",
-        "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}},itemLocationCountry:GB"
+        "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}},itemLocationCountry:GB",
+        "fieldgroups": "SELLER_DETAILS",
     }
 
 
@@ -147,6 +148,11 @@ def search_ebay_browse(
         if any(word in title for word in banned_words):
             continue
 
+        seller_info = summary.get("seller", {})
+        seller_type = seller_info.get("sellerAccountType") or (
+            "INDIVIDUAL" if seller_info.get("feedbackScore", 9999) < 200 else "BUSINESS"
+        )
+
         listings.append({
             "id": summary.get("itemId"),
             "title": summary.get("title"),
@@ -155,6 +161,7 @@ def search_ebay_browse(
             "image_url": summary.get("image", {}).get("imageUrl"),
             "location": summary.get("itemLocation", {}).get("postalCode"),
             "listing_date": summary.get("itemCreationDate"),
+            "seller_type": seller_type,
             "source": "ebay_browse",
             "summary_only": True
         })
@@ -298,7 +305,7 @@ def get_item_detail(item_id):
 
     throttle_ebay()
     response = requests.get(
-        f"{ITEM_URL}{item_id}?fieldgroups=PRODUCT",
+        f"{ITEM_URL}{item_id}?fieldgroups=PRODUCT,SELLER_DETAILS",
         headers=headers
     )
 
@@ -311,4 +318,11 @@ def get_item_detail(item_id):
         print("❌ Item detail error:", response.text)
         return None
 
-    return response.json()
+    data = response.json()
+
+    # Hoist seller account type to top level for easy access in deal_engine
+    seller = data.get("seller", {})
+    if seller and "sellerAccountType" not in data:
+        data["sellerAccountType"] = seller.get("sellerAccountType")
+
+    return data
