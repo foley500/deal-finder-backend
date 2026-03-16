@@ -66,6 +66,45 @@
             color: #22c55e;
         }
 
+        /* Deals dropdown */
+        .nav-dropdown-toggle {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .nav-dropdown-toggle .chevron {
+            font-size: 10px;
+            color: #475569;
+            transition: transform 0.2s ease;
+            margin-left: 4px;
+        }
+
+        .nav-dropdown-toggle.open .chevron {
+            transform: rotate(90deg);
+        }
+
+        .nav-sub {
+            display: none;
+            padding-left: 12px;
+            border-left: 1px solid #1f2937;
+            margin-left: 2px;
+            margin-bottom: 6px;
+        }
+
+        .nav-sub.open {
+            display: block;
+        }
+
+        .nav-sub a {
+            font-size: 0.88rem;
+            color: #64748b;
+            margin-bottom: 10px;
+        }
+
+        .nav-sub a:hover {
+            color: #22c55e;
+        }
+
         /* Topbar */
         .topbar {
             margin-left: 240px;
@@ -150,39 +189,49 @@
 <div class="sidebar">
     <h4>Thea's Smelly Bum Deal Finder</h4>
     <a href="/">Dashboard</a>
-    <a href="/deals">
-        <span>All Deals</span>
-        {% if nav_counts.all_deals %}
-            <span class="nav-badge">{{ nav_counts.all_deals }}</span>
-        {% endif %}
-    </a>
-    <a href="/deals?source=ebay_browse">
-        <span>eBay Deals</span>
-        {% if nav_counts.ebay_deals %}
-            <span class="nav-badge">{{ nav_counts.ebay_deals }}</span>
-        {% endif %}
-    </a>
-    <a href="/deals?source=facebook_extension">
-        <span>Facebook Deals</span>
-        {% if nav_counts.facebook_deals %}
-            <span class="nav-badge">{{ nav_counts.facebook_deals }}</span>
-        {% endif %}
-    </a>
-    <a href="/vans">
-        <span>🚐 Vans</span>
-        {% if nav_counts.van_deals %}
-            <span class="nav-badge">{{ nav_counts.van_deals }}</span>
-        {% endif %}
-    </a>
-    <a href="/deals?source=ebay_vans">
-        <span>Van Deals</span>
-        {% if nav_counts.van_deals %}
-            <span class="nav-badge">{{ nav_counts.van_deals }}</span>
-        {% endif %}
-    </a>
+
+    <!-- All Deals with sub-menu dropdown -->
+    <div>
+        <div class="d-flex align-items-center justify-content-between" style="margin-bottom:14px;">
+            <a href="/deals" style="margin-bottom:0; flex:1;">
+                <span>All Deals</span>
+                {% if nav_counts.all_deals %}
+                    <span class="nav-badge">{{ nav_counts.all_deals }}</span>
+                {% endif %}
+            </a>
+            <span class="nav-dropdown-toggle chevron-wrap ps-2" onclick="toggleDealsMenu(this)" style="color:#475569; cursor:pointer; font-size:11px; padding-bottom:0;">&#9654;</span>
+        </div>
+        <div class="nav-sub" id="dealsSubMenu">
+            <a href="/deals?source=ebay_browse">
+                <span>eBay Deals</span>
+                {% if nav_counts.ebay_deals %}
+                    <span class="nav-badge">{{ nav_counts.ebay_deals }}</span>
+                {% endif %}
+            </a>
+            <a href="/deals?source=facebook_extension">
+                <span>Facebook Deals</span>
+                {% if nav_counts.facebook_deals %}
+                    <span class="nav-badge">{{ nav_counts.facebook_deals }}</span>
+                {% endif %}
+            </a>
+            <a href="/vans">
+                <span>🚐 Vans</span>
+                {% if nav_counts.van_deals %}
+                    <span class="nav-badge">{{ nav_counts.van_deals }}</span>
+                {% endif %}
+            </a>
+            <a href="/deals?source=ebay_vans">
+                <span>Van Deals</span>
+                {% if nav_counts.van_deals %}
+                    <span class="nav-badge">{{ nav_counts.van_deals }}</span>
+                {% endif %}
+            </a>
+        </div>
+    </div>
+
     <a href="/analytics">Analytics</a>
     <a href="/completed">
-        <span>💰 Completed Deals</span>
+        <span>Completed Deals</span>
         {% if nav_counts.completed_count %}
             <span class="nav-badge" style="background:rgba(34,197,94,0.15);color:#22c55e;">{{ nav_counts.completed_count }}</span>
         {% endif %}
@@ -200,6 +249,30 @@
 
 <!-- Bootstrap JS Bundle -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+    // Auto-open dropdown if we're on a deals sub-page
+    (function() {
+        const path = window.location.pathname + window.location.search;
+        const isSubPage = path.includes('source=ebay_browse') ||
+                          path.includes('source=facebook_extension') ||
+                          path.includes('source=ebay_vans') ||
+                          path === '/vans';
+        if (isSubPage) {
+            const sub = document.getElementById('dealsSubMenu');
+            const arrow = document.querySelector('.chevron-wrap');
+            if (sub) sub.classList.add('open');
+            if (arrow) arrow.style.transform = 'rotate(90deg)';
+        }
+    })();
+
+    function toggleDealsMenu(el) {
+        const sub = document.getElementById('dealsSubMenu');
+        const isOpen = sub.classList.toggle('open');
+        el.style.transform = isOpen ? 'rotate(90deg)' : 'rotate(0deg)';
+        el.style.transition = 'transform 0.2s ease';
+    }
+</script>
 
 </body>
 </html>
