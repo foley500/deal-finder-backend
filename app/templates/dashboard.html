@@ -129,7 +129,7 @@
 <!-- Secondary Metrics -->
 <div class="row g-4">
 
-    <div class="col-md-4">
+    <div class="col-md-3">
         <a href="/deals"
            class="text-decoration-none text-reset">
             <div class="card p-4 hover-card">
@@ -141,7 +141,7 @@
         </a>
     </div>
 
-    <div class="col-md-4">
+    <div class="col-md-3">
         <a href="/deals?confidence=very_high"
            class="text-decoration-none text-reset">
             <div class="card p-4 hover-card">
@@ -153,7 +153,19 @@
         </a>
     </div>
 
-    <div class="col-md-4">
+    <div class="col-md-3">
+        <a href="/deals"
+           class="text-decoration-none text-reset">
+            <div class="card p-4 hover-card" {% if nav_counts.price_drop_count > 0 %}style="border-color:#ef4444;"{% endif %}>
+                <div class="muted">🔻 Price Drops</div>
+                <div class="metric {% if nav_counts.price_drop_count > 0 %}text-danger{% else %}text-secondary{% endif %}">
+                    {{ nav_counts.price_drop_count }}
+                </div>
+            </div>
+        </a>
+    </div>
+
+    <div class="col-md-3">
         <div class="card p-4">
             <div class="muted">System Status</div>
             <div class="metric text-success">

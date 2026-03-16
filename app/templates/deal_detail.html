@@ -1,6 +1,22 @@
 {% extends "layout.html" %}
 {% block content %}
 
+{% if report.deal_signals and report.deal_signals.is_price_drop_alert %}
+<div class="alert mb-4 d-flex align-items-center gap-3"
+     style="background:rgba(239,68,68,0.12); border:1px solid #ef4444; border-radius:8px; color:#fca5a5;">
+    <span style="font-size:1.5rem;">🔻</span>
+    <div>
+        <strong style="color:#f87171;">Price Drop Alert</strong>
+        <span class="ms-2">
+            Listed price fell by
+            <strong>−£{{ report.deal_signals.price_drop_amount | int }}</strong>
+            ({{ report.deal_signals.price_drop_pct }}%)
+            — profit and score have been updated.
+        </span>
+    </div>
+</div>
+{% endif %}
+
 <h2 class="mb-4">{{ deal.title }}</h2>
 
 <div class="row g-4">
@@ -246,7 +262,22 @@
             <p class="mb-1"><strong>Exterior Colour:</strong> {{ report.listing_details.exterior_color or "Not provided" }}</p>
             <p class="mb-1"><strong>Interior Colour:</strong> {{ report.listing_details.interior_color or "Not provided" }}</p>
             <p class="mb-1"><strong>Seller:</strong> {{ report.seller or "Unknown" }}</p>
-            <p class="mb-3"><strong>Location:</strong> {{ report.location or "Unknown" }}</p>
+            <p class="mb-1"><strong>Location:</strong> {{ report.location or "Unknown" }}</p>
+            {% if report.deal_signals %}
+                {% set dom = report.deal_signals.days_on_market %}
+                {% if dom is not none %}
+                    <p class="mb-1"><strong>Days Listed:</strong>
+                        {{ dom }}
+                        {% if dom <= 1 %}<span class="badge bg-success ms-1" style="font-size:0.65rem;">Fresh</span>
+                        {% elif dom <= 7 %}<span class="badge bg-info text-dark ms-1" style="font-size:0.65rem;">Recent</span>
+                        {% elif dom >= 45 %}<span class="badge bg-warning text-dark ms-1" style="font-size:0.65rem;">Stale</span>{% endif %}
+                    </p>
+                {% endif %}
+                {% if report.deal_signals.market_depth is defined and report.deal_signals.market_depth >= 0 %}
+                    <p class="mb-1"><strong>Competitors:</strong> {{ report.deal_signals.market_depth }} similar listings</p>
+                {% endif %}
+            {% endif %}
+            <p class="mb-3"></p>
 
             {% if report.listing_url %}
                 <a href="{{ report.listing_url }}"
