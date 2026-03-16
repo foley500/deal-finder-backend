@@ -31,6 +31,15 @@ EXTREME_MILEAGE_THRESHOLD = 120000
 MAX_ACCEPTABLE_IQR_RATIO = 0.55
 WIDE_SPREAD_DISCOUNT = 0.97
 
+# eBay sold prices reflect what buyers paid on eBay — typically 15–20% above
+# CAP private clean value (eBay convenience premium + optimistic seller pricing).
+# This factor converts eBay-derived market prices to realistic private trade value.
+MARKET_REALISM_FACTOR = 0.82
+
+# Active listing asking prices are typically 8–12% above what cars actually sell for.
+# Applied on top of MARKET_REALISM_FACTOR for the active-listing fallback path only.
+ACTIVE_LISTING_DISCOUNT = 0.90
+
 # Mileage bands for dynamic layer_1 tolerance scaling.
 # Low mileage cars have plenty of comparables — keep tight.
 # High mileage cars have thin comparable pools — widen to compensate.
@@ -553,9 +562,9 @@ def run_filter_layer(
 
     sold_median = statistics.median(final_prices)
 
-    market_price = round(sold_median * spread_discount, 2)
+    market_price = round(sold_median * spread_discount * MARKET_REALISM_FACTOR, 2)
 
-    print(f"   💰 Market price: £{market_price} ({confidence} confidence, pool: {source_label})")
+    print(f"   💰 Market price: £{market_price} ({confidence} confidence, pool: {source_label}, realism_factor={MARKET_REALISM_FACTOR})")
 
     return {
         "market_price": market_price,
@@ -724,8 +733,115 @@ def get_market_price_from_sold(
             redis_client.set(cache_key, json.dumps(result), ex=CACHE_TTL)
             return result
 
+    # All sold layers failed — try active listings as a last resort
+    print("⚠️ Sold comparables insufficient across all layers — attempting active listing fallback")
+    active_result = _active_listing_fallback(
+        query=query,
+        year=year,
+        mileage=mileage,
+        base_model=base_model,
+        engine_litre=engine_litre,
+        mileage_tolerance=l2_tolerance + 15000,
+        budget_fn=budget_fn,
+    )
+
+    if active_result:
+        if mileage > EXTREME_MILEAGE_THRESHOLD:
+            excess = mileage - EXTREME_MILEAGE_THRESHOLD
+            extra_blocks = min(excess / 10000, 15)
+            extreme_penalty_pct = min(0.025 * extra_blocks, 0.50)
+            original = active_result["market_price"]
+            active_result["market_price"] = round(original * (1 - extreme_penalty_pct), 2)
+            print(f"   🔻 Active fallback extreme mileage penalty: −{round(extreme_penalty_pct*100,1)}% → £{active_result['market_price']}")
+
+        active_result["source"] = "active_fallback"
+        redis_client.set(cache_key, json.dumps(active_result), ex=CACHE_TTL)
+        return active_result
+
     redis_client.set(cache_key, json.dumps({"market_price": None}), ex=3600)
     return None
+
+
+def _active_listing_fallback(
+    query, year, mileage, base_model, engine_litre, mileage_tolerance, budget_fn=None
+):
+    """
+    Fallback valuation from active (non-sold) listings when sold comparables are
+    insufficient across all filter layers.
+
+    Returns a result dict with confidence="low" and source="active_fallback",
+    or None if too few matching listings.
+
+    Price path: asking_price → ×MARKET_REALISM_FACTOR × ACTIVE_LISTING_DISCOUNT
+    (accounts for eBay retail premium AND the gap between asking and likely sale price)
+    """
+    print("📋 Attempting active listing fallback...")
+    active_summaries = get_active_listings(query, limit=40, budget_fn=budget_fn)
+
+    if not active_summaries:
+        print("📋 Active fallback: no listings returned")
+        return None
+
+    prices = []
+    year_tol = 3
+
+    for item in active_summaries:
+        title = item.get("title", "").lower()
+
+        if any(x in title for x in ["breaking", "spares", "parts", "engine", "gearbox"]):
+            continue
+
+        if base_model and not re.search(rf"\b{re.escape(base_model.lower())}\b", title):
+            continue
+
+        if engine_litre:
+            engine_match = re.search(r"\b(\d\.\d)\b", title)
+            if engine_match and abs(float(engine_match.group(1)) - engine_litre) > 0.5:
+                continue
+
+        listing_year = extract_year_from_title(item.get("title", ""))
+        if listing_year and abs(listing_year - year) > year_tol:
+            continue
+
+        listing_mileage = extract_mileage_from_text(item.get("title", ""))
+        if listing_mileage and abs(listing_mileage - mileage) > mileage_tolerance:
+            continue
+
+        price_obj = item.get("price")
+        if not price_obj:
+            continue
+
+        price = float(price_obj.get("value", 0))
+        if price < 700:
+            continue
+
+        prices.append(price)
+
+    print(f"📋 Active fallback: {len(prices)} qualifying listings (year ±{year_tol}, mileage ±{mileage_tolerance})")
+
+    if len(prices) < MIN_SAMPLE_SIZE:
+        print(f"📋 Active fallback: insufficient sample ({len(prices)} < {MIN_SAMPLE_SIZE})")
+        return None
+
+    prices = sorted(prices)
+    cut = int(len(prices) * 0.1)
+    if cut > 0:
+        prices = prices[cut:-cut]
+
+    spread_discount = check_spread(prices, "active_fallback")
+    median_asking = statistics.median(prices)
+
+    # asking price → realistic private value
+    market_price = round(median_asking * spread_discount * ACTIVE_LISTING_DISCOUNT * MARKET_REALISM_FACTOR, 2)
+
+    print(f"   📋 Active fallback: asking median £{round(median_asking)} → private estimate £{market_price}")
+
+    return {
+        "market_price": market_price,
+        "sample_size": len(prices),
+        "confidence": "low",
+        "source_label": "active_fallback",
+    }
 
 
 def _pre_expand_details(summaries: list, budget_fn=None, prewarm_mode: bool = False) -> list:
