@@ -68,12 +68,13 @@ def get_nav_counts(db: Session) -> dict:
     price_drop_count = db.query(Deal).filter(
         Deal.report.op("->")("deal_signals").op("->>")("is_price_drop_alert") == "true"
     ).count()
-    completed_count = db.query(Deal).filter(
-        Deal.report.op("->")("deal_lifecycle").op("->>")("stage").in_(["purchased", "sold"])
-    ).count()
-    completed_count = db.query(Deal).filter(
-        Deal.report["deal_lifecycle"]["stage"].astext.in_(["purchased", "sold"])
-    ).count()
+    try:
+        completed_count = db.query(Deal).filter(
+            Deal.report.op("->")("deal_lifecycle").op("->>")("stage").in_(["purchased", "sold"])
+        ).count()
+    except Exception:
+        db.rollback()
+        completed_count = 0
     return {
         "all_deals": all_deals,
         "ebay_deals": ebay_deals,
@@ -122,16 +123,21 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
 
     dealers = db.query(Dealer).all()
 
-    # 🔥 LOAD OR CREATE SETTINGS
-    settings = db.query(DealerSettings).filter(
-        DealerSettings.dealer_id == 1
-    ).first()
-
-    if not settings:
-        settings = DealerSettings(dealer_id=1)
-        db.add(settings)
-        db.commit()
-        db.refresh(settings)
+    # 🔥 LOAD OR CREATE SETTINGS — wrapped in try/except so missing
+    # DB columns (search_postcode, search_radius_miles) don't crash the page.
+    # Run POST /admin/migrate once to add them.
+    try:
+        settings = db.query(DealerSettings).filter(
+            DealerSettings.dealer_id == 1
+        ).first()
+        if not settings:
+            settings = DealerSettings(dealer_id=1)
+            db.add(settings)
+            db.commit()
+            db.refresh(settings)
+    except Exception:
+        db.rollback()
+        settings = None
 
     return templates.TemplateResponse(
         "dashboard.html",
@@ -244,7 +250,11 @@ def all_deals(
 
     deals = query.offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE).all()
 
-    dealer_settings = db.query(DealerSettings).filter(DealerSettings.dealer_id == 1).first()
+    try:
+        dealer_settings = db.query(DealerSettings).filter(DealerSettings.dealer_id == 1).first()
+    except Exception:
+        db.rollback()
+        dealer_settings = None
 
     return templates.TemplateResponse(
         "all_deals.html",
