@@ -760,14 +760,23 @@ def run_filter_layer(
 
     sample_count = len(final_prices)
 
+    # Confidence is based on distinct sold items, not weighted entry count.
+    # Weighting inflates the pool (3× private, 3× recency) — using it for
+    # confidence would report "high" from as few as 4 actual sold cars.
+    no_mileage = not mileage_diffs
     if "layer_5" in layer_name:
-        confidence = "low"  # Year-only fallback — mileage adjustment is carrying the whole comparison
-    elif sample_count >= 10:
-        confidence = "high"
-    elif sample_count >= 5:
+        confidence = "low"  # Year-only fallback — mileage adjustment carrying whole comparison
+    elif accepted_sold >= 10:
+        confidence = "high" if not no_mileage else "medium"
+    elif accepted_sold >= 5:
         confidence = "medium"
     else:
         confidence = "low"
+
+    # Wide spread with no mileage data means we're averaging across different
+    # mileage bands — the value is directionally useful but not precise.
+    if no_mileage and spread_discount < 1.0 and confidence == "high":
+        confidence = "medium"
 
     sold_median = statistics.median(final_prices)
 

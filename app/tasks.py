@@ -1297,12 +1297,18 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     make = None
                     model = None
 
+                    # All makes in SCAN_QUERY_GROUPS — keep in sync
+                    _GATE_MAKES = {
+                        "ford","vauxhall","volkswagen","vw","audi","bmw","mercedes",
+                        "toyota","nissan","honda","hyundai","kia","land","peugeot",
+                        "renault","skoda","seat","mazda","volvo","mini","citroen",
+                        "jaguar","fiat","alfa","dacia","mg","mitsubishi","subaru",
+                        "suzuki","jeep","tesla","lexus","porsche","isuzu","saab",
+                        "ssangyong","smart","chrysler","ds","infiniti",
+                    }
+
                     for i, word in enumerate(title_words):
-                        if word.lower() in [
-                            "ford","vauxhall","bmw","audi","volkswagen","vw","toyota","nissan",
-                            "mercedes","mercedes-benz","kia","hyundai","peugeot","renault",
-                            "skoda","seat","mazda","volvo","mini","citroen"
-                        ]:
+                        if word.lower() in _GATE_MAKES:
                             make = word
                             if i + 1 < len(title_words):
                                 model = title_words[i + 1]
@@ -1319,15 +1325,22 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                         )
 
                         if valuation and valuation.get("market_price"):
+                            gate_confidence = valuation.get("confidence", "low")
 
-                            expected_price = valuation["market_price"]
-
-                            if rough_price > expected_price * 0.85:
-                                print(
-                                    f"🚫 Gate skip: £{rough_price} too close to market "
-                                    f"(£{expected_price})"
-                                )
-                                continue
+                            # Only use the gate when confidence is high — medium/low
+                            # means thin sold data (few items, no mileage weighting).
+                            # A weak cached value must not block a listing from full
+                            # evaluation; it could easily be wrong by 30%+.
+                            if gate_confidence != "high":
+                                pass  # let it through for full evaluation
+                            else:
+                                expected_price = valuation["market_price"]
+                                if rough_price > expected_price * 0.85:
+                                    print(
+                                        f"🚫 Gate skip: £{rough_price} too close to market "
+                                        f"(£{expected_price}) [{gate_confidence} confidence]"
+                                    )
+                                    continue
 
                 except Exception as e:
                     print(f"Gate check failed: {e}")
