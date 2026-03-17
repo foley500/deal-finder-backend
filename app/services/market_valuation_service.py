@@ -18,7 +18,7 @@ SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
-CACHE_TTL = 43200          # 6 hours — prices don't change hourly
+CACHE_TTL = 90000          # 25 hours — outlasts 24hr prewarm cycle so all makes stay warm
 MAX_DETAIL_EXPANSIONS = 60  # Scan-time expansion cap (live valuations on cache miss)
 MAX_PREWARM_EXPANSIONS = 25 # Prewarm cap — year-only, missing mileage does NOT trigger expansion
 MIN_SAMPLE_SIZE = 5
