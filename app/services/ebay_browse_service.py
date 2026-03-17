@@ -184,6 +184,56 @@ def search_ebay_browse(
     print(f"✅ eBay returned {len(listings)} vehicle summaries")
     return listings
 
+def search_sniper_recent(query, since, buyer_postcode=None, radius_miles=None):
+    """
+    Single-call sniper search for recently-listed vehicles.
+
+    Used when `since` is set to a short recent window (≤ 2 hours).
+    With a tight time filter, no make will have 200+ new listings locally —
+    so the 5-window price-band approach is pure waste (5 API calls vs 1).
+
+    Cost: 1 call per query (vs 5 with search_sniper_windows).
+    Budget: 66 queries × 1 call × 24 runs/day = 1,584 sniper calls/day ✅
+
+    Still paginates up to 3 pages (600 results) as a safety net for busy
+    makes during peak hours — far more than any 60-min local window needs.
+    """
+    PAGE_LIMIT = 200
+    MAX_PAGES = 3  # 600 results max — never hit in a 60-min local window
+
+    all_results = []
+    seen_ids = set()
+
+    for page in range(MAX_PAGES):
+        if _is_circuit_open():
+            print("⚡ Browse circuit open — stopping sniper recent search")
+            return all_results
+
+        listings = search_ebay_browse(
+            keywords=query,
+            limit=PAGE_LIMIT,
+            sort="newlyListed",
+            offset=page * PAGE_LIMIT,
+            start_time_filter=since,
+            buyer_postcode=buyer_postcode,
+            radius_miles=radius_miles,
+        )
+
+        if not listings:
+            break
+
+        for listing in listings:
+            item_id = listing["id"]
+            if item_id not in seen_ids:
+                seen_ids.add(item_id)
+                all_results.append(listing)
+
+        if len(listings) < PAGE_LIMIT:
+            break
+
+    return all_results
+
+
 def search_sniper_windows(make, model, since=None, buyer_postcode=None, radius_miles=None):
     """
     Runs multiple price-window searches to catch mispriced listings.

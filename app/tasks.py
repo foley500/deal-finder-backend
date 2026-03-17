@@ -12,7 +12,7 @@ from app.services.deal_engine import process_listing
 from app.services.listing_sources.factory import get_listing_source
 from app.services.pdf_service import generate_deal_pdf
 from app.services.telegram_service import send_telegram_document
-from app.services.ebay_browse_service import sniper_search, search_sniper_windows, get_item_detail
+from app.services.ebay_browse_service import sniper_search, search_sniper_windows, search_sniper_recent, get_item_detail
 from app.services.market_valuation_service import get_market_price_from_sold
 
 
@@ -946,22 +946,19 @@ def scan_sniper(dealer_id: int):
     # Fix: every 60-minute run scans all 39 queries with a 70-minute lookback.
     # Any listing posted in the last hour is caught within 60 minutes.
     #
-    # BUDGET-AWARE SNIPER ROTATION
+    # FULL-COVERAGE SNIPER — every query, every 60-minute run
     #
-    # Problem: 66 queries × 5 price windows = 330 API calls/run × 24 runs = 7,920/day
-    #          — blows through the 4,500 daily eBay budget every morning.
+    # search_sniper_recent uses 1 API call per query (no price windows).
+    # With a 65-min since= filter, no make can have 200+ new local listings —
+    # so 5-band windows are pure waste. Switching to 1 call/query means:
     #
-    # Fix: run SNIPER_QUERY_BATCH (33) queries per run, advancing the window each run.
-    #   - Full 66-query cycle completes in 2 runs (2 hours)
-    #   - LOOKBACK_MINUTES (125) > 2-hour cycle = every listing is always caught
-    #   - Budget: 33 × 5 = 165 calls/run × 24 = 3,960 sniper calls/day ✅
-    #   - With sweep (576) + prewarm (500): ~5,036 theoretical, hard-capped at 4,500
-    #   - In practice: ~20 full sniper runs/day, idle for last ~3hr before midnight UTC
+    #   66 queries × 1 call × 24 runs = 1,584 sniper calls/day ✅
+    #   + sweep (576) + prewarm (500) = ~2,660 total — well within 4,500
     #
-    # Shuffle uses a UTC date seed — stable order within a day so batch boundaries
-    # are consistent across workers, but rotates daily for make diversity.
+    # Every listing from every make is found within 60 minutes of posting.
+    # Shuffle each run so SNIPER_LIMIT expansion slots are shared fairly.
     from datetime import datetime, timedelta, timezone
-    LOOKBACK_MINUTES = 125
+    LOOKBACK_MINUTES = 65  # 5-min buffer over the 60-min run interval
 
     all_queries = list(
         SCAN_QUERY_GROUPS
@@ -969,27 +966,16 @@ def scan_sniper(dealer_id: int):
         + ENGINE_SNIPER_QUERIES
         + GENERIC_SNIPER_QUERIES
     )
-    n = len(all_queries)
-
-    # Stable daily shuffle — same order all day, different each day
-    daily_seed = int(datetime.now(timezone.utc).strftime("%Y%j"))
-    random.Random(daily_seed).shuffle(all_queries)
-
-    # Advance batch start by SNIPER_QUERY_BATCH each run (non-overlapping windows)
-    raw_idx = int(redis_client.incr(SNIPER_ROTATION_KEY) - 1)
-    start = (raw_idx * SNIPER_QUERY_BATCH) % n
-    batch = [all_queries[(start + i) % n] for i in range(SNIPER_QUERY_BATCH)]
+    random.shuffle(all_queries)  # fair expansion slot distribution each run
 
     since = (datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    batch_num = (raw_idx % max(1, n // SNIPER_QUERY_BATCH)) + 1
-    total_batches = max(1, -(-n // SNIPER_QUERY_BATCH))  # ceiling div
-    print(f"🎯 Sniper batch {batch_num}/{total_batches} ({len(batch)} queries), listings since {since}")
+    print(f"🎯 Sniper: {len(all_queries)} queries (1 call each), listings since {since}")
     return run_scan(
         dealer_id=dealer_id,
         mode_name="sniper",
         listings_to_pull=50,
         keywords=None,
-        query_groups_override=batch,
+        query_groups_override=all_queries,
         sort="newlyListed",
         since=since,
     )
@@ -1097,7 +1083,7 @@ def prewarm_van_valuation_cache():
 BUDGET_ALLOCATIONS = {
     "prewarm":     1000,   # Once/day cold run
     "van_prewarm":  200,   # Once/day cold run
-    "sniper":      4000,   # 24 runs/day × 33 queries × 5 windows = ~3,960/day (hard cap 4,500 enforced)
+    "sniper":      2000,   # 24 runs/day × 66 queries × 1 call = ~1,584/day (search_sniper_recent)
     "van_sniper":   700,   # 24 runs/day × ~29 calls avg
     "sweep":       3000,   # 6 runs/day × 8 makes × 6 calls = ~288/day (soft warning only)
     "van_sweep":    700,   # 4 runs/day × ~136 calls avg
@@ -1263,15 +1249,17 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     task_name = "van_sniper" if source_override == "ebay_vans" else "sniper"
 
                     if source_name == "ebay_browse":
-                        # search_sniper_windows fires 5 price-window calls — count all 5
-                        # so the budget tracker stays accurate. Counting 1 was causing
-                        # the daily budget to appear 5× healthier than reality.
-                        if not _check_budget(5, task_name):
+                        # search_sniper_recent: 1 API call per query (no price windows).
+                        # Price windows (5 calls) are only needed when there are 200+
+                        # listings to page through — impossible in a 60-min since= window.
+                        # This cuts sniper budget from ~7,920/day to ~1,584/day, allowing
+                        # ALL 66 queries to run every sniper cycle (≤ 60-min detection).
+                        if not _check_budget(1, task_name):
                             print("Daily API budget reached - stopping sniper")
                             break
 
-                        sniper_items = search_sniper_windows(
-                            query, "",
+                        sniper_items = search_sniper_recent(
+                            query,
                             since=since,
                             buyer_postcode=buyer_postcode,
                             radius_miles=radius_miles,
