@@ -20,7 +20,7 @@ from sqlalchemy import func
 
 from app.database import engine, SessionLocal
 from app.models import Base, Dealer, DealerSettings, Deal, ScanRun
-from app.tasks import notify_deal, scan_sniper, scan_value_sweep
+from app.tasks import notify_deal, scan_sniper, scan_value_sweep, prewarm_valuation_cache, redis_client
 from app.services.deal_engine import process_listing
 from app.services.ebay_browse_service import search_ebay_browse
 
@@ -929,6 +929,21 @@ def run_market_scan(dealer_id: int):
 def run_value_sweep(dealer_id: int):
     scan_value_sweep.delay(dealer_id)
     return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/admin/prewarm")
+def trigger_prewarm(flush: bool = False):
+    """
+    Manually trigger the valuation prewarm.
+    ?flush=true clears existing sold_cache:* keys first so entries built
+    with broken data (e.g. old SELLER_DETAILS API bug) are rebuilt fresh.
+    """
+    if flush:
+        keys = redis_client.keys("sold_cache:*")
+        if keys:
+            redis_client.delete(*keys)
+    prewarm_valuation_cache.delay()
+    return {"status": "prewarm queued", "cache_flushed": flush}
 
 
 @app.get("/create-test-dealer")
