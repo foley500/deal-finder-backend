@@ -676,6 +676,30 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
             mileage = 100000
 
         # ---------------------------------
+        # Dealer filter gates — year, mileage, max price
+        # Applied here after full resolution (DVLA year overrides listing year,
+        # MOT mileage overrides listing mileage) so filters act on accurate values.
+        # ---------------------------------
+        if filters:
+            min_year = filters.get("min_year")
+            max_year = filters.get("max_year")
+            max_mileage = filters.get("max_mileage")
+            max_price = filters.get("max_price")
+
+            if min_year and year and year < min_year:
+                print(f"❌ Year {year} below dealer min {min_year} — skipping")
+                return None
+            if max_year and year and year > max_year:
+                print(f"❌ Year {year} above dealer max {max_year} — skipping")
+                return None
+            if max_mileage and mileage and mileage > max_mileage:
+                print(f"❌ Mileage {mileage:,} above dealer max {max_mileage:,} — skipping")
+                return None
+            if max_price and price and price > max_price:
+                print(f"❌ Price £{price:,.0f} above dealer max £{max_price:,.0f} — skipping")
+                return None
+
+        # ---------------------------------
         # Make/model resolution — DVSA → aspects → title fallback
         # ---------------------------------
 

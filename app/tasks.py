@@ -623,16 +623,25 @@ def notify_deal(deal_id: int):
         signals = report.get("deal_signals", {})
         is_price_drop_alert = signals.get("is_price_drop_alert", False)
 
-        dedup_key = f"{NOTIFY_DEDUP_KEY_PREFIX}:{deal_id}"
-        dedup_ttl = NOTIFY_PRICE_DROP_TTL if is_price_drop_alert else NOTIFY_DEDUP_TTL
+        # Separate dedup keys for initial alerts vs price drop alerts.
+        # Initial alert key (24h) must NOT block price drop alerts — a price
+        # drop happening 3 hours after the initial notification is important
+        # signal and must always reach the dealer.
+        # Price drop key (4h) prevents repeated price drop spam if the sweep
+        # hits the same listing multiple times in quick succession.
+        initial_key    = f"{NOTIFY_DEDUP_KEY_PREFIX}:{deal_id}"
+        price_drop_key = f"{NOTIFY_DEDUP_KEY_PREFIX}:drop:{deal_id}"
 
-        already_notified = redis_client.get(dedup_key)
-        if already_notified:
-            print(f"🔕 Skipping notify for deal {deal_id} — already alerted (TTL remaining: {redis_client.ttl(dedup_key)}s)")
-            return
-
-        # Mark as notified BEFORE sending to prevent race condition on duplicate tasks
-        redis_client.set(dedup_key, "1", ex=dedup_ttl)
+        if is_price_drop_alert:
+            if redis_client.get(price_drop_key):
+                print(f"🔕 Skipping price drop re-alert for deal {deal_id} (TTL: {redis_client.ttl(price_drop_key)}s)")
+                return
+            redis_client.set(price_drop_key, "1", ex=NOTIFY_PRICE_DROP_TTL)
+        else:
+            if redis_client.get(initial_key):
+                print(f"🔕 Skipping notify for deal {deal_id} — already alerted (TTL: {redis_client.ttl(initial_key)}s)")
+                return
+            redis_client.set(initial_key, "1", ex=NOTIFY_DEDUP_TTL)
 
         pdf_buffer = generate_deal_pdf(deal, report.get("mot_full_data"))
         pdf_buffer.seek(0)
