@@ -35,10 +35,10 @@ redis_client = redis.from_url(REDIS_URL)
 # ┌─────────────┬───────────────────────────────────────────────┬──────────┐
 # │ Task        │ Calculation                                   │ Calls    │
 # ├─────────────┼───────────────────────────────────────────────┼──────────┤
-# │ Sniper      │ 66 queries × 1 call × 24 runs/day            │  1,584   │
+# │ Sniper      │ 39 makes × 1 call × 24 runs/day              │    936   │
 # │             │ (search_sniper_recent — no price windows)     │          │
 # │             │ + up to 20 detail expansions × 24 runs        │    480   │
-# │             │                               sniper subtotal │  ~2,064  │
+# │             │                               sniper subtotal │  ~1,416  │
 # ├─────────────┼───────────────────────────────────────────────┼──────────┤
 # │ Value sweep │ 16 makes × 6 calls (5 offsets + bestMatch)   │     96   │
 # │             │ × 6 runs/day (every 4hrs)                     │    576   │
@@ -47,14 +47,15 @@ redis_client = redis.from_url(REDIS_URL)
 # ├─────────────┼───────────────────────────────────────────────┼──────────┤
 # │ Prewarm     │ once/day — ~160 models, warm models skipped   │   ~500   │
 # ├─────────────┼───────────────────────────────────────────────┼──────────┤
-# │ TOTAL       │                                               │  ~3,320  │
+# │ TOTAL       │                                               │  ~2,672  │
 # │ LIMIT       │ eBay daily cap (500 buffer reserved)          │   4,500  │
-# │ HEADROOM    │                                               │  ~1,180  │
+# │ HEADROOM    │                                               │  ~1,828  │
 # └─────────────┴───────────────────────────────────────────────┴──────────┘
 #
-# Sniper coverage: all 66 queries scanned every 60 min → new listings found
-#   within 60 minutes of posting on eBay.
-# Sweep coverage:  16 of 39 makes per run, full cycle every 3 runs (~12 hrs).
+# Sniper: searches 39 makes every 60 min. Valuation engine determines if
+#   a listing is underpriced vs market. Filters (year, mileage, profit, score)
+#   come from dealer dashboard settings — not baked into search queries.
+# Sweep: 16 of 39 makes per run, full cycle every ~12 hrs (3 runs × 4hr interval).
 SNIPER_LIMIT = 20        # Expansions per sniper run — doubled for broader make coverage
 DAILY_API_BUDGET = 4500  # Hard ceiling — 500 buffer vs 5,000 eBay limit
 DAILY_BUDGET_KEY = "ebay_daily_calls"
@@ -121,49 +122,9 @@ SCAN_QUERY_GROUPS = [
     "Infiniti",    # Q30/QX30 — low volume but frequently mispriced
 ]
 
-YEAR_SNIPER_QUERIES = [
-    "2013",
-    "2014",
-    "2015",
-    "2016",
-    "2017",
-    "2018",
-    "2019",  # 2019-2022 models now reach the dealer sweet-spot price range
-    "2020",
-    "2021",
-    "2022",
-]
-
-ENGINE_SNIPER_QUERIES = [
-    "1.2",
-    "1.4",
-    "1.6",
-    "1.8",
-    "2.0",
-    "2.5",   # common on prestige (BMW, Audi, Volvo)
-]
-
-GENERIC_SNIPER_QUERIES = [
-    "cheap car",
-    "good runner",
-    "first car",
-    "diesel car",
-    "petrol car",
-    "cheap vehicle",
-    "cheap hatchback",
-    "cheap automatic",
-    "low mileage car",    # attracts well-maintained underpriced vehicles
-    "urgent sale car",    # motivated sellers — deal signal
-    "quick sale car",     # motivated sellers — deal signal
-]
-
-SNIPER_ROTATION_KEY = "sniper_query_rotation_idx"
 SWEEP_ROTATION_KEY  = "sweep_rotation_idx"
-SWEEP_BATCH_SIZE    = 16  # makes per sweep run — 32 makes ÷ 16 = 2 batches, all covered every 2 runs (~8 hrs)
-                          # 16 makes × 6 calls = 96 calls/run vs old 192/run — half the 429 risk
-SNIPER_QUERY_BATCH  = 33  # queries per sniper run — all 66 covered every 2 runs (2 hrs)
-                          # 33 × 5 windows = 165 calls/run × 24 = 3,960/day → fits within 4,500 budget
-                          # 125-min lookback > 2-hr cycle = every listing is always caught
+SWEEP_BATCH_SIZE    = 16  # makes per sweep run — 39 makes ÷ 16 = ~3 batches, all covered every 3 runs (~12 hrs)
+                          # 16 makes × 6 calls = 96 calls/run × 6 runs/day = 576 calls/day
 # ==========================================
 # VAN SCAN QUERY GROUPS
 # Used by van sniper — rotated per run.
@@ -946,36 +907,32 @@ def scan_sniper(dealer_id: int):
     # Fix: every 60-minute run scans all 39 queries with a 70-minute lookback.
     # Any listing posted in the last hour is caught within 60 minutes.
     #
-    # FULL-COVERAGE SNIPER — every query, every 60-minute run
+    # SNIPER: search every make, every run, every 60 minutes.
     #
-    # search_sniper_recent uses 1 API call per query (no price windows).
-    # With a 65-min since= filter, no make can have 200+ new local listings —
-    # so 5-band windows are pure waste. Switching to 1 call/query means:
+    # Searches by make name only — 39 makes, 1 API call each.
+    # The valuation engine determines if a listing is underpriced vs market value.
+    # Year/mileage/profit filters come from dealer dashboard settings, applied
+    # during scoring — NOT baked into the search query.
     #
-    #   66 queries × 1 call × 24 runs = 1,584 sniper calls/day ✅
-    #   + sweep (576) + prewarm (500) = ~2,660 total — well within 4,500
+    # No year keywords, no engine size keywords, no "cheap car" terms.
+    # Those searches return mixed, hard-to-value inventory and burn budget.
+    # Finding underpriced cars is the engine's job, not the search query's job.
     #
-    # Every listing from every make is found within 60 minutes of posting.
-    # Shuffle each run so SNIPER_LIMIT expansion slots are shared fairly.
+    # Budget: 39 makes × 1 call × 24 runs = 936 calls/day ✅
     from datetime import datetime, timedelta, timezone
     LOOKBACK_MINUTES = 65  # 5-min buffer over the 60-min run interval
 
-    all_queries = list(
-        SCAN_QUERY_GROUPS
-        + YEAR_SNIPER_QUERIES
-        + ENGINE_SNIPER_QUERIES
-        + GENERIC_SNIPER_QUERIES
-    )
-    random.shuffle(all_queries)  # fair expansion slot distribution each run
+    makes = list(SCAN_QUERY_GROUPS)
+    random.shuffle(makes)  # shuffle so no make always gets first expansion slots
 
     since = (datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    print(f"🎯 Sniper: {len(all_queries)} queries (1 call each), listings since {since}")
+    print(f"🎯 Sniper: {len(makes)} makes, listings since {since}")
     return run_scan(
         dealer_id=dealer_id,
         mode_name="sniper",
         listings_to_pull=50,
         keywords=None,
-        query_groups_override=all_queries,
+        query_groups_override=makes,
         sort="newlyListed",
         since=since,
     )
@@ -1083,7 +1040,7 @@ def prewarm_van_valuation_cache():
 BUDGET_ALLOCATIONS = {
     "prewarm":     1000,   # Once/day cold run
     "van_prewarm":  200,   # Once/day cold run
-    "sniper":      2000,   # 24 runs/day × 66 queries × 1 call = ~1,584/day (search_sniper_recent)
+    "sniper":      1500,   # 24 runs/day × 39 makes × 1 call = ~936/day + ~480 expansions = ~1,416/day
     "van_sniper":   700,   # 24 runs/day × ~29 calls avg
     "sweep":       3000,   # 6 runs/day × 8 makes × 6 calls = ~288/day (soft warning only)
     "van_sweep":    700,   # 4 runs/day × ~136 calls avg
