@@ -100,6 +100,8 @@ def get_mileage_tolerances(target_mileage: int) -> tuple:
 _MAKE_CACHE_ALIASES = {
     "Mercedes-Benz": "Mercedes",   # deal_engine aliases DVSA "MERCEDES-BENZ" → "Mercedes"
     "Vw":            "Volkswagen", # DVSA "VW" (rare) → eBay-standard "Volkswagen"
+    "Mg":            "MG",         # deal_engine aliases back to "MG"; normalise cache key
+    "Bmw":           "BMW",        # deal_engine aliases back to "BMW"; normalise cache key
 }
 
 def bucket_engine_size(engine_litre):

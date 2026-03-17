@@ -694,6 +694,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
             "Vauxhall Opel": "Vauxhall",
             "Vw": "Volkswagen",
             "Alfa-Romeo": "Alfa Romeo",
+            "Mg": "MG",              # DVSA "MG" → .title() → "Mg" — restore for eBay
+            "Mg Motor Uk": "MG",     # Some DVSA records use full legal name
+            "Ds": "DS",              # DVSA "DS" → .title() → "Ds" — restore for eBay
+            "Ds Automobiles": "DS",  # Citroen DS sub-brand full legal name
         }
         if make:
             make_title = str(make).strip().title()
