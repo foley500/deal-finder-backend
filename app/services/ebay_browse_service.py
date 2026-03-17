@@ -85,7 +85,10 @@ def search_ebay_browse(
     min_price=500,
     max_price=50000,
     sort="newlyListed",
-    offset=0
+    offset=0,
+    start_time_filter=None,  # ISO 8601 UTC string — only return listings created after this time
+    buyer_postcode=None,     # Dealer's postcode — restricts results to within radius_miles
+    radius_miles=None,       # Search radius in miles (eBay UK uses miles)
 ):
     token = get_ebay_access_token()
     if not token:
@@ -96,15 +99,23 @@ def search_ebay_browse(
         "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
     }
 
+    filter_str = f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}},itemLocationCountry:GB"
+    if start_time_filter:
+        filter_str += f",itemStartDate:[{start_time_filter}..]"
+    if buyer_postcode and radius_miles:
+        filter_str += f",maxDistance:{int(radius_miles)}"
+
     params = {
         "q": keywords,
         "limit": limit,
         "offset": offset,
         "sort": sort,
         "category_ids": "9801",
-        "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}},itemLocationCountry:GB",
-        "fieldgroups": "ADDITIONAL_SELLER_DETAILS",
+        "filter": filter_str,
+        "fieldgroups": "SELLER_DETAILS",
     }
+    if buyer_postcode:
+        params["buyerPostalCode"] = buyer_postcode
 
 
     if _is_circuit_open():
@@ -169,11 +180,20 @@ def search_ebay_browse(
     print(f"✅ eBay returned {len(listings)} vehicle summaries")
     return listings
 
-def search_sniper_windows(make, model):
+def search_sniper_windows(make, model, since=None, buyer_postcode=None, radius_miles=None):
     """
     Runs multiple price-window searches to catch mispriced listings.
-    Also scans multiple result pages and reverse keyword order.
+    Paginates each window (up to 5 pages × 200 = 1,000 listings/window) so that
+    busy makes (Ford, Vauxhall, etc.) never hit a listing cap within the time window.
+
+    since:          ISO 8601 UTC string — only return listings created after this time.
+                    Covers the full rotation window (~14 hrs) so no listings are missed
+                    between cycles.
+    buyer_postcode: Dealer's postcode — restricts results to within radius_miles.
+    radius_miles:   Search radius from buyer_postcode (eBay UK uses miles).
     """
+    PAGE_LIMIT = 200       # eBay's maximum per page
+    MAX_PAGES  = 5         # Up to 1,000 listings per price window
 
     windows = [
         (500, 1500),
@@ -196,44 +216,43 @@ def search_sniper_windows(make, model):
             seen_terms.add(candidate)
             search_terms.append(candidate)
 
-    # Sniper: freshest listings only — one sort, no pagination offset.
-    # Budget = len(search_terms) × len(windows) calls.
-    # Typical: 1 term × 4 windows = 4 calls vs old 32 calls.
     all_results = []
     seen_ids = set()
 
     for term in search_terms:
-
         for min_price, max_price in windows:
+            for page in range(MAX_PAGES):
+                if _is_circuit_open():
+                    print("⚡ Browse circuit open — stopping sniper windows")
+                    return all_results
 
-            if _is_circuit_open():
-                print("⚡ Browse circuit open — stopping sniper windows")
-                break
+                listings = search_ebay_browse(
+                    keywords=term,
+                    limit=PAGE_LIMIT,
+                    min_price=min_price,
+                    max_price=max_price,
+                    sort="newlyListed",
+                    offset=page * PAGE_LIMIT,
+                    start_time_filter=since,
+                    buyer_postcode=buyer_postcode,
+                    radius_miles=radius_miles,
+                )
 
-            listings = search_ebay_browse(
-                keywords=term,
-                limit=50,
-                min_price=min_price,
-                max_price=max_price,
-                sort="newlyListed",
-                offset=0
-            )
+                if not listings:
+                    break
 
-            if not listings:
-                continue
+                for listing in listings:
+                    item_id = listing["id"]
+                    if item_id in seen_ids:
+                        continue
+                    seen_ids.add(item_id)
+                    all_results.append(listing)
 
-            for listing in listings:
-
-                item_id = listing["id"]
-
-                if item_id in seen_ids:
-                    continue
-
-                seen_ids.add(item_id)
-                all_results.append(listing)
+                # If we got fewer than a full page, there are no more results
+                if len(listings) < PAGE_LIMIT:
+                    break
 
     print(f"🎯 Sniper windows returned {len(all_results)} unique listings")
-
     return all_results
 
 def get_model_variants(make, model):

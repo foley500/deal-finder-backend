@@ -35,6 +35,25 @@
                value="{{ settings.min_score }}">
     </div>
 
+    <hr class="my-4">
+    <h5 class="mb-3">Search Area</h5>
+    <p class="text-muted small">Restrict deal searches to listings within a radius of your location. Leave blank for nationwide search.</p>
+
+    <div class="row">
+        <div class="col-md-6 mb-3">
+            <label>Your Postcode</label>
+            <input type="text" name="search_postcode" class="form-control"
+                   placeholder="e.g. S43 4TW"
+                   value="{{ settings.search_postcode or '' }}">
+        </div>
+        <div class="col-md-6 mb-3">
+            <label>Search Radius (miles)</label>
+            <input type="number" name="search_radius_miles" class="form-control"
+                   placeholder="e.g. 75"
+                   value="{{ settings.search_radius_miles or '' }}">
+        </div>
+    </div>
+
     <button type="submit" class="btn btn-success">
         Save Settings
     </button>

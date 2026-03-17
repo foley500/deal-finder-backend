@@ -37,10 +37,10 @@ redis_client = redis.from_url(REDIS_URL)
 #   Realistic prewarm cost: ~160 × (2 + 10) = ~1,920 calls per cold run
 #   With 70% skip threshold on warm models: ~576 calls/day
 #
-# Sniper: 48 runs/day × 1 search = 48 search calls
-#   + up to 25 expansions/run × 80% cache hit = ~5 live valuations/run
-#   Live valuation = 2 search + up to 15 detail = 17 calls max
-#   Total sniper: ~48 + (48 × 5 × 17) = ~4,128 — but cache hit rate higher in practice
+# Sniper: 24 runs/day × 5 queries/run = 120 search calls
+#   + up to 10 detail expansions/run (SNIPER_LIMIT, shared across all 5 queries)
+#   Total sniper: ~120 + (24 × 10) = ~360 calls/day
+#   Cycle: 61 total queries / 5 per run = ~12 hours (was 61 hours at 1/run)
 #
 # Value sweep: 6 runs/day × 20 makes × 3 searches = 360 search calls
 #   + up to 60 expansions/run × 80% cache hit = ~12 live valuations/run
@@ -901,22 +901,36 @@ def prewarm_valuation_cache(targets_override=None):
 # ==========================================
 @celery.task
 def scan_sniper(dealer_id: int):
-    # Rotate through make groups — each 10-min cycle scans a fresh slice
+    # Scan 5 consecutive queries per run — full rotation completes in ~12 hours.
+    # Previously 1 query/run gave a 61-hour cycle; by then newly-listed deals are gone.
+    # Cost: only 4 extra search calls vs 1 (SNIPER_LIMIT expansion cap unchanged).
+    #
+    # Time filter: look back 14 hours (12h cycle + 2h buffer) so every run sees ALL
+    # listings posted since the last time these queries were scanned — not just the
+    # 50 most recent at this exact moment. Deduplication in run_scan handles overlap.
+    from datetime import datetime, timedelta, timezone
+    QUERIES_PER_RUN = 5
+    LOOKBACK_HOURS = 14
     all_queries = (
-        SCAN_QUERY_GROUPS 
+        SCAN_QUERY_GROUPS
         + YEAR_SNIPER_QUERIES
         + ENGINE_SNIPER_QUERIES
         + GENERIC_SNIPER_QUERIES
     )
-    idx = int(redis_client.incr(SNIPER_ROTATION_KEY) -1) % len(all_queries)
-    query = all_queries[idx]
-    print(f"🎯 Sniper rotation [{idx+1}/{len(all_queries)}]: '{query}'")
+    n = len(all_queries)
+    end_idx = int(redis_client.incrby(SNIPER_ROTATION_KEY, QUERIES_PER_RUN))
+    start_idx = (end_idx - QUERIES_PER_RUN) % n
+    queries = [all_queries[(start_idx + i) % n] for i in range(QUERIES_PER_RUN)]
+    since = (datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    print(f"🎯 Sniper rotation [{start_idx % n + 1}–{(start_idx + QUERIES_PER_RUN - 1) % n + 1}/{n}]: {queries} (since {since})")
     return run_scan(
         dealer_id=dealer_id,
         mode_name="sniper",
         listings_to_pull=50,
-        keywords=query,
+        keywords=None,
+        query_groups_override=queries,
         sort="newlyListed",
+        since=since,
     )
 
 
@@ -1008,7 +1022,7 @@ def prewarm_van_valuation_cache():
 BUDGET_ALLOCATIONS = {
     "prewarm":     1000,   # Once/day cold run
     "van_prewarm":  200,   # Once/day cold run
-    "sniper":      1500,   # 48 runs/day × ~31 calls avg
+    "sniper":      1500,   # 24 runs/day × 5 queries × ~3 calls avg = ~360/day
     "van_sniper":   700,   # 24 runs/day × ~29 calls avg
     "sweep":       1000,   # 6 runs/day × ~136 calls avg
     "van_sweep":    700,   # 4 runs/day × ~136 calls avg
@@ -1052,7 +1066,7 @@ def _check_budget(calls_needed: int = 1, task_name: str = None) -> bool:
 # ==========================================
 # SHARED SCAN ENGINE
 # ==========================================
-def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=None, sort="newlyListed", source_override=None, query_groups_override=None):
+def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=None, sort="newlyListed", source_override=None, query_groups_override=None, since=None):
     """
     Unified scan engine.
 
@@ -1093,6 +1107,10 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
             "min_profit": settings.min_profit,
             "min_score": settings.min_score,
         }
+        buyer_postcode   = getattr(settings, "search_postcode", None)
+        radius_miles     = getattr(settings, "search_radius_miles", None)
+        if buyer_postcode and radius_miles:
+            print(f"📍 Location filter: {radius_miles} miles from {buyer_postcode}")
 
         base_groups = query_groups_override if query_groups_override is not None else SCAN_QUERY_GROUPS
         query_groups = [keywords] if keywords is not None else base_groups
@@ -1132,6 +1150,8 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                             max_price=filters["max_price"],
                             sort="price",
                             offset=offset,
+                            buyer_postcode=buyer_postcode,
+                            radius_miles=radius_miles,
                         )
 
                         items.extend(page_items)
@@ -1153,6 +1173,8 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                                 max_price=filters["max_price"],
                                 sort="bestMatch",
                                 offset=0,
+                                buyer_postcode=buyer_postcode,
+                                radius_miles=radius_miles,
                             )
                             items.extend(page_items)
 
@@ -1169,7 +1191,12 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                             print("Daily API budget reached - stopping sniper")
                             break
 
-                        sniper_items = search_sniper_windows(query, "")
+                        sniper_items = search_sniper_windows(
+                            query, "",
+                            since=since,
+                            buyer_postcode=buyer_postcode,
+                            radius_miles=radius_miles,
+                        )
                         items.extend(sniper_items)
 
                     else:

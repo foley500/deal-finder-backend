@@ -241,6 +241,8 @@ def all_deals(
 
     deals = query.offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE).all()
 
+    dealer_settings = db.query(DealerSettings).filter(DealerSettings.dealer_id == 1).first()
+
     return templates.TemplateResponse(
         "all_deals.html",
         {
@@ -256,6 +258,7 @@ def all_deals(
             "active_min_score": min_score,
             "active_stage": stage,
             "active_signals": signals,
+            "dealer_settings": dealer_settings,
         },
     )
 
@@ -709,6 +712,7 @@ def deal_detail(
         "seller": raw_report.get("seller"),
         "location": raw_report.get("location"),
         "primary_image": raw_report.get("primary_image"),
+        "deal_signals": raw_report.get("deal_signals") or {},
     }
 
     return templates.TemplateResponse(
@@ -781,6 +785,10 @@ def save_settings_json(dealer_id: int, data: dict = Body(...), db: Session = Dep
         settings.min_profit = float(data["min_profit"])
     if data.get("min_score") is not None:
         settings.min_score = float(data["min_score"])
+    if "search_radius_miles" in data:
+        settings.search_radius_miles = int(data["search_radius_miles"]) if data["search_radius_miles"] is not None else None
+    if "search_postcode" in data:
+        settings.search_postcode = data["search_postcode"] or None
 
     db.commit()
     return {"status": "saved"}
