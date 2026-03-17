@@ -12,6 +12,8 @@ class EbayBrowseSource(ListingSource):
         max_price=None,
         sort="newlyListed",
         offset=0,
+        buyer_postcode=None,
+        radius_miles=None,
         **kwargs
     ):
         return search_ebay_browse(
@@ -20,5 +22,7 @@ class EbayBrowseSource(ListingSource):
             min_price=min_price or 0,
             max_price=max_price or 50000,
             sort=sort,
-            offset=offset
+            offset=offset,
+            buyer_postcode=buyer_postcode,
+            radius_miles=radius_miles,
         )

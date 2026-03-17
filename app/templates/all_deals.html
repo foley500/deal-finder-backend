@@ -17,12 +17,41 @@
     {% endif %}
 </div>
 
-<div class="d-flex gap-2 mb-4">
+<div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
     <a href="/deals" class="btn btn-sm {% if not active_source %}btn-success{% else %}btn-outline-secondary{% endif %}">All</a>
     <a href="/deals?source=ebay_browse" class="btn btn-sm {% if active_source == 'ebay_browse' %}btn-success{% else %}btn-outline-secondary{% endif %}">eBay</a>
     <a href="/deals?source=facebook_extension" class="btn btn-sm {% if active_source == 'facebook_extension' %}btn-success{% else %}btn-outline-secondary{% endif %}">Facebook</a>
     <a href="/deals?source=ebay_vans" class="btn btn-sm {% if active_source == 'ebay_vans' %}btn-success{% else %}btn-outline-secondary{% endif %}">Vans</a>
+
+    {% if dealer_settings and dealer_settings.search_postcode %}
+    <span class="text-secondary ms-2" style="font-size:0.8rem;">|</span>
+    <span class="text-secondary" style="font-size:0.8rem;">📍 {{ dealer_settings.search_postcode }}</span>
+    {% endif %}
+
+    <div class="ms-auto d-flex align-items-center gap-2">
+        <span class="text-secondary" style="font-size:0.8rem;">Search radius:</span>
+        {% set current_radius = dealer_settings.search_radius_miles if dealer_settings else None %}
+        {% for r in [25, 50, 75, 100, 150] %}
+        <button class="btn btn-sm {% if current_radius == r %}btn-success{% else %}btn-outline-secondary{% endif %} radius-btn"
+                data-radius="{{ r }}" style="min-width:46px;">{{ r }}mi</button>
+        {% endfor %}
+        <button class="btn btn-sm {% if not current_radius %}btn-success{% else %}btn-outline-secondary{% endif %} radius-btn"
+                data-radius="">Any</button>
+    </div>
 </div>
+
+<script>
+document.querySelectorAll('.radius-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        const radius = this.dataset.radius;
+        fetch('/dealer/1/settings/json', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({search_radius_miles: radius === '' ? null : parseInt(radius)})
+        }).then(() => location.reload());
+    });
+});
+</script>
 
 <div class="card p-4">
 

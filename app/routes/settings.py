@@ -56,6 +56,8 @@ def update_settings(
     max_mileage: int = Form(...),
     min_profit: float = Form(...),
     min_score: float = Form(...),
+    search_postcode: str = Form(default=""),
+    search_radius_miles: str = Form(default=""),
     db: Session = Depends(get_db)
 ):
 
@@ -72,6 +74,8 @@ def update_settings(
     settings.max_mileage = max_mileage
     settings.min_profit = min_profit
     settings.min_score = min_score
+    settings.search_postcode = search_postcode.strip().upper() or None
+    settings.search_radius_miles = int(search_radius_miles) if search_radius_miles.strip().isdigit() else None
 
     db.commit()
 

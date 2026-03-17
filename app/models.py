@@ -34,6 +34,12 @@ class DealerSettings(Base):
     excluded_keywords = Column(JSON, default=list)
     allowed_body_types = Column(JSON, default=list)
 
+    # Geographic search restriction — dealer's postcode + radius in miles.
+    # NULL = no location filter (national search).
+    # Requires manual ALTER TABLE on existing deployments — see deploy notes.
+    search_postcode = Column(String, nullable=True, default=None)
+    search_radius_miles = Column(Integer, nullable=True, default=None)
+
     dealer = relationship("Dealer", back_populates="settings")
 
 

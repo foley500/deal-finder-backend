@@ -994,6 +994,10 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
             "min_profit": settings.min_profit,
             "min_score": settings.min_score,
         }
+        buyer_postcode   = getattr(settings, "search_postcode", None)
+        radius_miles     = getattr(settings, "search_radius_miles", None)
+        if buyer_postcode and radius_miles:
+            print(f"📍 Location filter: {radius_miles} miles from {buyer_postcode}")
 
         base_groups = query_groups_override if query_groups_override is not None else SCAN_QUERY_GROUPS
         query_groups = [keywords] if keywords is not None else base_groups
@@ -1033,6 +1037,8 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                             max_price=filters["max_price"],
                             sort="price",
                             offset=offset,
+                            buyer_postcode=buyer_postcode,
+                            radius_miles=radius_miles,
                         )
 
                         items.extend(page_items)
@@ -1054,6 +1060,8 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                                 max_price=filters["max_price"],
                                 sort="bestMatch",
                                 offset=0,
+                                buyer_postcode=buyer_postcode,
+                                radius_miles=radius_miles,
                             )
                             items.extend(page_items)
 
@@ -1070,7 +1078,12 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                             print("Daily API budget reached - stopping sniper")
                             break
 
-                        sniper_items = search_sniper_windows(query, "", since=since)
+                        sniper_items = search_sniper_windows(
+                            query, "",
+                            since=since,
+                            buyer_postcode=buyer_postcode,
+                            radius_miles=radius_miles,
+                        )
                         items.extend(sniper_items)
 
                     else:
