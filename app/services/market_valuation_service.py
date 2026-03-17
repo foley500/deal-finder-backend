@@ -668,8 +668,11 @@ def run_filter_layer(
 
         base_price = float(price_obj["value"])
 
-        # Reject junk listings — parts, scams, placeholder prices
-        if base_price < 700:
+        # Reject junk listings — parts, scams, placeholder prices.
+        # Floor is £300, not £700: budget cars (Saab 9-3, Ka, Punto) have
+        # legitimate comparables in the £300-£699 range that must not be
+        # excluded. IQR trimming handles extreme low-end outliers.
+        if base_price < 300:
             continue
 
         adjusted_price = base_price
@@ -1076,15 +1079,19 @@ def _active_listing_fallback(
             continue
 
         price = float(price_obj.get("value", 0))
-        if price < 700:
+        if price < 300:
             continue
 
         prices.append(price)
 
     print(f"📋 Active fallback: {len(prices)} qualifying listings (year ±{year_tol}, mileage ±{mileage_tolerance})")
 
-    if len(prices) < MIN_SAMPLE_SIZE:
-        print(f"📋 Active fallback: insufficient sample ({len(prices)} < {MIN_SAMPLE_SIZE})")
+    # Active fallback minimum is 3, not MIN_SAMPLE_SIZE (5).
+    # For rare/old makes (Saab, Ssangyong, Chrysler) eBay may only return
+    # 3-4 matching active listings — 3 well-matched asking prices is still
+    # enough for a low-confidence directional estimate rather than no value.
+    if len(prices) < 3:
+        print(f"📋 Active fallback: insufficient sample ({len(prices)} < 3)")
         return None
 
     prices = sorted(prices)
