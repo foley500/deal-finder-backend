@@ -158,6 +158,9 @@ GENERIC_SNIPER_QUERIES = [
 ]
 
 SNIPER_ROTATION_KEY = "sniper_query_rotation_idx"
+SWEEP_ROTATION_KEY  = "sweep_rotation_idx"
+SWEEP_BATCH_SIZE    = 16  # makes per sweep run — 32 makes ÷ 16 = 2 batches, all covered every 2 runs (~8 hrs)
+                          # 16 makes × 6 calls = 96 calls/run vs old 192/run — half the 429 risk
 # ==========================================
 # VAN SCAN QUERY GROUPS
 # Used by van sniper — rotated per run.
@@ -994,11 +997,25 @@ def scan_sniper(dealer_id: int):
 # ==========================================
 @celery.task
 def scan_value_sweep(dealer_id: int):
+    # Rotate through makes SWEEP_BATCH_SIZE at a time.
+    # Scanning all 32 makes per run fires ~192 API calls and reliably hits eBay's
+    # 429 rate limit mid-sweep — tripping the circuit breaker for 90s and leaving
+    # the second half of the alphabet with 0 results (Ford always completes first).
+    #
+    # Fix: rotate 16 makes per run. All 32 makes covered every 2 runs (~8 hours).
+    # Value sweep is for STALE listings (offset 80-200), not new ones — the sniper
+    # handles new listings every 60min. An 8hr sweep cycle is appropriate.
+    # API cost: 16 × 6 = 96 calls/run × 6 runs/day = 576 sweep calls/day.
+    n = len(SCAN_QUERY_GROUPS)
+    idx = int(redis_client.incr(SWEEP_ROTATION_KEY) - 1) % n
+    batch = [SCAN_QUERY_GROUPS[(idx + i) % n] for i in range(min(SWEEP_BATCH_SIZE, n))]
+    print(f"🔄 Value sweep batch (rotation {idx % n + 1}/{n}): {batch}")
     return run_scan(
         dealer_id=dealer_id,
         mode_name="value_sweep",
         listings_to_pull=40,
-        keywords=None,  # None = all 20 make groups
+        keywords=None,
+        query_groups_override=batch,
     )
 
 
@@ -1060,9 +1077,9 @@ def prewarm_van_valuation_cache():
 BUDGET_ALLOCATIONS = {
     "prewarm":     1000,   # Once/day cold run
     "van_prewarm":  200,   # Once/day cold run
-    "sniper":      2000,   # 24 runs/day × all queries + 20 expansions = ~780/day
+    "sniper":      2000,   # 24 runs/day × all queries + 20 expansions = ~960/day
     "van_sniper":   700,   # 24 runs/day × ~29 calls avg
-    "sweep":       1000,   # 6 runs/day × ~136 calls avg
+    "sweep":       3000,   # 6 runs/day × 8 makes × 6 calls = ~288/day (soft warning only)
     "van_sweep":    700,   # 4 runs/day × ~136 calls avg
 }
 TASK_BUDGET_KEY_PREFIX = "ebay_task_calls"
@@ -1161,7 +1178,11 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
         for source_name in SOURCES:
 
             source = get_listing_source(source_name)
-            items = []
+            # Collect items per-query first, then interleave round-robin.
+            # Without this, Ford (10× more eBay listings than niche makes) floods
+            # the flat items list and consumes all expansion slots before BMW/Toyota
+            # listings are ever reached — even with shuffled query order.
+            items_by_query = {}
 
             for query in query_groups:
                 print(f"🔍 [{mode_name}] Searching: '{query}'")
@@ -1192,7 +1213,7 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                             radius_miles=radius_miles,
                         )
 
-                        items.extend(page_items)
+                        items_by_query.setdefault(query, []).extend(page_items)
 
                     # -------------------------------------------------------
                     # Strategy B: bestMatch, offset 0
@@ -1214,7 +1235,7 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                                 buyer_postcode=buyer_postcode,
                                 radius_miles=radius_miles,
                             )
-                            items.extend(page_items)
+                            items_by_query.setdefault(query, []).extend(page_items)
 
 
                 else:
@@ -1235,7 +1256,7 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                             buyer_postcode=buyer_postcode,
                             radius_miles=radius_miles,
                         )
-                        items.extend(sniper_items)
+                        items_by_query.setdefault(query, []).extend(sniper_items)
 
                     else:
                         page_items = source.search(
@@ -1246,7 +1267,28 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                             sort=sort,
                             offset=0,
                         )
-                        items.extend(page_items)
+                        items_by_query.setdefault(query, []).extend(page_items)
+
+            # -------------------------------------------------------
+            # Round-robin interleave: take 1 item from each query in
+            # turn so no make monopolises the expansion cap.
+            # Ford has 10× more eBay listings than niche makes — without
+            # this, even shuffled queries result in a flat list that is
+            # ~60% Ford before the first BMW item is reached.
+            # Result: with 20 expansion slots and 39 queries, each query
+            # gets at most 1-2 shots regardless of listing volume.
+            # -------------------------------------------------------
+            interleaved = []
+            query_iters = [iter(v) for v in items_by_query.values() if v]
+            while query_iters:
+                still_alive = []
+                for it in query_iters:
+                    item = next(it, None)
+                    if item is not None:
+                        interleaved.append(item)
+                        still_alive.append(it)
+                query_iters = still_alive
+            items = interleaved
 
             total_listings += len(items)
 
