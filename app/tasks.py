@@ -901,34 +901,36 @@ def prewarm_valuation_cache(targets_override=None):
 # ==========================================
 @celery.task
 def scan_sniper(dealer_id: int):
-    # Scan 5 consecutive queries per run — full rotation completes in ~12 hours.
-    # Previously 1 query/run gave a 61-hour cycle; by then newly-listed deals are gone.
-    # Cost: only 4 extra search calls vs 1 (SNIPER_LIMIT expansion cap unchanged).
+    # Scan ALL queries every run — no rotation.
     #
-    # Time filter: look back 14 hours (12h cycle + 2h buffer) so every run sees ALL
-    # listings posted since the last time these queries were scanned — not just the
-    # 50 most recent at this exact moment. Deduplication in run_scan handles overlap.
+    # The sniper's only job is to be FIRST. Rotating through queries meant deals
+    # could be 8+ hours old before we saw them — sold by then.
+    #
+    # Fix: every 60-minute run scans all 39 queries with a 70-minute lookback.
+    # Any listing posted in the last hour is caught within 60 minutes.
+    #
+    # API cost stays low because the geographic filter (75-mile radius) means
+    # each query returns very few new listings per price band → early break.
+    # In practice: ~1-2 pages per band for busy makes, 0 for quiet ones.
+    # Estimated: ~150-300 search calls/run × 24 runs = ~4,800/day worst case,
+    # but with geographic filter realistic is ~60-120 calls/run = ~1,500-2,900/day.
+    # SNIPER_LIMIT=10 expansions per run caps evaluation cost.
     from datetime import datetime, timedelta, timezone
-    QUERIES_PER_RUN = 5
-    LOOKBACK_HOURS = 14
+    LOOKBACK_MINUTES = 70  # Slightly longer than 60min interval — no gaps
     all_queries = (
         SCAN_QUERY_GROUPS
         + YEAR_SNIPER_QUERIES
         + ENGINE_SNIPER_QUERIES
         + GENERIC_SNIPER_QUERIES
     )
-    n = len(all_queries)
-    end_idx = int(redis_client.incrby(SNIPER_ROTATION_KEY, QUERIES_PER_RUN))
-    start_idx = (end_idx - QUERIES_PER_RUN) % n
-    queries = [all_queries[(start_idx + i) % n] for i in range(QUERIES_PER_RUN)]
-    since = (datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    print(f"🎯 Sniper rotation [{start_idx % n + 1}–{(start_idx + QUERIES_PER_RUN - 1) % n + 1}/{n}]: {queries} (since {since})")
+    since = (datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    print(f"🎯 Sniper: all {len(all_queries)} queries, listings since {since}")
     return run_scan(
         dealer_id=dealer_id,
         mode_name="sniper",
         listings_to_pull=50,
         keywords=None,
-        query_groups_override=queries,
+        query_groups_override=all_queries,
         sort="newlyListed",
         since=since,
     )
