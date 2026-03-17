@@ -1582,7 +1582,7 @@ def archive_stale_deals():
                 _report = dict(deal.report or {})
                 _lc = dict(_report.get("deal_lifecycle", {}))
                 _lc["stage"] = "expired"
-                _lc["expired_date"] = datetime.utcnow().strftime("%Y-%m-%d")
+                _lc["expired_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 _report["deal_lifecycle"] = _lc
                 deal.report = _report
                 archived += 1
@@ -1617,18 +1617,18 @@ def check_listing_expiry(sample_size: int = 15):
     Sample size kept small to conserve API budget.
     """
     from datetime import datetime, timedelta, timezone
-    cutoff_recent = datetime.now(timezone.utc) - timedelta(days=14)
-    cutoff_old = datetime.now(timezone.utc) - timedelta(days=1)
+    cutoff_oldest = datetime.now(timezone.utc) - timedelta(days=14)  # don't check very old deals
+    cutoff_newest = datetime.now(timezone.utc) - timedelta(hours=6)  # skip brand-new deals
 
     db = SessionLocal()
     expired_count = 0
     checked_count = 0
 
     try:
-        # Sample recent deals: created in last 14 days, not yet actioned
+        # Sample deals created in last 14 days (but at least 6hrs old) — not yet actioned
         recent_deals = db.query(Deal).filter(
-            Deal.created_at >= cutoff_old,
-            Deal.created_at <= cutoff_recent,
+            Deal.created_at >= cutoff_oldest,
+            Deal.created_at <= cutoff_newest,
             Deal.source == "ebay_browse",
         ).limit(sample_size).all()
 
@@ -1647,7 +1647,7 @@ def check_listing_expiry(sample_size: int = 15):
                     _report = dict(deal.report or {})
                     _lc = dict(_report.get("deal_lifecycle", {}))
                     _lc["stage"] = "expired"
-                    _lc["expired_date"] = datetime.utcnow().strftime("%Y-%m-%d")
+                    _lc["expired_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                     _lc["expired_reason"] = "listing_ended"
                     _report["deal_lifecycle"] = _lc
                     deal.report = _report

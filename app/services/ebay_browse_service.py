@@ -20,8 +20,10 @@ EBAY_TOKEN_KEY = "ebay:access_token"
 
 # Circuit breaker — tripped on any 429 to prevent hammering the API.
 # All browse calls check this first and fast-fail if the circuit is open.
+# Uses nx=True so a second 429 within the window does NOT reset the TTL —
+# the circuit closes after exactly BROWSE_CIRCUIT_TTL seconds regardless.
 BROWSE_CIRCUIT_KEY = "ebay_browse_circuit_open"
-BROWSE_CIRCUIT_TTL = 90  # seconds to cool down
+BROWSE_CIRCUIT_TTL = 60  # seconds — eBay rate limit windows are typically 60s
 
 
 def _is_circuit_open() -> bool:
@@ -29,7 +31,9 @@ def _is_circuit_open() -> bool:
 
 
 def _trip_circuit():
-    redis_client.set(BROWSE_CIRCUIT_KEY, "1", ex=BROWSE_CIRCUIT_TTL)
+    # nx=True: only set if key doesn't exist — prevents re-tripping from
+    # resetting the TTL and keeping the circuit open indefinitely.
+    redis_client.set(BROWSE_CIRCUIT_KEY, "1", ex=BROWSE_CIRCUIT_TTL, nx=True)
     print(f"⚡ Browse circuit tripped — pausing all browse calls for {BROWSE_CIRCUIT_TTL}s")
 
 

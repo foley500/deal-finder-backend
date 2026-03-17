@@ -225,7 +225,7 @@ def is_mileage_plausible(mileage: int, year: int) -> bool:
     if not mileage or not year:
         return True  # can't validate without both — allow it
 
-    current_year = datetime.datetime.now().year
+    current_year = datetime.datetime.now(datetime.timezone.utc).year
     vehicle_age_years = max(current_year - year, 1)
     max_plausible = vehicle_age_years * MAX_MILES_PER_YEAR
 
@@ -311,7 +311,7 @@ def check_market_depth(make: str, model: str, year: int, asking_price: float, bu
         depth = len(results)
         print(f"   🌊 Market depth: {depth} competing listings for {make} {model} {year} ≤ £{ceiling}")
         try:
-            _redis.set(cache_key, depth, ex=1800)  # 30 min cache
+            _redis.set(cache_key, depth, ex=14400)  # 4 hr cache — market depth changes slowly
         except Exception:
             pass
         return depth
@@ -355,8 +355,11 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 drop_amount = round(existing.listing_price - _new_price, 2)
                 drop_pct = round((drop_amount / existing.listing_price) * 100, 1)
                 if drop_amount >= 200 or drop_pct >= 5.0:
+                    # Skip price drop update if we have no market value — profit would be nonsense
+                    if not existing.market_value:
+                        return None
                     new_costs = calculate_costs(_new_price)
-                    new_gross = round((existing.market_value or 0) - _new_price, 2)
+                    new_gross = round(existing.market_value - _new_price, 2)
                     new_net = round(new_gross - new_costs["total"] - (existing.risk_penalty or 0), 2)
 
                     existing.listing_price = _new_price
@@ -789,7 +792,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 expiry_str = latest_mot.get("expiryDate")
                 if expiry_str:
                     expiry_date = datetime.datetime.strptime(expiry_str[:10], "%Y-%m-%d").date()
-                    today = datetime.datetime.now().date()
+                    today = datetime.datetime.now(datetime.timezone.utc).date()
                     days_remaining = (expiry_date - today).days
                     mot_months_remaining = max(0, days_remaining // 30)
             except Exception:

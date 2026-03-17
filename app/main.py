@@ -60,7 +60,18 @@ def get_db():
 # NAV COUNTS — used by sidebar badges on every page
 # =====================================================
 
+NAV_COUNTS_CACHE_KEY = "nav_counts_cache"
+NAV_COUNTS_CACHE_TTL = 30  # seconds — sidebar badges, stale for 30s is fine
+
 def get_nav_counts(db: Session) -> dict:
+    import json
+    try:
+        cached = redis_client.get(NAV_COUNTS_CACHE_KEY)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
     all_deals = db.query(Deal).count()
     ebay_deals = db.query(Deal).filter(Deal.source == "ebay_browse").count()
     facebook_deals = db.query(Deal).filter(Deal.source == "facebook_extension").count()
@@ -75,7 +86,8 @@ def get_nav_counts(db: Session) -> dict:
     except Exception:
         db.rollback()
         completed_count = 0
-    return {
+
+    counts = {
         "all_deals": all_deals,
         "ebay_deals": ebay_deals,
         "facebook_deals": facebook_deals,
@@ -83,6 +95,11 @@ def get_nav_counts(db: Session) -> dict:
         "price_drop_count": price_drop_count,
         "completed_count": completed_count,
     }
+    try:
+        redis_client.set(NAV_COUNTS_CACHE_KEY, json.dumps(counts), ex=NAV_COUNTS_CACHE_TTL)
+    except Exception:
+        pass
+    return counts
 
 
 # =====================================================
@@ -878,6 +895,37 @@ def run_migration(db: Session = Depends(get_db)):
             results.append({"sql": sql, "status": "error", "detail": str(e)})
     db.commit()
     return {"results": results}
+
+
+# =====================================================
+# ADMIN: DELETE STALE DEALS
+# Wipes deals older than N days that haven't been
+# actioned (not purchased/sold). Useful when the DB is
+# full of old biased results and you want a fresh slate.
+# POST /admin/clear-stale?days=7  (default 7 days)
+# =====================================================
+
+@app.post("/admin/clear-stale")
+def clear_stale_deals(days: int = 7, db: Session = Depends(get_db)):
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    stale = db.query(Deal).filter(Deal.created_at < cutoff).all()
+    kept, deleted = 0, 0
+    for deal in stale:
+        lc = (deal.report or {}).get("deal_lifecycle", {})
+        stage = lc.get("stage", "")
+        if stage in ("purchased", "sold"):
+            kept += 1
+            continue  # never delete actioned deals
+        db.delete(deal)
+        deleted += 1
+    db.commit()
+    # Clear nav counts cache so sidebar updates immediately
+    try:
+        redis_client.delete(NAV_COUNTS_CACHE_KEY)
+    except Exception:
+        pass
+    return {"deleted": deleted, "kept_actioned": kept, "cutoff_days": days}
 
 
 # =====================================================
