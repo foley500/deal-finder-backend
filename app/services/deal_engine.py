@@ -1,5 +1,5 @@
 from app.margin import calculate_true_profit, calculate_costs
-from app.risk import description_risk, motivated_seller_signal, fsh_signal, is_ulez_diesel_risk, one_owner_signal
+from app.risk import description_risk, motivated_seller_signal, fsh_signal, is_ulez_diesel_risk, one_owner_signal, recent_service_signal
 from app.scoring import calculate_score, calculate_score_breakdown
 from app.services.dvla_service import get_dvla_vehicle_data, is_sorn, is_marked_for_export, get_annual_road_tax_from_co2
 from app.registration import extract_registration
@@ -402,6 +402,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                         ulez_diesel_risk=_signals.get("ulez_diesel_risk", False),
                         one_owner=_signals.get("one_owner", False),
                         valuation_confidence=_signals.get("valuation_confidence"),
+                        is_auction=_signals.get("is_auction", False),
+                        regional_signal=_signals.get("regional_signal"),
+                        buy_below_trade=_signals.get("buy_below_trade"),
+                        recent_service=_signals.get("recent_service", False),
                     )
                     new_confidence = assign_confidence(new_score)
                     existing.score = new_score
@@ -770,6 +774,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         # ------------------------------------------------------------------
         is_motivated = motivated_seller_signal(title, description)
         has_fsh = fsh_signal(title, description)
+        has_recent_service = recent_service_signal(title, description)
 
         # MOT months remaining — derived from most recent MOT expiry date.
         # Used to score deals where the dealer needs immediate MOT spend.
@@ -828,6 +833,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
             print(f"   📋 Full service history detected")
         if has_one_owner:
             print(f"   👤 One owner detected")
+        if has_recent_service:
+            print(f"   🔧 Recent maintenance detected")
         if ulez_risk:
             print(f"   ⚠️ ULEZ diesel risk: {fuel_type_for_ulez} {year}")
         if mot_months_remaining is not None:
@@ -927,6 +934,10 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
             ulez_diesel_risk=ulez_risk,
             one_owner=has_one_owner,
             valuation_confidence=valuation_confidence,
+            is_auction=is_auction,
+            regional_signal=regional_signal,
+            buy_below_trade=buy_below_trade,
+            recent_service=has_recent_service,
         )
         score_breakdown = {}
         confidence = assign_confidence(score)
@@ -968,6 +979,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 valuation_confidence=valuation_confidence,
                 is_auction=is_auction,
                 regional_signal=regional_signal,
+                buy_below_trade=buy_below_trade,
+                recent_service=has_recent_service,
             )
             confidence = assign_confidence(score)
 
@@ -1024,6 +1037,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                     "motivated_seller": is_motivated,
                     "fsh": has_fsh,
                     "one_owner": has_one_owner,
+                    "recent_service": has_recent_service,
                     "mot_months_remaining": mot_months_remaining,
                     "ulez_diesel_risk": ulez_risk,
                     "valuation_confidence": valuation_confidence,

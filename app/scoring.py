@@ -12,6 +12,10 @@ def calculate_score(
     ulez_diesel_risk=False,
     one_owner=False,
     valuation_confidence=None,
+    is_auction=False,
+    regional_signal=None,
+    buy_below_trade=None,
+    recent_service=False,
 ):
     """
     Dealer-grade deal scoring. Returns a float score.
@@ -21,12 +25,16 @@ def calculate_score(
       ≥10  → medium confidence
       <10  → low confidence
 
-    Typical ceiling for a perfect deal: ~70 (£2k+ profit, private seller,
-    motivated seller, FSH, one owner, fresh listing, scarce inventory, low mileage, clean MOT).
+    Typical ceiling for a perfect deal: ~85 (£3k+ profit, private seller,
+    motivated seller, FSH, one owner, fresh listing, scarce inventory, low mileage,
+    clean MOT, buy below trade, recent service, discount region).
 
     valuation_confidence: "high" | "medium" | "low" | None
       Scales effective profit used in tier selection only — displayed values are unchanged.
       High=1.0, Medium=0.90, Low=0.75. Unknown/None defaults to 1.0.
+    buy_below_trade: positive float = asking price is this many £ below trade/auction value.
+      Means you could flip to a trader immediately for profit. Very strong signal.
+    recent_service: True if description mentions recent maintenance (new tyres, timing belt, etc.)
     """
     score = 0
 
@@ -58,6 +66,19 @@ def calculate_score(
         score += 8
     elif effective_profit >= 250:
         score += 3
+
+    # ------------------------------------------------------------------
+    # BUY BELOW TRADE — asking price is below what a dealer would pay
+    # at auction. This means you can flip to trade immediately for profit
+    # before even touching the car. Extremely strong signal.
+    # ------------------------------------------------------------------
+    if buy_below_trade is not None and buy_below_trade > 0:
+        if buy_below_trade >= 1000:
+            score += 20   # Below trade by £1k+ — exceptional, instant trade flip
+        elif buy_below_trade >= 500:
+            score += 14   # Below trade by £500+ — strong
+        else:
+            score += 8    # Below trade — still significant
 
     # ------------------------------------------------------------------
     # RISK PENALTY — every £1 of risk penalty costs 1/80 of a score point.
@@ -103,6 +124,14 @@ def calculate_score(
     # ------------------------------------------------------------------
     if one_owner:
         score += 5
+
+    # ------------------------------------------------------------------
+    # RECENT SERVICE / MAINTENANCE — seller has invested in the car.
+    # New tyres, timing belt, brakes or recent service reduce prep cost
+    # and buyer objections at point of retail.
+    # ------------------------------------------------------------------
+    if recent_service:
+        score += 4
 
     # ------------------------------------------------------------------
     # PRICE DROP SIGNAL — value sweep killer feature.
@@ -161,6 +190,22 @@ def calculate_score(
         elif market_depth >= 25:
             score -= 5
 
+    # ------------------------------------------------------------------
+    # AUCTION LISTING — uncertain final price; timing risk; can't negotiate.
+    # ------------------------------------------------------------------
+    if is_auction:
+        score -= 3
+
+    # ------------------------------------------------------------------
+    # REGIONAL SIGNAL — discount regions (Scotland, Wales, NI, North England)
+    # offer genuine arbitrage: buy cheap locally, retail into a wider market.
+    # Premium regions (London, Home Counties) may reflect inflated asking prices.
+    # ------------------------------------------------------------------
+    if regional_signal == "discount_region":
+        score += 3
+    elif regional_signal == "premium_region":
+        score -= 2
+
     return round(score, 1)
 
 
@@ -180,6 +225,8 @@ def calculate_score_breakdown(
     valuation_confidence=None,
     is_auction=False,
     regional_signal=None,
+    buy_below_trade=None,
+    recent_service=False,
 ):
     """
     Returns (score, breakdown_dict) where breakdown_dict maps
@@ -208,6 +255,14 @@ def calculate_score_breakdown(
         pts = 0;  label = "Profit <£250"
     breakdown[label] = pts
 
+    if buy_below_trade is not None and buy_below_trade > 0:
+        if buy_below_trade >= 1000:
+            breakdown["Buy Below Trade (£1k+)"] = 20
+        elif buy_below_trade >= 500:
+            breakdown["Buy Below Trade (£500+)"] = 14
+        else:
+            breakdown["Buy Below Trade"] = 8
+
     risk_pts = -round(risk_penalty / 80, 1)
     if risk_pts:
         breakdown["Risk Penalty"] = risk_pts
@@ -230,6 +285,9 @@ def calculate_score_breakdown(
 
     if one_owner:
         breakdown["One Previous Owner"] = 5
+
+    if recent_service:
+        breakdown["Recent Maintenance"] = 4
 
     if price_drop_pct is not None and price_drop_pct > 0:
         if price_drop_pct >= 20:    breakdown["Price Drop ≥20%"] = 12

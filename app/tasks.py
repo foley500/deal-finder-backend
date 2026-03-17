@@ -37,9 +37,9 @@ redis_client = redis.from_url(REDIS_URL)
 #   Realistic prewarm cost: ~160 × (2 + 10) = ~1,920 calls per cold run
 #   With 70% skip threshold on warm models: ~576 calls/day
 #
-# Sniper: 24 runs/day × 5 queries/run = 120 search calls
-#   + up to 10 detail expansions/run (SNIPER_LIMIT, shared across all 5 queries)
-#   Total sniper: ~120 + (24 × 10) = ~360 calls/day
+# Sniper: 24 runs/day × all queries = 120–300 search calls
+#   + up to 20 detail expansions/run (SNIPER_LIMIT, shared across all queries)
+#   Total sniper: ~300 + (24 × 20) = ~780 calls/day
 #   Cycle: 61 total queries / 5 per run = ~12 hours (was 61 hours at 1/run)
 #
 # Value sweep: 6 runs/day × 20 makes × 3 searches = 360 search calls
@@ -55,7 +55,7 @@ redis_client = redis.from_url(REDIS_URL)
 # The key fix: _pre_expand_details now only expands on MISSING YEAR (not mileage).
 # Missing mileage is handled gracefully by the filter layer (weight 1, not rejected).
 # This cuts prewarm detail calls from ~60/model to ~10/model.
-SNIPER_LIMIT = 10        # Expansions per sniper run — cache handles the rest
+SNIPER_LIMIT = 20        # Expansions per sniper run — doubled for broader make coverage
 DAILY_API_BUDGET = 4500  # Hard ceiling — 500 buffer vs 5,000 eBay limit
 DAILY_BUDGET_KEY = "ebay_daily_calls"
 VALUE_SWEEP_LIMIT = 30   # Expansions per sweep run
@@ -632,6 +632,11 @@ PREWARM_TARGETS = [
 # ==========================================
 # TELEGRAM NOTIFICATION
 # ==========================================
+NOTIFY_DEDUP_KEY_PREFIX = "notified:deal"
+NOTIFY_DEDUP_TTL = 86400          # 24h — no repeat for normal deals
+NOTIFY_PRICE_DROP_TTL = 14400     # 4h — price drops can re-alert after 4h if they drop again
+
+
 @celery.task
 def notify_deal(deal_id: int):
     db = SessionLocal()
@@ -641,7 +646,27 @@ def notify_deal(deal_id: int):
         if not deal:
             return
 
+        # ------------------------------------------------------------------
+        # DEDUPLICATION — prevent the same listing being alerted multiple
+        # times per day as it reappears across sniper/sweep runs.
+        # Price drops get a shorter TTL so they can re-alert if they drop
+        # again (e.g. drops 10% today, drops another 10% tomorrow).
+        # ------------------------------------------------------------------
         report = deal.report or {}
+        signals = report.get("deal_signals", {})
+        is_price_drop_alert = signals.get("is_price_drop_alert", False)
+
+        dedup_key = f"{NOTIFY_DEDUP_KEY_PREFIX}:{deal_id}"
+        dedup_ttl = NOTIFY_PRICE_DROP_TTL if is_price_drop_alert else NOTIFY_DEDUP_TTL
+
+        already_notified = redis_client.get(dedup_key)
+        if already_notified:
+            print(f"🔕 Skipping notify for deal {deal_id} — already alerted (TTL remaining: {redis_client.ttl(dedup_key)}s)")
+            return
+
+        # Mark as notified BEFORE sending to prevent race condition on duplicate tasks
+        redis_client.set(dedup_key, "1", ex=dedup_ttl)
+
         pdf_buffer = generate_deal_pdf(deal, report.get("mot_full_data"))
         pdf_buffer.seek(0)
 
@@ -655,19 +680,20 @@ def notify_deal(deal_id: int):
         est_warranty = financials.get("est_warranty", "N/A")
         est_total = financials.get("est_total_costs", "N/A")
 
-        signals = report.get("deal_signals", {})
         seller_type = signals.get("seller_type", "")
         price_drop_amount = signals.get("price_drop_amount")
         price_drop_pct = signals.get("price_drop_pct")
         days_on_market = signals.get("days_on_market")
         market_depth = signals.get("market_depth", -1)
-        is_price_drop_alert = signals.get("is_price_drop_alert", False)
         is_motivated = signals.get("motivated_seller", False)
         has_fsh = signals.get("fsh", False)
         has_one_owner = signals.get("one_owner", False)
+        has_recent_service = signals.get("recent_service", False)
         ulez_risk = signals.get("ulez_diesel_risk", False)
         mot_months = signals.get("mot_months_remaining")
         val_confidence = signals.get("valuation_confidence")
+        buy_below_trade = signals.get("buy_below_trade")
+        regional_signal = signals.get("regional_signal")
 
         # Header — price drop alert overrides confidence label
         if is_price_drop_alert:
@@ -676,21 +702,26 @@ def notify_deal(deal_id: int):
             header = f"🚗 {deal.status.upper()} CONFIDENCE DEAL"
 
         # Signal badge lines
-        seller_line   = f"👤 Seller: {seller_type}" if seller_type else ""
-        drop_line     = f"📉 Price Drop: −£{price_drop_amount} ({price_drop_pct}%)" if price_drop_amount else ""
-        dom_line      = f"📅 Listed: {days_on_market}d ago" if days_on_market is not None else ""
-        depth_line    = f"🌊 Competitors: {market_depth}" if market_depth >= 0 else ""
-        mot_line      = f"🔧 MOT: {mot_months} months remaining" if mot_months is not None else ""
-        ulez_line     = "⚠️ ULEZ Risk (pre-2015 diesel)" if ulez_risk else ""
+        seller_line    = f"👤 Seller: {seller_type}" if seller_type else ""
+        drop_line      = f"📉 Price Drop: −£{price_drop_amount} ({price_drop_pct}%)" if price_drop_amount else ""
+        dom_line       = f"📅 Listed: {days_on_market}d ago" if days_on_market is not None else ""
+        depth_line     = f"🌊 Competitors: {market_depth}" if market_depth >= 0 else ""
+        mot_line       = f"🔧 MOT: {mot_months} months remaining" if mot_months is not None else ""
+        ulez_line      = "⚠️ ULEZ Risk (pre-2015 diesel)" if ulez_risk else ""
         motivated_line = "🚨 Motivated Seller" if is_motivated else ""
-        fsh_line      = "📋 Full Service History" if has_fsh else ""
-        owner_line    = "🔑 One Owner" if has_one_owner else ""
-        conf_line     = f"📐 Valuation: {val_confidence.upper()} confidence" if val_confidence else ""
+        fsh_line       = "📋 Full Service History" if has_fsh else ""
+        owner_line     = "🔑 One Owner" if has_one_owner else ""
+        service_line   = "🛠 Recent Maintenance" if has_recent_service else ""
+        conf_line      = f"📐 Valuation: {val_confidence.upper()} confidence" if val_confidence else ""
+        trade_line     = f"🏆 Buy Below Trade by £{int(buy_below_trade)}" if buy_below_trade and buy_below_trade > 0 else ""
+        region_line    = ("📍 Discount Region (arbitrage)" if regional_signal == "discount_region"
+                          else "📍 Premium Region" if regional_signal == "premium_region" else "")
 
         signals_block = "\n".join(
             x for x in [
-                seller_line, drop_line, dom_line, depth_line,
-                mot_line, ulez_line, motivated_line, fsh_line, owner_line, conf_line,
+                seller_line, trade_line, drop_line, dom_line, depth_line,
+                mot_line, ulez_line, motivated_line, fsh_line, owner_line,
+                service_line, region_line, conf_line,
             ] if x
         )
 
@@ -1024,7 +1055,7 @@ def prewarm_van_valuation_cache():
 BUDGET_ALLOCATIONS = {
     "prewarm":     1000,   # Once/day cold run
     "van_prewarm":  200,   # Once/day cold run
-    "sniper":      1500,   # 24 runs/day × 5 queries × ~3 calls avg = ~360/day
+    "sniper":      2000,   # 24 runs/day × all queries + 20 expansions = ~780/day
     "van_sniper":   700,   # 24 runs/day × ~29 calls avg
     "sweep":       1000,   # 6 runs/day × ~136 calls avg
     "van_sweep":    700,   # 4 runs/day × ~136 calls avg

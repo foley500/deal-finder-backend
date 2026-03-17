@@ -148,9 +148,12 @@ MOTIVATED_SELLER_PHRASES = [
     "needs to go",
     "need to sell",
     "must sell",
+    "must go",
+    "needs gone",
     "reduced to sell",
     "priced to sell",
     "moving abroad",
+    "moving overseas",
     "relocating",
     "emigrating",
     "divorce",
@@ -161,13 +164,30 @@ MOTIVATED_SELLER_PHRASES = [
     "health reasons",
     "unfortunately selling",
     "any offers",
+    "all offers",
     "offers considered",
     "open to offers",
+    "reasonable offers",
+    "sensible offers",
     "no offers refused",
     "below market",
     "genuine bargain",
     "too cheap",
     "selling below",
+    "need money",
+    "financial reasons",
+    "can't afford",
+    "cannot afford",
+    "accepting offers",
+    "buyer to collect",  # urgency signal — seller wants shot of it
+    "cash needed",
+    "cash buyer",        # often signals price flexibility
+    "no time wasters",   # seller is motivated but frustrated
+    "serious buyers",
+    "ono",               # Or Nearest Offer — UK negotiation signal
+    " o.n.o",
+    "or near offer",
+    "or nearest offer",
 ]
 
 FSH_PHRASES = [
@@ -230,6 +250,70 @@ def one_owner_signal(title: str, description: str) -> bool:
     """
     combined = (title + " " + description).lower()
     return any(phrase in combined for phrase in ONE_OWNER_PHRASES)
+
+
+RECENT_SERVICE_PHRASES = [
+    # Tyres
+    "new tyres",
+    "brand new tyres",
+    "fresh tyres",
+    "new front tyres",
+    "new rear tyres",
+    "4 new tyres",
+    "four new tyres",
+    # Timing belt / chain
+    "new timing belt",
+    "timing belt done",
+    "timing belt changed",
+    "timing belt replaced",
+    "timing chain done",
+    "timing chain replaced",
+    "cam belt done",
+    "cam belt changed",
+    "cam belt replaced",
+    # Brakes
+    "new brakes",
+    "new brake pads",
+    "new discs",
+    "new disc and pads",
+    "brakes done",
+    "brakes replaced",
+    # Service
+    "recently serviced",
+    "just been serviced",
+    "fresh service",
+    "service just done",
+    "full service done",
+    "service completed",
+    "new service",
+    # MOT
+    "fresh mot",
+    "new mot",
+    "just mot",
+    "mot just done",
+    "12 months mot",
+    "12 month mot",
+    "full year mot",
+    # Battery
+    "new battery",
+    "battery replaced",
+    "brand new battery",
+    # Other
+    "new clutch",
+    "clutch replaced",
+    "new exhaust",
+    "new water pump",
+]
+
+
+def recent_service_signal(title: str, description: str) -> bool:
+    """
+    Returns True if title or description mentions recent maintenance.
+    Sellers who recently invested in the car are less likely to have hidden issues
+    and the cost reduces the buyer's immediate reconditioning exposure.
+    """
+    combined = (title + " " + description).lower()
+    return any(phrase in combined for phrase in RECENT_SERVICE_PHRASES)
 
 
 def is_ulez_diesel_risk(fuel_type: str, year: int) -> bool:
