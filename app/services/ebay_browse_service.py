@@ -103,7 +103,7 @@ def search_ebay_browse(
         "sort": sort,
         "category_ids": "9801",
         "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}},itemLocationCountry:GB",
-        "fieldgroups": "SELLER_DETAILS",
+        "fieldgroups": "ADDITIONAL_SELLER_DETAILS",
     }
 
 
@@ -324,7 +324,7 @@ def get_item_detail(item_id):
 
     throttle_ebay()
     response = requests.get(
-        f"{ITEM_URL}{item_id}?fieldgroups=PRODUCT,SELLER_DETAILS",
+        f"{ITEM_URL}{item_id}?fieldgroups=PRODUCT,ADDITIONAL_SELLER_DETAILS",
         headers=headers
     )
 
