@@ -25,7 +25,7 @@ FIRST_PRICE_KEY = "listing_first_price"   # First-ever seen price (7-day TTL)
 FIRST_PRICE_TTL = 7 * 86400               # 7 days — value sweep needs cross-week memory
 SNIPER_SEEN_KEY = "sniper:seen"            # Cross-run dedup — 6hr TTL
 SNIPER_SEEN_TTL = 6 * 3600               # 6 hours — covers 36 sniper rotations
-SNIPER_AGE_GATE_MINUTES = 90             # Only evaluate listings ≤90 min old in sniper
+SNIPER_AGE_GATE_MINUTES = 120            # 2hr window — ensures 60min overlap across runs so no listing slips through the gap
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
@@ -947,7 +947,7 @@ def scan_sniper(dealer_id: int):
     # but with geographic filter realistic is ~60-120 calls/run = ~1,500-2,900/day.
     # SNIPER_LIMIT=10 expansions per run caps evaluation cost.
     from datetime import datetime, timedelta, timezone
-    LOOKBACK_MINUTES = 70  # Slightly longer than 60min interval — no gaps
+    LOOKBACK_MINUTES = 125  # 5min buffer beyond 2hr age gate — guarantees full overlap
     all_queries = (
         SCAN_QUERY_GROUPS
         + YEAR_SNIPER_QUERIES
