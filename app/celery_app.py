@@ -32,9 +32,9 @@ celery.conf.beat_schedule = {
     "args": (1,),
     },
 
-    "value-sweep-every-12-hours": {
+    "value-sweep-every-4-hours": {
     "task": "app.tasks.scan_value_sweep",
-    "schedule": timedelta(hours=12),
+    "schedule": timedelta(hours=4),
     "args": (1,),
     "options": {"expires": 3600},
     },

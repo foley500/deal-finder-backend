@@ -24,37 +24,37 @@ PRICE_TRACK_KEY = "listing_price"
 FIRST_PRICE_KEY = "listing_first_price"   # First-ever seen price (7-day TTL)
 FIRST_PRICE_TTL = 7 * 86400               # 7 days — value sweep needs cross-week memory
 SNIPER_SEEN_KEY = "sniper:seen"            # Cross-run dedup — 6hr TTL
-SNIPER_SEEN_TTL = 6 * 3600               # 6 hours — covers 36 sniper rotations
-SNIPER_AGE_GATE_MINUTES = 120            # 2hr window — ensures 60min overlap across runs so no listing slips through the gap
+SNIPER_SEEN_TTL = 6 * 3600               # 6 hours — prevents re-evaluating same listing across 6 sniper runs
+SNIPER_AGE_GATE_MINUTES = 70             # 70-min gate matches 65-min lookback + 5-min buffer
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 redis_client = redis.from_url(REDIS_URL)
 
 
-# API BUDGET — REAL CALL COSTS
+# API BUDGET — REAL CALL COSTS (daily)
 #
-# Prewarm: ~160 models × (2 search + up to 15 detail) = ~2,720 calls max
-#   In practice ~8-12 detail calls per model (only year-missing listings expanded)
-#   Realistic prewarm cost: ~160 × (2 + 10) = ~1,920 calls per cold run
-#   With 70% skip threshold on warm models: ~576 calls/day
+# ┌─────────────┬───────────────────────────────────────────────┬──────────┐
+# │ Task        │ Calculation                                   │ Calls    │
+# ├─────────────┼───────────────────────────────────────────────┼──────────┤
+# │ Sniper      │ 66 queries × 1 call × 24 runs/day            │  1,584   │
+# │             │ (search_sniper_recent — no price windows)     │          │
+# │             │ + up to 20 detail expansions × 24 runs        │    480   │
+# │             │                               sniper subtotal │  ~2,064  │
+# ├─────────────┼───────────────────────────────────────────────┼──────────┤
+# │ Value sweep │ 16 makes × 6 calls (5 offsets + bestMatch)   │     96   │
+# │             │ × 6 runs/day (every 4hrs)                     │    576   │
+# │             │ + up to 30 expansions × 6 runs                │    180   │
+# │             │                              sweep subtotal   │    ~756  │
+# ├─────────────┼───────────────────────────────────────────────┼──────────┤
+# │ Prewarm     │ once/day — ~160 models, warm models skipped   │   ~500   │
+# ├─────────────┼───────────────────────────────────────────────┼──────────┤
+# │ TOTAL       │                                               │  ~3,320  │
+# │ LIMIT       │ eBay daily cap (500 buffer reserved)          │   4,500  │
+# │ HEADROOM    │                                               │  ~1,180  │
+# └─────────────┴───────────────────────────────────────────────┴──────────┘
 #
-# Sniper: 24 runs/day × all queries = 120–300 search calls
-#   + up to 20 detail expansions/run (SNIPER_LIMIT, shared across all queries)
-#   Total sniper: ~300 + (24 × 20) = ~780 calls/day
-#   Cycle: 61 total queries / 5 per run = ~12 hours (was 61 hours at 1/run)
-#
-# Value sweep: 6 runs/day × 20 makes × 3 searches = 360 search calls
-#   + up to 60 expansions/run × 80% cache hit = ~12 live valuations/run
-#   Total sweep: ~360 + (6 × 12 × 17) = ~1,584 calls
-#
-# BUDGET SPLIT TARGET:
-#   Prewarm:    ~600 calls/day  (runs 5hr schedule, skips warm models)
-#   Scans:      ~2,000 calls/day
-#   Buffer:     ~1,900 remaining
-#   Total:      ~4,500 vs 5,000 limit ✅
-#
-# The key fix: _pre_expand_details now only expands on MISSING YEAR (not mileage).
-# Missing mileage is handled gracefully by the filter layer (weight 1, not rejected).
-# This cuts prewarm detail calls from ~60/model to ~10/model.
+# Sniper coverage: all 66 queries scanned every 60 min → new listings found
+#   within 60 minutes of posting on eBay.
+# Sweep coverage:  16 of 39 makes per run, full cycle every 3 runs (~12 hrs).
 SNIPER_LIMIT = 20        # Expansions per sniper run — doubled for broader make coverage
 DAILY_API_BUDGET = 4500  # Hard ceiling — 500 buffer vs 5,000 eBay limit
 DAILY_BUDGET_KEY = "ebay_daily_calls"
@@ -999,7 +999,7 @@ def scan_sniper(dealer_id: int):
 #   new listing) but are exactly the motivated sellers we want.
 #
 # Both strategies feed into the same deduped item pool per run.
-# Budget: 8 groups × 3 searches = 24 search calls per sweep run.
+# Budget: 16 makes × 6 calls (5 price-asc offsets + 1 bestMatch) = 96 calls/run × 6 runs/day = 576/day.
 # ==========================================
 @celery.task
 def scan_value_sweep(dealer_id: int):
