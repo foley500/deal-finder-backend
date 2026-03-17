@@ -56,7 +56,7 @@ redis_client = redis.from_url(REDIS_URL)
 #   a listing is underpriced vs market. Filters (year, mileage, profit, score)
 #   come from dealer dashboard settings — not baked into search queries.
 # Sweep: 16 of 39 makes per run, full cycle every ~12 hrs (3 runs × 4hr interval).
-SNIPER_LIMIT = 20        # Expansions per sniper run — doubled for broader make coverage
+SNIPER_LIMIT = 25        # Expansions per sniper run — 25 × 48 runs = 1,200 expansion calls/day
 DAILY_API_BUDGET = 4500  # Hard ceiling — 500 buffer vs 5,000 eBay limit
 DAILY_BUDGET_KEY = "ebay_daily_calls"
 VALUE_SWEEP_LIMIT = 30   # Expansions per sweep run
