@@ -37,10 +37,10 @@ redis_client = redis.from_url(REDIS_URL)
 #   Realistic prewarm cost: ~160 × (2 + 10) = ~1,920 calls per cold run
 #   With 70% skip threshold on warm models: ~576 calls/day
 #
-# Sniper: 48 runs/day × 1 search = 48 search calls
-#   + up to 25 expansions/run × 80% cache hit = ~5 live valuations/run
-#   Live valuation = 2 search + up to 15 detail = 17 calls max
-#   Total sniper: ~48 + (48 × 5 × 17) = ~4,128 — but cache hit rate higher in practice
+# Sniper: 24 runs/day × 5 queries/run = 120 search calls
+#   + up to 10 detail expansions/run (SNIPER_LIMIT, shared across all 5 queries)
+#   Total sniper: ~120 + (24 × 10) = ~360 calls/day
+#   Cycle: 61 total queries / 5 per run = ~12 hours (was 61 hours at 1/run)
 #
 # Value sweep: 6 runs/day × 20 makes × 3 searches = 360 search calls
 #   + up to 60 expansions/run × 80% cache hit = ~12 live valuations/run
@@ -788,21 +788,27 @@ def prewarm_valuation_cache(targets_override=None):
 # ==========================================
 @celery.task
 def scan_sniper(dealer_id: int):
-    # Rotate through make groups — each 10-min cycle scans a fresh slice
+    # Scan 5 consecutive queries per run — full rotation completes in ~12 hours.
+    # Previously 1 query/run gave a 61-hour cycle; by then newly-listed deals are gone.
+    # Cost: only 4 extra search calls vs 1 (SNIPER_LIMIT expansion cap unchanged).
+    QUERIES_PER_RUN = 5
     all_queries = (
-        SCAN_QUERY_GROUPS 
+        SCAN_QUERY_GROUPS
         + YEAR_SNIPER_QUERIES
         + ENGINE_SNIPER_QUERIES
         + GENERIC_SNIPER_QUERIES
     )
-    idx = int(redis_client.incr(SNIPER_ROTATION_KEY) -1) % len(all_queries)
-    query = all_queries[idx]
-    print(f"🎯 Sniper rotation [{idx+1}/{len(all_queries)}]: '{query}'")
+    n = len(all_queries)
+    end_idx = int(redis_client.incrby(SNIPER_ROTATION_KEY, QUERIES_PER_RUN))
+    start_idx = (end_idx - QUERIES_PER_RUN) % n
+    queries = [all_queries[(start_idx + i) % n] for i in range(QUERIES_PER_RUN)]
+    print(f"🎯 Sniper rotation [{start_idx % n + 1}–{(start_idx + QUERIES_PER_RUN - 1) % n + 1}/{n}]: {queries}")
     return run_scan(
         dealer_id=dealer_id,
         mode_name="sniper",
         listings_to_pull=50,
-        keywords=query,
+        keywords=None,
+        query_groups_override=queries,
         sort="newlyListed",
     )
 
@@ -895,7 +901,7 @@ def prewarm_van_valuation_cache():
 BUDGET_ALLOCATIONS = {
     "prewarm":     1000,   # Once/day cold run
     "van_prewarm":  200,   # Once/day cold run
-    "sniper":      1500,   # 48 runs/day × ~31 calls avg
+    "sniper":      1500,   # 24 runs/day × 5 queries × ~3 calls avg = ~360/day
     "van_sniper":   700,   # 24 runs/day × ~29 calls avg
     "sweep":       1000,   # 6 runs/day × ~136 calls avg
     "van_sweep":    700,   # 4 runs/day × ~136 calls avg
