@@ -67,12 +67,16 @@ def get_nav_counts(db: Session) -> dict:
     price_drop_count = db.query(Deal).filter(
         Deal.report["deal_signals"]["is_price_drop_alert"].astext == "true"
     ).count()
+    completed_count = db.query(Deal).filter(
+        Deal.report["deal_lifecycle"]["stage"].astext.in_(["purchased", "sold"])
+    ).count()
     return {
         "all_deals": all_deals,
         "ebay_deals": ebay_deals,
         "facebook_deals": facebook_deals,
         "van_deals": van_deals,
         "price_drop_count": price_drop_count,
+        "completed_count": completed_count,
     }
 
 
@@ -322,6 +326,101 @@ def deal_detail(
             "request": request,
             "deal": deal,
             "report": normalized_report,
+            "nav_counts": get_nav_counts(db),
+        },
+    )
+
+
+# =====================================================
+# DEAL LIFECYCLE TRACKER
+# =====================================================
+
+@app.post("/deals/{deal_id}/track")
+def track_deal(
+    deal_id: int,
+    stage: str = Form(...),
+    offer_price: str = Form(""),
+    purchase_price: str = Form(""),
+    sale_price: str = Form(""),
+    notes: str = Form(""),
+    db: Session = Depends(get_db)
+):
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if not deal:
+        return RedirectResponse(url="/deals", status_code=303)
+
+    raw_report = dict(deal.report or {})
+
+    def parse_price(val):
+        try:
+            return float(val.strip().replace("£", "").replace(",", "")) if val and val.strip() else None
+        except (ValueError, AttributeError):
+            return None
+
+    lifecycle = dict(raw_report.get("deal_lifecycle") or {})
+    lifecycle["stage"] = stage
+    lifecycle["notes"] = notes.strip()
+
+    op = parse_price(offer_price)
+    pp = parse_price(purchase_price)
+    sp = parse_price(sale_price)
+
+    if op is not None:
+        lifecycle["offer_price"] = op
+    if pp is not None:
+        lifecycle["purchase_price"] = pp
+        from datetime import date
+        lifecycle.setdefault("purchase_date", str(date.today()))
+    if sp is not None:
+        lifecycle["sale_price"] = sp
+        from datetime import date
+        lifecycle.setdefault("sale_date", str(date.today()))
+
+    if lifecycle.get("purchase_price") and lifecycle.get("sale_price"):
+        lifecycle["actual_profit"] = lifecycle["sale_price"] - lifecycle["purchase_price"]
+
+    raw_report["deal_lifecycle"] = lifecycle
+    deal.report = raw_report
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(deal, "report")
+    db.commit()
+
+    return RedirectResponse(url="/deals", status_code=303)
+
+
+@app.get("/completed", response_class=HTMLResponse)
+def completed_deals(request: Request, db: Session = Depends(get_db)):
+    pipeline_deals = db.query(Deal).filter(
+        Deal.report["deal_lifecycle"]["stage"].astext.in_(["purchased", "sold"])
+    ).order_by(Deal.created_at.desc()).all()
+
+    active = [d for d in pipeline_deals if (d.report or {}).get("deal_lifecycle", {}).get("stage") == "purchased"]
+    sold = [d for d in pipeline_deals if (d.report or {}).get("deal_lifecycle", {}).get("stage") == "sold"]
+
+    total_invested = sum(
+        (d.report or {}).get("deal_lifecycle", {}).get("purchase_price") or 0
+        for d in pipeline_deals
+    )
+    total_returned = sum(
+        (d.report or {}).get("deal_lifecycle", {}).get("sale_price") or 0
+        for d in sold
+    )
+    total_profit = sum(
+        (d.report or {}).get("deal_lifecycle", {}).get("actual_profit") or 0
+        for d in sold
+    )
+    avg_margin = (total_profit / total_invested * 100) if total_invested else 0
+
+    return templates.TemplateResponse(
+        "completed.html",
+        {
+            "request": request,
+            "active": active,
+            "sold": sold,
+            "total_invested": total_invested,
+            "total_returned": total_returned,
+            "total_profit": total_profit,
+            "avg_margin": avg_margin,
             "nav_counts": get_nav_counts(db),
         },
     )

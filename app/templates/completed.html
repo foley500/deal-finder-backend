@@ -1,0 +1,240 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<div class="mb-4">
+    <h2 class="fw-semibold">Completed Deals</h2>
+    <p class="text-secondary mb-0">Your real-world P&L — what you paid, what you sold for, actual profit</p>
+</div>
+
+{# KPI Summary #}
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card p-3 text-center">
+            <div class="text-secondary" style="font-size:0.8rem;">In Pipeline</div>
+            <div class="metric">{{ (active | length) + (sold | length) }}</div>
+            <div class="text-secondary" style="font-size:0.75rem;">purchased + sold</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card p-3 text-center">
+            <div class="text-secondary" style="font-size:0.8rem;">Total Invested</div>
+            <div class="metric">£{{ "{:,.0f}".format(total_invested) }}</div>
+            <div class="text-secondary" style="font-size:0.75rem;">purchase prices</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card p-3 text-center">
+            <div class="text-secondary" style="font-size:0.8rem;">Total Returned</div>
+            <div class="metric">£{{ "{:,.0f}".format(total_returned) }}</div>
+            <div class="text-secondary" style="font-size:0.75rem;">from sold vehicles</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card p-3 text-center">
+            <div class="text-secondary" style="font-size:0.8rem;">Actual Profit</div>
+            <div class="metric {% if total_profit >= 0 %}profit-positive{% else %}profit-negative{% endif %}">
+                £{{ "{:,.0f}".format(total_profit) }}
+            </div>
+            <div class="text-secondary" style="font-size:0.75rem;">
+                {% if avg_margin %}{{ "%.1f"|format(avg_margin) }}% avg margin{% else %}—{% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{# Active Inventory #}
+<div class="card p-4 mb-4">
+    <h5 class="fw-semibold mb-3">Active Inventory <span class="text-secondary fw-normal" style="font-size:0.85rem;">(purchased, not yet sold)</span></h5>
+    {% if active %}
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+            <thead>
+                <tr style="color:#94a3b8;">
+                    <th>Vehicle</th>
+                    <th class="text-end">Paid</th>
+                    <th class="text-end">Est. Profit</th>
+                    <th class="text-end">Listed Price</th>
+                    <th>Notes</th>
+                    <th style="width:80px;" class="text-end">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for deal in active %}
+                {% set lc = deal.report.deal_lifecycle if deal.report and deal.report.deal_lifecycle else {} %}
+                <tr>
+                    <td>
+                        <a href="/deals/{{ deal.id }}" style="color:#e2e8f0; text-decoration:none;">{{ deal.title }}</a>
+                    </td>
+                    <td class="text-end">
+                        {% if lc.purchase_price %}£{{ "{:,.0f}".format(lc.purchase_price) }}{% else %}—{% endif %}
+                    </td>
+                    <td class="text-end">
+                        <span class="{% if deal.profit and deal.profit >= 0 %}profit-positive{% else %}profit-negative{% endif %}">
+                            £{{ "%.0f"|format(deal.profit or 0) }}
+                        </span>
+                    </td>
+                    <td class="text-end">
+                        {% set listing_price = deal.report.financials.listing_price if deal.report and deal.report.financials else None %}
+                        {% if listing_price %}£{{ "{:,.0f}".format(listing_price) }}{% else %}—{% endif %}
+                    </td>
+                    <td style="color:#94a3b8; font-size:0.85rem;">{{ lc.notes or "—" }}</td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-outline-secondary track-btn"
+                                data-deal-id="{{ deal.id }}"
+                                data-title="{{ deal.title }}"
+                                data-stage="{{ lc.stage or 'watching' }}"
+                                data-offer="{{ lc.offer_price or '' }}"
+                                data-purchase="{{ lc.purchase_price or '' }}"
+                                data-sale="{{ lc.sale_price or '' }}"
+                                data-notes="{{ lc.notes or '' }}">
+                            Track
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-secondary mb-0">No vehicles in active inventory. Mark a deal as <strong>Purchased</strong> to add it here.</p>
+    {% endif %}
+</div>
+
+{# Sold Table #}
+<div class="card p-4">
+    <h5 class="fw-semibold mb-3">Sold / Completed</h5>
+    {% if sold %}
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+            <thead>
+                <tr style="color:#94a3b8;">
+                    <th>Vehicle</th>
+                    <th class="text-end">Paid</th>
+                    <th class="text-end">Sold For</th>
+                    <th class="text-end">Actual Profit</th>
+                    <th class="text-end">Margin %</th>
+                    <th>Date Sold</th>
+                    <th style="width:80px;" class="text-end">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for deal in sold %}
+                {% set lc = deal.report.deal_lifecycle if deal.report and deal.report.deal_lifecycle else {} %}
+                {% set margin = ((lc.actual_profit / lc.purchase_price) * 100) if lc.purchase_price and lc.actual_profit else None %}
+                <tr>
+                    <td>
+                        <a href="/deals/{{ deal.id }}" style="color:#e2e8f0; text-decoration:none;">{{ deal.title }}</a>
+                    </td>
+                    <td class="text-end">
+                        {% if lc.purchase_price %}£{{ "{:,.0f}".format(lc.purchase_price) }}{% else %}—{% endif %}
+                    </td>
+                    <td class="text-end">
+                        {% if lc.sale_price %}£{{ "{:,.0f}".format(lc.sale_price) }}{% else %}—{% endif %}
+                    </td>
+                    <td class="text-end">
+                        {% if lc.actual_profit is not none %}
+                            <span class="{% if lc.actual_profit >= 0 %}profit-positive{% else %}profit-negative{% endif %}">
+                                £{{ "{:,.0f}".format(lc.actual_profit) }}
+                            </span>
+                        {% else %}—{% endif %}
+                    </td>
+                    <td class="text-end">
+                        {% if margin is not none %}
+                            <span class="{% if margin >= 0 %}profit-positive{% else %}profit-negative{% endif %}">
+                                {{ "%.1f"|format(margin) }}%
+                            </span>
+                        {% else %}—{% endif %}
+                    </td>
+                    <td style="color:#94a3b8; font-size:0.85rem;">{{ lc.sale_date or "—" }}</td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-outline-secondary track-btn"
+                                data-deal-id="{{ deal.id }}"
+                                data-title="{{ deal.title }}"
+                                data-stage="{{ lc.stage or 'sold' }}"
+                                data-offer="{{ lc.offer_price or '' }}"
+                                data-purchase="{{ lc.purchase_price or '' }}"
+                                data-sale="{{ lc.sale_price or '' }}"
+                                data-notes="{{ lc.notes or '' }}">
+                            Edit
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-secondary mb-0">No completed sales yet. Mark a purchased vehicle as <strong>Sold</strong> to record your profit.</p>
+    {% endif %}
+</div>
+
+{# Track Modal #}
+<div class="modal fade" id="trackModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content" style="background:#111827; border:1px solid #1f2937; color:#f1f5f9;">
+            <div class="modal-header" style="border-bottom:1px solid #1f2937;">
+                <h5 class="modal-title" id="trackModalTitle">Track Deal</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="post" id="trackForm">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label text-secondary">Stage</label>
+                        <select name="stage" class="form-select" style="background:#1e293b; border-color:#334155; color:#f1f5f9;">
+                            <option value="watching">Watching</option>
+                            <option value="offered">Offered</option>
+                            <option value="purchased">Purchased</option>
+                            <option value="sold">Sold</option>
+                            <option value="passed">Passed</option>
+                        </select>
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col">
+                            <label class="form-label text-secondary">Offer Price (£)</label>
+                            <input type="text" name="offer_price" class="form-control" placeholder="e.g. 11500"
+                                   style="background:#1e293b; border-color:#334155; color:#f1f5f9;">
+                        </div>
+                        <div class="col">
+                            <label class="form-label text-secondary">Paid (£)</label>
+                            <input type="text" name="purchase_price" class="form-control" placeholder="e.g. 11200"
+                                   style="background:#1e293b; border-color:#334155; color:#f1f5f9;">
+                        </div>
+                        <div class="col">
+                            <label class="form-label text-secondary">Sold For (£)</label>
+                            <input type="text" name="sale_price" class="form-control" placeholder="e.g. 14800"
+                                   style="background:#1e293b; border-color:#334155; color:#f1f5f9;">
+                        </div>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label text-secondary">Notes</label>
+                        <input type="text" name="notes" class="form-control" placeholder="Any notes..."
+                               style="background:#1e293b; border-color:#334155; color:#f1f5f9;">
+                    </div>
+                </div>
+                <div class="modal-footer" style="border-top:1px solid #1f2937;">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-success">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+document.querySelectorAll('.track-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        const dealId = this.dataset.dealId;
+        document.getElementById('trackModalTitle').textContent = this.dataset.title;
+        document.getElementById('trackForm').action = `/deals/${dealId}/track`;
+        const form = document.getElementById('trackForm');
+        form.querySelector('[name=stage]').value = this.dataset.stage || 'watching';
+        form.querySelector('[name=offer_price]').value = this.dataset.offer || '';
+        form.querySelector('[name=purchase_price]').value = this.dataset.purchase || '';
+        form.querySelector('[name=sale_price]').value = this.dataset.sale || '';
+        form.querySelector('[name=notes]').value = this.dataset.notes || '';
+        new bootstrap.Modal(document.getElementById('trackModal')).show();
+    });
+});
+</script>
+
+{% endblock %}

@@ -180,6 +180,12 @@
             <span class="nav-badge">{{ nav_counts.van_deals }}</span>
         {% endif %}
     </a>
+    <a href="/completed">
+        <span>💰 Completed</span>
+        {% if nav_counts.completed_count %}
+            <span class="nav-badge">{{ nav_counts.completed_count }}</span>
+        {% endif %}
+    </a>
     <a href="/analytics">Analytics</a>
 </div>
 
