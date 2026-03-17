@@ -161,6 +161,9 @@ SNIPER_ROTATION_KEY = "sniper_query_rotation_idx"
 SWEEP_ROTATION_KEY  = "sweep_rotation_idx"
 SWEEP_BATCH_SIZE    = 16  # makes per sweep run — 32 makes ÷ 16 = 2 batches, all covered every 2 runs (~8 hrs)
                           # 16 makes × 6 calls = 96 calls/run vs old 192/run — half the 429 risk
+SNIPER_QUERY_BATCH  = 33  # queries per sniper run — all 66 covered every 2 runs (2 hrs)
+                          # 33 × 5 windows = 165 calls/run × 24 = 3,960/day → fits within 4,500 budget
+                          # 125-min lookback > 2-hr cycle = every listing is always caught
 # ==========================================
 # VAN SCAN QUERY GROUPS
 # Used by van sniper — rotated per run.
@@ -943,33 +946,50 @@ def scan_sniper(dealer_id: int):
     # Fix: every 60-minute run scans all 39 queries with a 70-minute lookback.
     # Any listing posted in the last hour is caught within 60 minutes.
     #
-    # API cost stays low because the geographic filter (75-mile radius) means
-    # each query returns very few new listings per price band → early break.
-    # In practice: ~1-2 pages per band for busy makes, 0 for quiet ones.
-    # Estimated: ~150-300 search calls/run × 24 runs = ~4,800/day worst case,
-    # but with geographic filter realistic is ~60-120 calls/run = ~1,500-2,900/day.
-    # SNIPER_LIMIT=10 expansions per run caps evaluation cost.
+    # BUDGET-AWARE SNIPER ROTATION
+    #
+    # Problem: 66 queries × 5 price windows = 330 API calls/run × 24 runs = 7,920/day
+    #          — blows through the 4,500 daily eBay budget every morning.
+    #
+    # Fix: run SNIPER_QUERY_BATCH (33) queries per run, advancing the window each run.
+    #   - Full 66-query cycle completes in 2 runs (2 hours)
+    #   - LOOKBACK_MINUTES (125) > 2-hour cycle = every listing is always caught
+    #   - Budget: 33 × 5 = 165 calls/run × 24 = 3,960 sniper calls/day ✅
+    #   - With sweep (576) + prewarm (500): ~5,036 theoretical, hard-capped at 4,500
+    #   - In practice: ~20 full sniper runs/day, idle for last ~3hr before midnight UTC
+    #
+    # Shuffle uses a UTC date seed — stable order within a day so batch boundaries
+    # are consistent across workers, but rotates daily for make diversity.
     from datetime import datetime, timedelta, timezone
-    LOOKBACK_MINUTES = 125  # 5min buffer beyond 2hr age gate — guarantees full overlap
-    all_queries = (
+    LOOKBACK_MINUTES = 125
+
+    all_queries = list(
         SCAN_QUERY_GROUPS
         + YEAR_SNIPER_QUERIES
         + ENGINE_SNIPER_QUERIES
         + GENERIC_SNIPER_QUERIES
     )
-    # Shuffle each run so no make consistently wins the expansion cap.
-    # Without this, Ford (first in SCAN_QUERY_GROUPS) fills the cap before
-    # BMW/Audi/Toyota listings are even evaluated. Each run gets a different
-    # random order → over 24 runs/day, every make gets equal priority.
-    random.shuffle(all_queries)
+    n = len(all_queries)
+
+    # Stable daily shuffle — same order all day, different each day
+    daily_seed = int(datetime.now(timezone.utc).strftime("%Y%j"))
+    random.Random(daily_seed).shuffle(all_queries)
+
+    # Advance batch start by SNIPER_QUERY_BATCH each run (non-overlapping windows)
+    raw_idx = int(redis_client.incr(SNIPER_ROTATION_KEY) - 1)
+    start = (raw_idx * SNIPER_QUERY_BATCH) % n
+    batch = [all_queries[(start + i) % n] for i in range(SNIPER_QUERY_BATCH)]
+
     since = (datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    print(f"🎯 Sniper: {len(all_queries)} queries (shuffled), listings since {since}")
+    batch_num = (raw_idx % max(1, n // SNIPER_QUERY_BATCH)) + 1
+    total_batches = max(1, -(-n // SNIPER_QUERY_BATCH))  # ceiling div
+    print(f"🎯 Sniper batch {batch_num}/{total_batches} ({len(batch)} queries), listings since {since}")
     return run_scan(
         dealer_id=dealer_id,
         mode_name="sniper",
         listings_to_pull=50,
         keywords=None,
-        query_groups_override=all_queries,
+        query_groups_override=batch,
         sort="newlyListed",
         since=since,
     )
@@ -1077,7 +1097,7 @@ def prewarm_van_valuation_cache():
 BUDGET_ALLOCATIONS = {
     "prewarm":     1000,   # Once/day cold run
     "van_prewarm":  200,   # Once/day cold run
-    "sniper":      2000,   # 24 runs/day × all queries + 20 expansions = ~960/day
+    "sniper":      4000,   # 24 runs/day × 33 queries × 5 windows = ~3,960/day (hard cap 4,500 enforced)
     "van_sniper":   700,   # 24 runs/day × ~29 calls avg
     "sweep":       3000,   # 6 runs/day × 8 makes × 6 calls = ~288/day (soft warning only)
     "van_sweep":    700,   # 4 runs/day × ~136 calls avg
