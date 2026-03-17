@@ -929,7 +929,7 @@ def scan_sniper(dealer_id: int):
     #
     # Budget: 39 makes × 1 call × 24 runs = 936 calls/day ✅
     from datetime import datetime, timedelta, timezone
-    LOOKBACK_MINUTES = 65  # 5-min buffer over the 60-min run interval
+    LOOKBACK_MINUTES = 35  # 5-min buffer over the 30-min run interval
 
     makes = list(SCAN_QUERY_GROUPS)
     random.shuffle(makes)  # shuffle so no make always gets first expansion slots
@@ -1049,7 +1049,7 @@ def prewarm_van_valuation_cache():
 BUDGET_ALLOCATIONS = {
     "prewarm":     1000,   # Once/day cold run
     "van_prewarm":  200,   # Once/day cold run
-    "sniper":      1500,   # 24 runs/day × 39 makes × 1 call = ~936/day + ~480 expansions = ~1,416/day
+    "sniper":      2000,   # 48 runs/day × 39 makes × 1 call = ~1,872/day + expansions
     "van_sniper":   700,   # 24 runs/day × ~29 calls avg
     "sweep":       3000,   # 6 runs/day × 8 makes × 6 calls = ~288/day (soft warning only)
     "van_sweep":    700,   # 4 runs/day × ~136 calls avg

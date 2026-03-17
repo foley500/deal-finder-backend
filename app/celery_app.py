@@ -26,9 +26,9 @@ celery.conf.beat_schedule = {
     # ==========================================
     # CAR SCAN TASKS
     # ==========================================
-    "sniper-scan-every-60-minutes": {
+    "sniper-scan-every-30-minutes": {
     "task": "app.tasks.scan_sniper",
-    "schedule": timedelta(hours=1),
+    "schedule": timedelta(minutes=30),
     "args": (1,),
     },
 
