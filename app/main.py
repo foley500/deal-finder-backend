@@ -16,7 +16,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from app.database import engine, SessionLocal
 from app.models import Base, Dealer, DealerSettings, Deal, ScanRun
@@ -845,6 +845,29 @@ def ingest_facebook(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# =====================================================
+# ONE-TIME DB MIGRATION HELPER
+# Adds columns that exist in models but may be missing
+# from older Render deployments. Safe to call multiple times.
+# =====================================================
+
+@app.post("/admin/migrate")
+def run_migration(db: Session = Depends(get_db)):
+    results = []
+    statements = [
+        "ALTER TABLE dealer_settings ADD COLUMN IF NOT EXISTS search_postcode VARCHAR",
+        "ALTER TABLE dealer_settings ADD COLUMN IF NOT EXISTS search_radius_miles INTEGER",
+    ]
+    for sql in statements:
+        try:
+            db.execute(text(sql))
+            results.append({"sql": sql, "status": "ok"})
+        except Exception as e:
+            results.append({"sql": sql, "status": "error", "detail": str(e)})
+    db.commit()
+    return {"results": results}
 
 
 # =====================================================
