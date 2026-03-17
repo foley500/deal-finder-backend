@@ -954,8 +954,13 @@ def scan_sniper(dealer_id: int):
         + ENGINE_SNIPER_QUERIES
         + GENERIC_SNIPER_QUERIES
     )
+    # Shuffle each run so no make consistently wins the expansion cap.
+    # Without this, Ford (first in SCAN_QUERY_GROUPS) fills the cap before
+    # BMW/Audi/Toyota listings are even evaluated. Each run gets a different
+    # random order → over 24 runs/day, every make gets equal priority.
+    random.shuffle(all_queries)
     since = (datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    print(f"🎯 Sniper: all {len(all_queries)} queries, listings since {since}")
+    print(f"🎯 Sniper: {len(all_queries)} queries (shuffled), listings since {since}")
     return run_scan(
         dealer_id=dealer_id,
         mode_name="sniper",
