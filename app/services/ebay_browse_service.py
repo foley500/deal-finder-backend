@@ -85,7 +85,8 @@ def search_ebay_browse(
     min_price=500,
     max_price=50000,
     sort="newlyListed",
-    offset=0
+    offset=0,
+    start_time_filter=None,  # ISO 8601 UTC string — only return listings created after this time
 ):
     token = get_ebay_access_token()
     if not token:
@@ -96,13 +97,17 @@ def search_ebay_browse(
         "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
     }
 
+    filter_str = f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}},itemLocationCountry:GB"
+    if start_time_filter:
+        filter_str += f",itemStartDate:[{start_time_filter}..]"
+
     params = {
         "q": keywords,
         "limit": limit,
         "offset": offset,
         "sort": sort,
         "category_ids": "9801",
-        "filter": f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}},itemLocationCountry:GB",
+        "filter": filter_str,
         "fieldgroups": "SELLER_DETAILS",
     }
 
@@ -169,10 +174,14 @@ def search_ebay_browse(
     print(f"✅ eBay returned {len(listings)} vehicle summaries")
     return listings
 
-def search_sniper_windows(make, model):
+def search_sniper_windows(make, model, since=None):
     """
     Runs multiple price-window searches to catch mispriced listings.
     Also scans multiple result pages and reverse keyword order.
+
+    since: ISO 8601 UTC string — if provided, only returns listings created after
+           this timestamp. Used by the sniper to cover the full rotation window
+           (typically 14 hours) rather than just the last few minutes of results.
     """
 
     windows = [
@@ -211,11 +220,12 @@ def search_sniper_windows(make, model):
 
             listings = search_ebay_browse(
                 keywords=term,
-                limit=50,
+                limit=200,  # eBay max — with time filter, this catches all listings in the window
                 min_price=min_price,
                 max_price=max_price,
                 sort="newlyListed",
-                offset=0
+                offset=0,
+                start_time_filter=since,
             )
 
             if not listings:

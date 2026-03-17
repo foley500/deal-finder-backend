@@ -791,7 +791,13 @@ def scan_sniper(dealer_id: int):
     # Scan 5 consecutive queries per run — full rotation completes in ~12 hours.
     # Previously 1 query/run gave a 61-hour cycle; by then newly-listed deals are gone.
     # Cost: only 4 extra search calls vs 1 (SNIPER_LIMIT expansion cap unchanged).
+    #
+    # Time filter: look back 14 hours (12h cycle + 2h buffer) so every run sees ALL
+    # listings posted since the last time these queries were scanned — not just the
+    # 50 most recent at this exact moment. Deduplication in run_scan handles overlap.
+    from datetime import datetime, timedelta, timezone
     QUERIES_PER_RUN = 5
+    LOOKBACK_HOURS = 14
     all_queries = (
         SCAN_QUERY_GROUPS
         + YEAR_SNIPER_QUERIES
@@ -802,7 +808,8 @@ def scan_sniper(dealer_id: int):
     end_idx = int(redis_client.incrby(SNIPER_ROTATION_KEY, QUERIES_PER_RUN))
     start_idx = (end_idx - QUERIES_PER_RUN) % n
     queries = [all_queries[(start_idx + i) % n] for i in range(QUERIES_PER_RUN)]
-    print(f"🎯 Sniper rotation [{start_idx % n + 1}–{(start_idx + QUERIES_PER_RUN - 1) % n + 1}/{n}]: {queries}")
+    since = (datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    print(f"🎯 Sniper rotation [{start_idx % n + 1}–{(start_idx + QUERIES_PER_RUN - 1) % n + 1}/{n}]: {queries} (since {since})")
     return run_scan(
         dealer_id=dealer_id,
         mode_name="sniper",
@@ -810,6 +817,7 @@ def scan_sniper(dealer_id: int):
         keywords=None,
         query_groups_override=queries,
         sort="newlyListed",
+        since=since,
     )
 
 
@@ -945,7 +953,7 @@ def _check_budget(calls_needed: int = 1, task_name: str = None) -> bool:
 # ==========================================
 # SHARED SCAN ENGINE
 # ==========================================
-def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=None, sort="newlyListed", source_override=None, query_groups_override=None):
+def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=None, sort="newlyListed", source_override=None, query_groups_override=None, since=None):
     """
     Unified scan engine.
 
@@ -1062,7 +1070,7 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                             print("Daily API budget reached - stopping sniper")
                             break
 
-                        sniper_items = search_sniper_windows(query, "")
+                        sniper_items = search_sniper_windows(query, "", since=since)
                         items.extend(sniper_items)
 
                     else:
