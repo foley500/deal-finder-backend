@@ -1057,32 +1057,40 @@ BUDGET_ALLOCATIONS = {
 TASK_BUDGET_KEY_PREFIX = "ebay_task_calls"
 
 def _check_budget(calls_needed: int = 1, task_name: str = None) -> bool:
-    """Returns True if budget allows, increments counter. False = stop scanning."""
-    pipe = redis_client.pipeline()
-    pipe.incrby(DAILY_BUDGET_KEY, calls_needed)
-    pipe.ttl(DAILY_BUDGET_KEY)
-    result = pipe.execute()
-    current_count = result[0]
-    ttl = result[1]
+    """Returns True if budget allows and increments counter. False = stop scanning.
 
-    # Set 24hr expiry on first write
-    if ttl < 0:
-        redis_client.expire(DAILY_BUDGET_KEY, 86400)
+    Key is date-stamped (UTC) so it resets automatically each day without
+    relying on TTL timing. Counter is only incremented when budget allows —
+    failed checks no longer leak +1 into the counter.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    budget_key = f"{DAILY_BUDGET_KEY}:{today}"
 
-    remaining = DAILY_API_BUDGET - current_count
-    if current_count % 500 == 0:
-        print(f"📊 Budget: {current_count}/{DAILY_API_BUDGET} used ({remaining} remaining)")
+    # Read current usage WITHOUT incrementing first — failed checks must not
+    # inflate the counter (old bug: every blocked run added +1 forever).
+    current_count = int(redis_client.get(budget_key) or 0)
 
-    if current_count > DAILY_API_BUDGET:
+    if current_count + calls_needed > DAILY_API_BUDGET:
         print(f"🛑 Daily budget exceeded: {current_count}/{DAILY_API_BUDGET} calls used")
         return False
 
+    # Budget allows — increment now
+    new_count = int(redis_client.incrby(budget_key, calls_needed))
+
+    # 25-hr TTL on first write — outlasts the day so no leftover from a slow key expiry
+    if new_count <= calls_needed:
+        redis_client.expire(budget_key, 90000)
+
+    remaining = DAILY_API_BUDGET - new_count
+    if new_count % 500 == 0 or new_count > DAILY_API_BUDGET - 200:
+        print(f"📊 Budget: {new_count}/{DAILY_API_BUDGET} used ({remaining} remaining)")
+
     # Soft per-task warning
     if task_name and task_name in BUDGET_ALLOCATIONS:
-        task_key = f"{TASK_BUDGET_KEY_PREFIX}:{task_name}"
-        task_count = int(redis_client.incr(task_key))
-        if ttl < 0:
-            redis_client.expire(task_key, 86400)
+        task_key = f"{TASK_BUDGET_KEY_PREFIX}:{task_name}:{today}"
+        task_count = int(redis_client.incrby(task_key, calls_needed))
+        if task_count <= calls_needed:
+            redis_client.expire(task_key, 90000)
         soft_limit = BUDGET_ALLOCATIONS[task_name]
         if task_count > soft_limit:
             print(f"⚠️ [{task_name}] soft budget exceeded: {task_count}/{soft_limit} — continuing but investigate")
