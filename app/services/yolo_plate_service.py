@@ -22,13 +22,22 @@ def extract_plate_from_image_url(image_url: str):
 
         results = reader.readtext(image, detail=0)
 
-        combined = "".join(results).replace(" ", "").upper()
+        # Try each OCR token individually first — plates often appear as a single
+        # token and this avoids false matches from adjacent text being concatenated.
+        for token in results:
+            cleaned = token.upper().replace(" ", "").replace("-", "")
+            match = re.search(UK_REGEX, cleaned)
+            if match:
+                plate = normalise_uk_plate(match.group(0))
+                print("✅ OCR Detected (single token):", plate)
+                return plate
 
+        # Fallback: join all tokens and search — catches plates split across OCR results
+        combined = "".join(results).replace(" ", "").upper().replace("-", "")
         match = re.search(UK_REGEX, combined)
-
         if match:
             plate = normalise_uk_plate(match.group(0))
-            print("✅ OCR Detected:", plate)
+            print("✅ OCR Detected (combined):", plate)
             return plate
 
         print("❌ OCR no valid plate")

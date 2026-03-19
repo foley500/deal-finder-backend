@@ -908,31 +908,19 @@ def prewarm_valuation_cache(targets_override=None):
 # ==========================================
 @celery.task
 def scan_sniper(dealer_id: int):
-    # Scan ALL queries every run — no rotation.
+    # SNIPER: search every make, every run, using search_sniper_recent (1 call/make).
     #
-    # The sniper's only job is to be FIRST. Rotating through queries meant deals
-    # could be 8+ hours old before we saw them — sold by then.
+    # Uses search_sniper_recent — 1 API call per make vs 5 with price windows.
+    # With a 35-min lookback window, no make has 200+ new listings locally
+    # so price-band pagination is unnecessary. Budget: 39 × 1 × 48 = 1,872/day ✅
     #
-    # Fix: every 60-minute run scans all 39 queries with a 70-minute lookback.
-    # Any listing posted in the last hour is caught within 60 minutes.
-    #
-    # SNIPER: search every make, every run, every 60 minutes.
-    #
-    # Searches by make name only — 39 makes, 1 API call each.
-    # The valuation engine determines if a listing is underpriced vs market value.
-    # Year/mileage/profit filters come from dealer dashboard settings, applied
-    # during scoring — NOT baked into the search query.
-    #
-    # No year keywords, no engine size keywords, no "cheap car" terms.
-    # Those searches return mixed, hard-to-value inventory and burn budget.
-    # Finding underpriced cars is the engine's job, not the search query's job.
-    #
-    # Budget: 39 makes × 1 call × 24 runs = 936 calls/day ✅
+    # No year/engine/generic keyword queries — those return mixed unvaluable inventory.
+    # The valuation engine decides if a listing is underpriced; the query just finds inventory.
     from datetime import datetime, timedelta, timezone
     LOOKBACK_MINUTES = 35  # 5-min buffer over the 30-min run interval
 
     makes = list(SCAN_QUERY_GROUPS)
-    random.shuffle(makes)  # shuffle so no make always gets first expansion slots
+    random.shuffle(makes)  # shuffle so no make always wins the expansion cap
 
     since = (datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     print(f"🎯 Sniper: {len(makes)} makes, listings since {since}")

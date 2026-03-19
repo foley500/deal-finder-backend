@@ -12,6 +12,7 @@ from app.services.ebay_browse_service import (
     get_item_detail,
     _trip_circuit,
     _is_circuit_open,
+    _reset_circuit_trip_count,
 )
 
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
@@ -422,6 +423,10 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
 
             throttle_ebay()
 
+            if _is_circuit_open():
+                print(f"⚡ [{label}] Circuit open (post-throttle) — aborting pagination")
+                break
+
             response = requests.get(SEARCH_URL, headers=headers, params=params)
 
             if response.status_code == 429:
@@ -432,6 +437,8 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
             if response.status_code != 200:
                 print(f"❌ [{label}] search error: {response.status_code}")
                 break
+
+            _reset_circuit_trip_count()
 
             items = response.json().get("itemSummaries", [])
 
@@ -641,11 +648,8 @@ def run_filter_layer(
         total_accepted = accepted_sold
 
         if listing_year is None:
-            if total_accepted >= MIN_SAMPLE_SIZE:
-                rejected_no_year += 1
-                continue
-            else:
-                listing_year = target_year
+            rejected_no_year += 1
+            continue
 
         year_diff = abs(listing_year - target_year)
         if year_diff > year_tolerance:

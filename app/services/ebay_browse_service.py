@@ -20,10 +20,12 @@ EBAY_TOKEN_KEY = "ebay:access_token"
 
 # Circuit breaker — tripped on any 429 to prevent hammering the API.
 # All browse calls check this first and fast-fail if the circuit is open.
-# Uses nx=True so a second 429 within the window does NOT reset the TTL —
-# the circuit closes after exactly BROWSE_CIRCUIT_TTL seconds regardless.
+# Exponential backoff: each consecutive circuit opening doubles the cooldown (capped at 30 min).
+# nx=True on the circuit key prevents concurrent 429s from resetting an active cooldown.
 BROWSE_CIRCUIT_KEY = "ebay_browse_circuit_open"
-BROWSE_CIRCUIT_TTL = 60  # seconds — eBay rate limit windows are typically 60s
+BROWSE_CIRCUIT_TRIP_COUNT_KEY = "ebay_browse_circuit_trip_count"
+BROWSE_CIRCUIT_BASE_TTL = 300   # 5 minutes base cooldown
+BROWSE_CIRCUIT_MAX_TTL  = 1800  # 30 minutes maximum cooldown
 
 
 def _is_circuit_open() -> bool:
@@ -31,10 +33,22 @@ def _is_circuit_open() -> bool:
 
 
 def _trip_circuit():
-    # nx=True: only set if key doesn't exist — prevents re-tripping from
-    # resetting the TTL and keeping the circuit open indefinitely.
-    redis_client.set(BROWSE_CIRCUIT_KEY, "1", ex=BROWSE_CIRCUIT_TTL, nx=True)
-    print(f"⚡ Browse circuit tripped — pausing all browse calls for {BROWSE_CIRCUIT_TTL}s")
+    # Increment trip counter atomically to determine backoff TTL.
+    pipe = redis_client.pipeline()
+    pipe.incr(BROWSE_CIRCUIT_TRIP_COUNT_KEY)
+    pipe.expire(BROWSE_CIRCUIT_TRIP_COUNT_KEY, 3600)  # counter resets after 1 hour of calm
+    trip_count, _ = pipe.execute()
+
+    ttl = min(BROWSE_CIRCUIT_BASE_TTL * (2 ** (trip_count - 1)), BROWSE_CIRCUIT_MAX_TTL)
+    # nx=True: don't reset an active cooldown if a concurrent task also hits 429.
+    # The first task to trip the circuit wins and sets the TTL; others are no-ops.
+    redis_client.set(BROWSE_CIRCUIT_KEY, "1", ex=int(ttl), nx=True)
+    print(f"⚡ Browse circuit tripped (trip #{trip_count}) — pausing all browse calls for {ttl}s")
+
+
+def _reset_circuit_trip_count():
+    """Call this on a successful eBay response to reset the backoff counter."""
+    redis_client.delete(BROWSE_CIRCUIT_TRIP_COUNT_KEY)
 
 
 EBAY_TOKEN_LOCK_KEY = "ebay:token_fetch_lock"
@@ -127,6 +141,13 @@ def search_ebay_browse(
         return []
 
     throttle_ebay()
+
+    # Re-check after acquiring the throttle slot — another concurrent worker may have
+    # tripped the circuit while we were waiting in the throttle queue.
+    if _is_circuit_open():
+        print("⚡ Browse circuit open (post-throttle check) — skipping request")
+        return []
+
     response = requests.get(SEARCH_URL, headers=headers, params=params)
 
     if response.status_code == 429:
@@ -138,6 +159,7 @@ def search_ebay_browse(
         print("❌ Browse API error:", response.text)
         return []
 
+    _reset_circuit_trip_count()
     summaries = response.json().get("itemSummaries", [])
 
     listings = []
@@ -396,6 +418,11 @@ def get_item_detail(item_id):
     }
 
     throttle_ebay()
+
+    if _is_circuit_open():
+        print("⚡ Browse circuit open (post-throttle check) — skipping item detail")
+        return None
+
     response = requests.get(
         f"{ITEM_URL}{item_id}?fieldgroups=PRODUCT,ADDITIONAL_SELLER_DETAILS",
         headers=headers
@@ -410,6 +437,7 @@ def get_item_detail(item_id):
         print("❌ Item detail error:", response.text)
         return None
 
+    _reset_circuit_trip_count()
     data = response.json()
 
     # Hoist seller account type to top level for easy access in deal_engine
