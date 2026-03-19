@@ -54,10 +54,12 @@ def get_trade_multiplier(mileage: int, make: str = "") -> float:
         base = 0.82
     elif mileage and mileage < 100000:
         base = 0.78
-    elif mileage and mileage > 120000:
+    elif mileage and mileage < 120000:
+        base = 0.74
+    elif mileage and mileage >= 120000:
         base = 0.70
     else:
-        base = 0.78
+        base = 0.78  # no mileage data
 
     # Prestige makes hold trade value slightly better
     prestige = {"bmw", "mercedes", "mercedes-benz", "audi", "porsche", "land rover", "lexus"}
@@ -68,7 +70,7 @@ def get_trade_multiplier(mileage: int, make: str = "") -> float:
 
 # Active listing asking prices sit above what cars actually sell for.
 # Discount to realistic sale price before deriving the three values.
-ACTIVE_SALE_DISCOUNT = 0.92
+ACTIVE_SALE_DISCOUNT = 0.85
 
 # Mileage bands for dynamic layer_1 tolerance scaling.
 # Layer 1 is always ±15k miles — tight first pass to get like-for-like comparables.
@@ -635,10 +637,26 @@ def run_filter_layer(
         ]):
             continue
 
-        # strict base model match
+        # strict base model match — with badge fallbacks for BMW/Mercedes
         if base_model:
             model_pattern = rf"\b{re.escape(base_model.lower())}\b"
-            if not re.search(model_pattern, title):
+            title_match = re.search(model_pattern, title)
+
+            if not title_match:
+                # BMW "3 Series" → also accept badge variants "330d", "320i", "328i" etc.
+                series_m = re.match(r'^(\d) series$', base_model.lower())
+                if series_m:
+                    n = series_m.group(1)
+                    title_match = re.search(rf"\b{n}\d{{2}}[a-z]?\b", title)
+
+            if not title_match:
+                # Mercedes "C-Class" → also accept "c220d", "c250", "c180" etc.
+                class_m = re.match(r'^([a-z]{1,3})-class$', base_model.lower())
+                if class_m:
+                    letter = re.escape(class_m.group(1))
+                    title_match = re.search(rf"\b{letter}\d{{2,3}}[a-z]?\b", title)
+
+            if not title_match:
                 continue
 
         if engine_litre:
@@ -769,7 +787,7 @@ def run_filter_layer(
     # IQR-based outlier trimming (Tukey fences: Q1 − 1.5×IQR, Q3 + 1.5×IQR).
     # More adaptive than a flat 10% cut — small samples (5-10 comps) are barely
     # touched; genuine outliers in larger pools are cleanly removed.
-    if len(final_prices) >= 6:
+    if len(final_prices) >= 4:
         mid = len(final_prices) // 2
         q1 = statistics.median(final_prices[:mid])
         q3 = statistics.median(final_prices[mid:])
@@ -778,7 +796,7 @@ def run_filter_layer(
             lower_fence = q1 - 1.5 * iqr
             upper_fence = q3 + 1.5 * iqr
             trimmed = [p for p in final_prices if lower_fence <= p <= upper_fence]
-            if len(trimmed) >= MIN_SAMPLE_SIZE:
+            if len(trimmed) >= 3:
                 removed = len(final_prices) - len(trimmed)
                 if removed > 0:
                     print(f"   ✂️ IQR trim: removed {removed} outliers (fences £{round(lower_fence)}–£{round(upper_fence)})")
@@ -872,11 +890,28 @@ def get_market_price_from_sold(
         except:
             pass
 
+    # Compute fuel suffix early so it can be included in the cache key.
+    # Diesel/petrol pools differ by 15-20% — sharing a key contaminates valuations.
+    # Hybrid gets its own suffix: large pool, sits between petrol and EV pricing.
+    # Cache keys without fuel (prewarm) are the generic fallback.
+    fuel_suffix = ""
+    if fuel_type:
+        ft = fuel_type.lower()
+        if "diesel" in ft:
+            fuel_suffix = " diesel"
+        elif "hybrid" in ft:
+            fuel_suffix = " hybrid"
+        elif "petrol" in ft:
+            fuel_suffix = " petrol"
+        elif "electric" in ft:
+            fuel_suffix = " electric"
+
     # Clamp to minimum 20k so low-mileage cars (under 20k) map to the 20k bucket
     # rather than bucket 0, which is never seeded by prewarm.
     mileage_bucket = max(20000, int(mileage / 20000) * 20000)
     engine_bucket = bucket_engine_size(engine_litre)
-    cache_key = f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}"
+    fuel_key = fuel_suffix.strip()
+    cache_key = f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}:{fuel_key}" if fuel_key else f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}"
     print(f"   🔑 Cache key: {cache_key}")
     cached = redis_client.get(cache_key)
     if cached:
@@ -925,18 +960,6 @@ def get_market_price_from_sold(
                     engine_litre = round(size / 1000, 1) if size > 10 else round(size, 1)
                 except:
                     pass
-
-    # Include fuel type to separate diesel/petrol pools — they differ by 15-20%.
-    # Do NOT add fuel type for hybrids (too niche, too few comparables).
-    fuel_suffix = ""
-    if fuel_type:
-        ft = fuel_type.lower()
-        if "diesel" in ft:
-            fuel_suffix = " diesel"
-        elif "petrol" in ft:
-            fuel_suffix = " petrol"
-        elif "electric" in ft and "hybrid" not in ft:
-            fuel_suffix = " electric"
 
     # Include year in live valuation queries: we know the exact target year so eBay
     # will surface more year-matching sold listings, giving the filter layers more
