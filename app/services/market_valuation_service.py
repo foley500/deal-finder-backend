@@ -125,8 +125,29 @@ def bucket_engine_size(engine_litre):
 
 
 def extract_year_from_title(title: str):
+    # Direct 4-digit year — most reliable, try first
     match = re.search(r"\b(19\d{2}|20\d{2})\b", title)
-    return int(match.group(1)) if match else None
+    if match:
+        return int(match.group(1))
+
+    # UK plate year codes: "63 plate", "15 reg", "71 plate", "65-reg" etc.
+    # UK registration format (post Sept 2001):
+    #   Codes 02–49 → March registration: year = 2000 + code  (e.g. 15 → 2015)
+    #   Codes 51–99 → September registration: year = 2000 + (code − 50)  (e.g. 63 → 2013)
+    # This covers the vast majority of used cars on eBay (2002–present).
+    plate_match = re.search(r"\b(\d{2})\s*[-]?\s*(?:plate|reg(?:istration)?)\b", title.lower())
+    if plate_match:
+        code = int(plate_match.group(1))
+        if 2 <= code <= 49:
+            year = 2000 + code
+        elif 51 <= code <= 99:
+            year = 2000 + (code - 50)
+        else:
+            year = None
+        if year and 2001 <= year <= 2030:
+            return year
+
+    return None
 
 
 def extract_mileage_from_text(text: str):
@@ -905,11 +926,6 @@ def get_market_price_from_sold(
                 except:
                     pass
 
-    # Do NOT include year in the eBay query — it narrows the result pool too
-    # aggressively for rare models and causes complete misses on cache-miss live searches.
-    # Year filtering is handled precisely by the 4-layer filter cascade (±2yr tolerance).
-    # Prewarm uses the same approach (make + model only).
-    #
     # Include fuel type to separate diesel/petrol pools — they differ by 15-20%.
     # Do NOT add fuel type for hybrids (too niche, too few comparables).
     fuel_suffix = ""
@@ -922,7 +938,11 @@ def get_market_price_from_sold(
         elif "electric" in ft and "hybrid" not in ft:
             fuel_suffix = " electric"
 
-    query = f"{make} {base_model}{fuel_suffix}"
+    # Include year in live valuation queries: we know the exact target year so eBay
+    # will surface more year-matching sold listings, giving the filter layers more
+    # correct comparables to work with. The prewarm intentionally omits year because
+    # it searches once per model and filters across all year buckets from one result set.
+    query = f"{make} {base_model} {year}{fuel_suffix}"
 
     # Dynamically scale mileage tolerance based on target mileage.
     # High mileage cars have thin comparable pools — widen tolerance to compensate.
