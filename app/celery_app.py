@@ -1,5 +1,6 @@
 import os
 from celery import Celery
+from celery.schedules import crontab
 from datetime import timedelta
 
 BROKER_URL = os.getenv("CELERY_BROKER_URL")
@@ -40,14 +41,14 @@ celery.conf.beat_schedule = {
     },
 
     # ==========================================
-    # CAR PREWARM — once per day at 2am UTC
-    # Running every 5hrs was burning ~2,700 calls/day alone.
-    # Cache TTL is 6hrs so entries stay warm across the day
-    # after a single morning refresh.
+    # CAR PREWARM — 7:10 AM UTC daily
+    # eBay quota resets at 7 AM GMT — run prewarm 10 min after reset
+    # so it gets first access to fresh quota before sniper/sweep burn it.
+    # Van prewarm at 8:30 AM UTC — offset so they don't overlap.
     # ==========================================
     "prewarm-valuation-cache-daily": {
         "task": "app.tasks.prewarm_valuation_cache",
-        "schedule": timedelta(hours=24),
+        "schedule": crontab(hour=7, minute=10),
         "options": {"expires": 7200},
     },
 
@@ -70,11 +71,11 @@ celery.conf.beat_schedule = {
     },
 
     # ==========================================
-    # VAN PREWARM — once per day, offset 1hr from car prewarm
+    # VAN PREWARM — 8:30 AM UTC, after car prewarm finishes
     # ==========================================
     "prewarm-van-valuation-cache-daily": {
         "task": "app.tasks.prewarm_van_valuation_cache",
-        "schedule": timedelta(hours=24),
+        "schedule": crontab(hour=8, minute=30),
         "options": {"expires": 7200},
     },
 }
