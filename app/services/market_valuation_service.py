@@ -927,7 +927,8 @@ def get_market_price_from_sold(
     # During scan tasks, never fall through to live eBay calls.
     # Cache miss = no valuation. Prewarm fills the cache.
     if cache_only:
-        print(f" Cache miss - performing live valuation: {make} {base_model} {year} {mileage_bucket}mi")
+        print(f"   ❌ Cache miss — skipping live valuation (cache_only=True, prewarm will fill)")
+        return None
     title_lower = listing_title.lower() if listing_title else ""
 
     if not engine_litre and listing_title:

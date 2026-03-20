@@ -748,8 +748,8 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 listing_title=title,
                 listing_aspects=aspects,
                 fuel_type=vehicle_data.get("fuel_type") or aspects.get("Fuel Type"),
-                cache_only=False,
-                budget_fn=budget_fn,  # Routes all valuation eBay calls through daily budget guard
+                cache_only=True,   # Never burn eBay calls on live valuation during scans — prewarm fills cache
+                budget_fn=budget_fn,
             )
         else:
             print(f"   ❌ Cannot value — make={make}, model={model} — skipping")
