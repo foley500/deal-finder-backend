@@ -12,7 +12,7 @@ from app.services.deal_engine import process_listing
 from app.services.listing_sources.factory import get_listing_source
 from app.services.pdf_service import generate_deal_pdf
 from app.services.telegram_service import send_telegram_document
-from app.services.ebay_browse_service import sniper_search, search_sniper_windows, search_sniper_recent, get_item_detail
+from app.services.ebay_browse_service import sniper_search, search_sniper_windows, search_sniper_recent, get_item_detail, _is_circuit_open
 from app.services.market_valuation_service import get_market_price_from_sold
 
 
@@ -821,6 +821,16 @@ def prewarm_valuation_cache(targets_override=None):
 
         # ONE eBay search for this make/model — shared across all year/mileage combos
         query = f"{make_title} {base_model_title}"
+
+        # Wait for circuit to clear before making the request.
+        # Previously the prewarm would skip on circuit open, causing all remaining
+        # makes to return 0 results and the prewarm to exit with only a handful of keys.
+        if _is_circuit_open():
+            ttl = redis_client.ttl("ebay_browse_circuit_open")
+            wait = max(int(ttl or 0) + 10, 10)
+            print(f"⏳ [{query}] Circuit open — waiting {wait}s before fetching...")
+            time.sleep(wait)
+
         try:
             all_summaries = get_sold_listings(
                 query,
@@ -830,6 +840,21 @@ def prewarm_valuation_cache(targets_override=None):
         except Exception as e:
             print(f"❌ Search failed for {query}: {e}")
             continue
+
+        # If circuit tripped during the call, wait and retry once
+        if not all_summaries and _is_circuit_open():
+            ttl = redis_client.ttl("ebay_browse_circuit_open")
+            wait = max(int(ttl or 0) + 10, 10)
+            print(f"⏳ [{query}] Circuit tripped mid-fetch — waiting {wait}s then retrying...")
+            time.sleep(wait)
+            try:
+                all_summaries = get_sold_listings(
+                    query,
+                    budget_fn=lambda n: _check_budget(n, "prewarm")
+                )
+            except Exception as e:
+                print(f"❌ Retry failed for {query}: {e}")
+                continue
 
         if not all_summaries:
             print(f"⚠️  No results for {query}")
