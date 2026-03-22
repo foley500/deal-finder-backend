@@ -778,6 +778,19 @@ def prewarm_valuation_cache(targets_override=None):
     total_cached = 0
     total_skipped = 0
 
+    # Clear circuit breaker at the start of every prewarm run.
+    # The trip count key can survive from the previous day (3600s TTL), meaning
+    # the first 429 at 7:10 AM could trigger exponential backoff of hours instead
+    # of the base 5-minute cooldown. Always reset to a clean state at prewarm start.
+    from app.services.ebay_browse_service import BROWSE_CIRCUIT_KEY, BROWSE_CIRCUIT_TRIP_COUNT_KEY
+    redis_client.delete(BROWSE_CIRCUIT_KEY, BROWSE_CIRCUIT_TRIP_COUNT_KEY)
+    print("🔄 Circuit breaker reset for prewarm run")
+
+    # Signal to sniper/sweep that prewarm is running so they yield the API budget.
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    PREWARM_RUNNING_KEY = f"prewarm_running:{today}"
+    redis_client.set(PREWARM_RUNNING_KEY, "1", ex=10800)  # 3hr max — auto-expires if prewarm crashes
+
     print("🔥 Starting valuation cache prewarm...")
 
     targets = targets_override if targets_override is not None else PREWARM_TARGETS
@@ -924,6 +937,7 @@ def prewarm_valuation_cache(targets_override=None):
         # Pause between models to respect rate limiter
         time.sleep(1)
 
+    redis_client.delete(PREWARM_RUNNING_KEY)
     print(f"🔥 Prewarm complete: {total_searches} searches, {total_cached} buckets cached, {total_skipped} skipped")
     return {"searches": total_searches, "cached": total_cached, "skipped": total_skipped}
 
@@ -943,6 +957,13 @@ def scan_sniper(dealer_id: int):
     # The valuation engine decides if a listing is underpriced; the query just finds inventory.
     from datetime import datetime, timedelta, timezone
     LOOKBACK_MINUTES = 35  # 5-min buffer over the 30-min run interval
+
+    # Yield to prewarm — if prewarm is running, skip this sniper cycle entirely
+    # so it doesn't compete for the fresh eBay quota.
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if redis_client.get(f"prewarm_running:{today}"):
+        print("⏸️  Sniper skipping — prewarm is running, yielding API budget")
+        return {"mode": "sniper", "listings_found": 0, "deals_saved": 0}
 
     makes = list(SCAN_QUERY_GROUPS)
     random.shuffle(makes)  # shuffle so no make always wins the expansion cap
@@ -991,6 +1012,11 @@ def scan_value_sweep(dealer_id: int):
     # Value sweep is for STALE listings (offset 80-200), not new ones — the sniper
     # handles new listings every 60min. An 8hr sweep cycle is appropriate.
     # API cost: 16 × 6 = 96 calls/run × 6 runs/day = 576 sweep calls/day.
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if redis_client.get(f"prewarm_running:{today}"):
+        print("⏸️  Value sweep skipping — prewarm is running, yielding API budget")
+        return {"mode": "value_sweep", "listings_found": 0, "deals_saved": 0}
+
     n = len(SCAN_QUERY_GROUPS)
     idx = int(redis_client.incr(SWEEP_ROTATION_KEY) - 1) % n
     batch = [SCAN_QUERY_GROUPS[(idx + i) % n] for i in range(min(SWEEP_BATCH_SIZE, n))]
@@ -1012,6 +1038,11 @@ def scan_value_sweep(dealer_id: int):
 # ==========================================
 @celery.task
 def scan_van_sniper(dealer_id: int):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if redis_client.get(f"prewarm_running:{today}"):
+        print("⏸️  Van sniper skipping — prewarm is running, yielding API budget")
+        return {"mode": "sniper", "listings_found": 0, "deals_saved": 0}
+
     idx = int(redis_client.incr(VAN_SNIPER_ROTATION_KEY) - 1) % len(VAN_SCAN_QUERY_GROUPS)
     query = VAN_SCAN_QUERY_GROUPS[idx]
     print(f"🚐 Van sniper rotation [{idx+1}/{len(VAN_SCAN_QUERY_GROUPS)}]: '{query}'")
@@ -1030,6 +1061,11 @@ def scan_van_sniper(dealer_id: int):
 # ==========================================
 @celery.task
 def scan_van_sweep(dealer_id: int):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if redis_client.get(f"prewarm_running:{today}"):
+        print("⏸️  Van sweep skipping — prewarm is running, yielding API budget")
+        return {"mode": "value_sweep", "listings_found": 0, "deals_saved": 0}
+
     return run_scan(
         dealer_id=dealer_id,
         mode_name="value_sweep",
