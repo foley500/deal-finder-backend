@@ -154,7 +154,6 @@ VAN_SCAN_QUERY_GROUPS = [
     'Fiat Doblo',
 ]
 
-VAN_SNIPER_ROTATION_KEY = "van_sniper_rotation_idx"
 
 # ==========================================
 # VAN PREWARM TARGETS
@@ -1037,24 +1036,36 @@ def scan_value_sweep(dealer_id: int):
 
 # ==========================================
 # VAN SNIPER
+# Searches ALL van models per run with a freshness window matching the run
+# interval (120 min). Previously used single-model rotation (one model per
+# run × 20 models = 40hr cycle per model), which combined with the 70-min
+# age gate meant almost no van listings ever passed — the age gate filtered
+# everything listed more than 70 min ago, and each model was only checked
+# every 40 hours. Now mirrors the car sniper: shuffle all models, use
+# since= to pre-filter at eBay API level so the age gate doesn't cull them.
+# API cost: 20 models × 1 call × 12 runs/day = ~240 calls/day.
 # ==========================================
 @celery.task
 def scan_van_sniper(dealer_id: int):
+    from datetime import timedelta
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if redis_client.get(f"prewarm_running:{today}"):
         print("⏸️  Van sniper skipping — prewarm is running, yielding API budget")
         return {"mode": "sniper", "listings_found": 0, "deals_saved": 0}
 
-    idx = int(redis_client.incr(VAN_SNIPER_ROTATION_KEY) - 1) % len(VAN_SCAN_QUERY_GROUPS)
-    query = VAN_SCAN_QUERY_GROUPS[idx]
-    print(f"🚐 Van sniper rotation [{idx+1}/{len(VAN_SCAN_QUERY_GROUPS)}]: '{query}'")
+    VAN_LOOKBACK_MINUTES = 125  # 5-min buffer over the 120-min run interval
+    makes = list(VAN_SCAN_QUERY_GROUPS)
+    random.shuffle(makes)
+    since = (datetime.now(timezone.utc) - timedelta(minutes=VAN_LOOKBACK_MINUTES)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    print(f"🚐 Van sniper: {len(makes)} models, listings since {since}")
     return run_scan(
         dealer_id=dealer_id,
         mode_name="sniper",
         listings_to_pull=50,
-        keywords=query,
+        query_groups_override=makes,
         sort="newlyListed",
         source_override="ebay_vans",
+        since=since,
     )
 
 
@@ -1380,7 +1391,9 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                         try:
                             listed_at = datetime.fromisoformat(listing_date_raw.replace("Z", "+00:00"))
                             age_minutes = (datetime.now(timezone.utc) - listed_at).total_seconds() / 60
-                            if age_minutes > SNIPER_AGE_GATE_MINUTES:
+                            # Van sniper runs every 120 min — use a wider gate to match.
+                            age_gate = 130 if source_override == "ebay_vans" else SNIPER_AGE_GATE_MINUTES
+                            if age_minutes > age_gate:
                                 continue  # Too old for sniper — skip silently
                         except Exception:
                             pass  # Can't parse date — let it through

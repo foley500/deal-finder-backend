@@ -95,13 +95,13 @@ def calculate_score(
         score -= 5
 
     # ------------------------------------------------------------------
-    # SELLER TYPE — individual (private) selling cheap is a stronger
-    # deal signal than a dealer listing at the same price.
+    # SELLER TYPE — private sellers are a stronger deal signal since
+    # they're typically less market-savvy than trade sellers. Business
+    # sellers are neutral (0) — vans are almost always business-listed
+    # so penalising BUSINESS would suppress nearly all van deals.
     # ------------------------------------------------------------------
     if seller_type == "INDIVIDUAL":
         score += 5
-    elif seller_type == "BUSINESS":
-        score -= 2
 
     # ------------------------------------------------------------------
     # MOTIVATED SELLER — strongest buying opportunity signal.
@@ -274,8 +274,6 @@ def calculate_score_breakdown(
 
     if seller_type == "INDIVIDUAL":
         breakdown["Private Seller"] = 5
-    elif seller_type == "BUSINESS":
-        breakdown["Business Seller"] = -2
 
     if motivated_seller:
         breakdown["Motivated Seller"] = 10
