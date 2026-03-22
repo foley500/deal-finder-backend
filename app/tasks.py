@@ -32,32 +32,34 @@ redis_client = redis.from_url(REDIS_URL)
 
 # API BUDGET — REAL CALL COSTS (daily)
 #
-# ┌─────────────┬───────────────────────────────────────────────┬──────────┐
-# │ Task        │ Calculation                                   │ Calls    │
-# ├─────────────┼───────────────────────────────────────────────┼──────────┤
-# │ Sniper      │ 39 makes × 1 call × 24 runs/day              │    936   │
-# │             │ (search_sniper_recent — no price windows)     │          │
-# │             │ + up to 20 detail expansions × 24 runs        │    480   │
-# │             │                               sniper subtotal │  ~1,416  │
-# ├─────────────┼───────────────────────────────────────────────┼──────────┤
-# │ Value sweep │ 16 makes × 6 calls (5 offsets + bestMatch)   │     96   │
-# │             │ × 6 runs/day (every 4hrs)                     │    576   │
-# │             │ + up to 30 expansions × 6 runs                │    180   │
-# │             │                              sweep subtotal   │    ~756  │
-# ├─────────────┼───────────────────────────────────────────────┼──────────┤
-# │ Prewarm     │ once/day — ~160 models, warm models skipped   │   ~500   │
-# ├─────────────┼───────────────────────────────────────────────┼──────────┤
-# │ TOTAL       │                                               │  ~2,672  │
-# │ LIMIT       │ eBay daily cap (500 buffer reserved)          │   4,500  │
-# │ HEADROOM    │                                               │  ~1,828  │
-# └─────────────┴───────────────────────────────────────────────┴──────────┘
+# ┌──────────────┬──────────────────────────────────────────────────┬──────────┐
+# │ Task         │ Calculation                                      │ Calls    │
+# ├──────────────┼──────────────────────────────────────────────────┼──────────┤
+# │ Car sniper   │ 39 makes × 1 call × 48 runs/day (every 30min)   │  1,872   │
+# │              │ + up to 25 detail expansions × 48 runs           │  ~500    │
+# │              │                                sniper subtotal   │  ~2,372  │
+# ├──────────────┼──────────────────────────────────────────────────┼──────────┤
+# │ Value sweep  │ 16 makes × 6 calls (5 offsets + bestMatch)      │     96   │
+# │              │ × 6 runs/day (every 4hrs)                        │    576   │
+# │              │ + up to 30 expansions × 6 runs                   │    180   │
+# │              │                               sweep subtotal     │    ~756  │
+# ├──────────────┼──────────────────────────────────────────────────┼──────────┤
+# │ Van tasks    │ sniper + sweep combined                          │    ~200  │
+# ├──────────────┼──────────────────────────────────────────────────┼──────────┤
+# │ Car prewarm  │ once/day — warm run (most cached): ~700          │    ~700  │
+# │              │ cold run (after flush): capped at 2,500 HARD     │          │
+# ├──────────────┼──────────────────────────────────────────────────┼──────────┤
+# │ Van prewarm  │ once/day — warm: ~100, cold: capped at 400 HARD  │    ~100  │
+# ├──────────────┼──────────────────────────────────────────────────┼──────────┤
+# │ TOTAL        │ typical warm day                                 │  ~4,128  │
+# │ LIMIT        │ eBay daily cap (200 buffer reserved)             │   4,800  │
+# │ HEADROOM     │                                                  │    ~672  │
+# └──────────────┴──────────────────────────────────────────────────┴──────────┘
 #
-# Sniper: searches 39 makes every 60 min. Valuation engine determines if
-#   a listing is underpriced vs market. Filters (year, mileage, profit, score)
-#   come from dealer dashboard settings — not baked into search queries.
-# Sweep: 16 of 39 makes per run, full cycle every ~12 hrs (3 runs × 4hr interval).
-SNIPER_LIMIT = 25        # Expansions per sniper run — 25 × 48 runs = 1,200 expansion calls/day
-DAILY_API_BUDGET = 4500  # Hard ceiling — 500 buffer vs 5,000 eBay limit
+# Sniper: shuffles and searches all 39 makes every 30 min — fresh listings only.
+# Sweep: 16 of 39 makes per run, full cycle every ~2 runs (~8hrs) — stale/cheap.
+SNIPER_LIMIT = 25        # Expansions per sniper run — 25 × 48 runs = 1,200 expansion calls/day max
+DAILY_API_BUDGET = 4800  # Hard ceiling — 200 buffer vs 5,000 eBay limit
 DAILY_BUDGET_KEY = "ebay_daily_calls"
 VALUE_SWEEP_LIMIT = 30   # Expansions per sweep run
 YEAR_PATTERN = re.compile(r"\b(20\d{2}|19\d{2})\b")
@@ -1091,18 +1093,36 @@ def prewarm_van_valuation_cache():
 # Stops all scans once DAILY_API_BUDGET is reached.
 # Resets automatically at midnight UTC when key expires.
 # ==========================================
-# Per-task soft budget allocations — prevents any single task from
-# consuming the entire daily budget and starving other tasks.
-# These are SOFT limits logged as warnings, not hard stops.
-# The DAILY_API_BUDGET is the only hard stop.
+# Per-task budget allocations.
+#
+# HARD limits (prewarm tasks): enforced — task stops when its allocation is
+# exhausted, reserving the remaining daily budget for sniper and sweep.
+# This prevents a cold prewarm from burning the entire day's budget.
+#
+# SOFT limits (scan tasks): warning only — scan tasks are allowed to exceed
+# their allocation if the global budget has headroom.
+#
+# Budget maths (normal warm-cache day):
+#   Car prewarm:  ~700 calls  (skips already-cached buckets, hard cap 2500)
+#   Van prewarm:  ~100 calls  (hard cap 400)
+#   Car sniper:   ~2372 calls (39 makes × 48 runs × 1 search + ~500 expansions)
+#   Value sweep:  ~756 calls  (16 makes × 6 calls × 6 runs + ~180 expansions)
+#   Van tasks:    ~200 calls
+#   TOTAL:        ~4128 / 4800 budget  — ~672 headroom on a normal day
+#
+# Cold-prewarm day (after Redis flush): prewarm caps at 2500, leaving 2300
+# for scans. Sniper searches (1872) complete; expansions may be cut short.
 BUDGET_ALLOCATIONS = {
-    "prewarm":     1000,   # Once/day cold run
-    "van_prewarm":  200,   # Once/day cold run
-    "sniper":      2000,   # 48 runs/day × 39 makes × 1 call = ~1,872/day + expansions
-    "van_sniper":   700,   # 24 runs/day × ~29 calls avg
-    "sweep":       3000,   # 6 runs/day × 8 makes × 6 calls = ~288/day (soft warning only)
-    "van_sweep":    700,   # 4 runs/day × ~136 calls avg
+    "prewarm":     2500,   # Hard — cold run capped here; warm run uses ~700
+    "van_prewarm":  400,   # Hard — cold run capped here; warm run uses ~100
+    "sniper":      2500,   # Soft — 39 makes × 48 runs × 1 call = ~1,872 + expansions
+    "van_sniper":   700,   # Soft
+    "sweep":       1000,   # Soft — 16 makes × 6 calls × 6 runs = ~576 + expansions
+    "van_sweep":    700,   # Soft
 }
+# Tasks whose allocation is a HARD stop (not just a warning).
+# These run once/day and must not starve the recurring scan tasks.
+HARD_BUDGET_TASKS = {"prewarm", "van_prewarm"}
 TASK_BUDGET_KEY_PREFIX = "ebay_task_calls"
 
 def _check_budget(calls_needed: int = 1, task_name: str = None) -> bool:
@@ -1123,6 +1143,16 @@ def _check_budget(calls_needed: int = 1, task_name: str = None) -> bool:
         print(f"🛑 Daily budget exceeded: {current_count}/{DAILY_API_BUDGET} calls used")
         return False
 
+    # Hard per-task limit for prewarm tasks — stop at allocation to reserve
+    # budget for sniper and sweep regardless of global headroom.
+    if task_name and task_name in HARD_BUDGET_TASKS:
+        task_key = f"{TASK_BUDGET_KEY_PREFIX}:{task_name}:{today}"
+        task_count = int(redis_client.get(task_key) or 0)
+        task_limit = BUDGET_ALLOCATIONS[task_name]
+        if task_count + calls_needed > task_limit:
+            print(f"🛑 [{task_name}] hard budget cap reached: {task_count}/{task_limit} — reserving remaining budget for scan tasks")
+            return False
+
     # Budget allows — increment now
     new_count = int(redis_client.incrby(budget_key, calls_needed))
 
@@ -1134,15 +1164,17 @@ def _check_budget(calls_needed: int = 1, task_name: str = None) -> bool:
     if new_count % 500 == 0 or new_count > DAILY_API_BUDGET - 200:
         print(f"📊 Budget: {new_count}/{DAILY_API_BUDGET} used ({remaining} remaining)")
 
-    # Soft per-task warning
+    # Per-task counter tracking
     if task_name and task_name in BUDGET_ALLOCATIONS:
         task_key = f"{TASK_BUDGET_KEY_PREFIX}:{task_name}:{today}"
         task_count = int(redis_client.incrby(task_key, calls_needed))
         if task_count <= calls_needed:
             redis_client.expire(task_key, 90000)
-        soft_limit = BUDGET_ALLOCATIONS[task_name]
-        if task_count > soft_limit:
-            print(f"⚠️ [{task_name}] soft budget exceeded: {task_count}/{soft_limit} — continuing but investigate")
+        # Soft warning for non-hard-capped tasks only
+        if task_name not in HARD_BUDGET_TASKS:
+            soft_limit = BUDGET_ALLOCATIONS[task_name]
+            if task_count > soft_limit:
+                print(f"⚠️ [{task_name}] soft budget exceeded: {task_count}/{soft_limit} — continuing but investigate")
 
     return True
 
