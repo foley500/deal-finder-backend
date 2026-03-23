@@ -14,7 +14,6 @@ from app.services.ebay_browse_service import (
     _is_circuit_open,
     _reset_circuit_trip_count,
     BROWSE_CIRCUIT_KEY,
-    BROWSE_CIRCUIT_TTL,
 )
 
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
@@ -414,7 +413,7 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
     # never giving the 90s TTL a chance to expire).
     if _is_circuit_open():
         wait = redis_client.ttl(BROWSE_CIRCUIT_KEY)
-        wait = wait if wait > 0 else BROWSE_CIRCUIT_TTL
+        wait = wait if wait > 0 else 90  # fallback if TTL not readable
         print(f"⚡ Circuit open — waiting {wait}s for reset before fetching '{query}'")
         time.sleep(wait + 2)
         if _is_circuit_open():
