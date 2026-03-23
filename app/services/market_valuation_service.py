@@ -918,7 +918,7 @@ def get_market_price_from_sold(
         elif "electric" in ft and "hybrid" not in ft:
             fuel_suffix = " electric"
 
-    query = f"{make} {base_model}{fuel_suffix}"
+    query = f"{make.replace('-', ' ')} {base_model.replace('-', ' ')}{fuel_suffix}"
 
     # Dynamically scale mileage tolerance based on target mileage.
     # High mileage cars have thin comparable pools — widen tolerance to compensate.
