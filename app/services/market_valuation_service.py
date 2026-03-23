@@ -12,6 +12,8 @@ from app.services.ebay_browse_service import (
     get_item_detail,
     _trip_circuit,
     _is_circuit_open,
+    BROWSE_CIRCUIT_KEY,
+    BROWSE_CIRCUIT_TTL,
 )
 
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
@@ -381,6 +383,19 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
     token = get_ebay_access_token()
     if not token:
         return []
+
+    # If circuit is open at the start of a new model's search, wait for it to expire
+    # rather than skipping all pagination pages instantly (which keeps the circuit open
+    # indefinitely during the prewarm loop — all remaining models skip in milliseconds,
+    # never giving the 90s TTL a chance to expire).
+    if _is_circuit_open():
+        wait = redis_client.ttl(BROWSE_CIRCUIT_KEY)
+        wait = wait if wait > 0 else BROWSE_CIRCUIT_TTL
+        print(f"⚡ Circuit open — waiting {wait}s for reset before fetching '{query}'")
+        time.sleep(wait + 2)
+        if _is_circuit_open():
+            print(f"⚡ Circuit still open after wait — skipping '{query}'")
+            return []
 
     headers = {
         "Authorization": f"Bearer {token}",
