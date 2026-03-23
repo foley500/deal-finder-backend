@@ -13,6 +13,8 @@ from app.services.ebay_browse_service import (
     _trip_circuit,
     _is_circuit_open,
     _reset_circuit_trip_count,
+    BROWSE_CIRCUIT_KEY,
+    BROWSE_CIRCUIT_TTL,
 )
 
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
@@ -405,6 +407,19 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
     token = get_ebay_access_token()
     if not token:
         return []
+
+    # If circuit is open at the start of a new model's search, wait for it to expire
+    # rather than skipping all pagination pages instantly (which keeps the circuit open
+    # indefinitely during the prewarm loop — all remaining models skip in milliseconds,
+    # never giving the 90s TTL a chance to expire).
+    if _is_circuit_open():
+        wait = redis_client.ttl(BROWSE_CIRCUIT_KEY)
+        wait = wait if wait > 0 else BROWSE_CIRCUIT_TTL
+        print(f"⚡ Circuit open — waiting {wait}s for reset before fetching '{query}'")
+        time.sleep(wait + 2)
+        if _is_circuit_open():
+            print(f"⚡ Circuit still open after wait — skipping '{query}'")
+            return []
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -966,7 +981,9 @@ def get_market_price_from_sold(
     # will surface more year-matching sold listings, giving the filter layers more
     # correct comparables to work with. The prewarm intentionally omits year because
     # it searches once per model and filters across all year buckets from one result set.
-    query = f"{make} {base_model} {year}{fuel_suffix}"
+    # Strip hyphens from make/model — eBay treats hyphen as exclusion operator,
+    # so "Ford S-Max" searches for "Ford S" NOT "Max" and returns 0 results.
+    query = f"{make.replace('-', ' ')} {base_model.replace('-', ' ')} {year}{fuel_suffix}"
 
     # Dynamically scale mileage tolerance based on target mileage.
     # High mileage cars have thin comparable pools — widen tolerance to compensate.
