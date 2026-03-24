@@ -969,14 +969,11 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         score_breakdown = {}
         confidence = assign_confidence(score)
 
-        # Business model: buy private, sell retail.
-        # Filter on RETAIL gross profit — we list at forecourt/retail price, not private.
-        # Retail gross = retail_market - asking_price, which is always higher than
-        # private gross and correctly reflects the dealer's actual upside.
-        # Fall back to private gross only when no retail price is available.
-        profit_for_gate = profit_retail if profit_retail is not None else gross_profit
-        if settings.min_profit is not None and profit_for_gate < settings.min_profit:
-            print(f"❌ Filtered by profit (retail basis): £{profit_for_gate}")
+        # Filter on private gross profit — market_value is the median private sold price.
+        # This is the conservative floor: if the car can't be sold at retail after prep,
+        # the dealer still needs to know they're not underwater buying at asking price.
+        if settings.min_profit is not None and gross_profit < settings.min_profit:
+            print(f"❌ Filtered by gross profit (private basis): £{gross_profit}")
             return None
 
         if settings.min_score is not None and score < settings.min_score:
