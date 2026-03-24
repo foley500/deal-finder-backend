@@ -635,16 +635,17 @@ def notify_deal(deal_id: int):
         price_drop_key = f"{NOTIFY_DEDUP_KEY_PREFIX}:drop:{deal_id}"
 
         if is_price_drop_alert:
-            if redis_client.get(price_drop_key):
+            acquired = redis_client.set(price_drop_key, "1", ex=NOTIFY_PRICE_DROP_TTL, nx=True)
+            if not acquired:
                 print(f"🔕 Skipping price drop re-alert for deal {deal_id} (TTL: {redis_client.ttl(price_drop_key)}s)")
                 return
-            redis_client.set(price_drop_key, "1", ex=NOTIFY_PRICE_DROP_TTL)
         else:
-            if redis_client.get(initial_key):
+            acquired = redis_client.set(initial_key, "1", ex=NOTIFY_DEDUP_TTL, nx=True)
+            if not acquired:
                 print(f"🔕 Skipping notify for deal {deal_id} — already alerted (TTL: {redis_client.ttl(initial_key)}s)")
                 return
-            redis_client.set(initial_key, "1", ex=NOTIFY_DEDUP_TTL)
 
+        dedup_key_to_release = price_drop_key if is_price_drop_alert else initial_key
         pdf_buffer = generate_deal_pdf(deal, report.get("mot_full_data"))
         pdf_buffer.seek(0)
 
@@ -737,11 +738,17 @@ def notify_deal(deal_id: int):
 
 🔗 Listing: {report.get("listing_url", "N/A")}
 """
-        send_telegram_document(
-            pdf_buffer,
-            filename=f"VehicleIntel_Report_{deal.id}.pdf",
-            caption=caption
-        )
+        try:
+            send_telegram_document(
+                pdf_buffer,
+                filename=f"VehicleIntel_Report_{deal.id}.pdf",
+                caption=caption
+            )
+        except Exception as e:
+            # Release the dedup lock so the next retry can send the notification.
+            # Without this, a Telegram failure permanently silences the deal.
+            redis_client.delete(dedup_key_to_release)
+            raise
     finally:
         db.close()
 
