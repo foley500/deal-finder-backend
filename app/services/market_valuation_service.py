@@ -264,6 +264,10 @@ def normalise_base_model(make: str, base_model: str, full_model: str = "") -> st
         # C-HR — hyphen makes first word "C-Hr", restore correct form
         if full_lower.startswith("c-hr") or full_lower.startswith("chr"):
             return "C-HR"
+        # RAV4 — titles split it as "RAV 4" making first word "Rav". Normalise to "Rav4"
+        # so it matches the prewarm key generated from ("Toyota", "RAV4", ...)
+        if model_lower in ("rav", "rav4") or full_lower.startswith("rav 4") or full_lower.startswith("rav4"):
+            return "Rav4"
 
     if make_lower == "hyundai":
         # Ioniq 5 and 6 are separate models, not variants of "Ioniq"
@@ -926,8 +930,22 @@ def get_market_price_from_sold(
     engine_bucket = bucket_engine_size(engine_litre)
     fuel_key = fuel_suffix.strip()
     cache_key = f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}:{fuel_key}" if fuel_key else f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}"
+    # Prewarm stores keys without fuel type and also without engine bucket (None).
+    # Build fallback keys for progressive lookup: fuel+engine → no-fuel → no-engine.
+    no_fuel_key    = f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}"
+    no_engine_key  = f"sold_cache:{make}:{base_model}:None:{year}:{mileage_bucket}"
     print(f"   🔑 Cache key: {cache_key}")
     cached = redis_client.get(cache_key)
+    # Fallback 1: no-fuel key (prewarm stores generic keys without fuel type)
+    if not cached and fuel_key and cache_key != no_fuel_key:
+        cached = redis_client.get(no_fuel_key)
+        if cached:
+            print(f"   ↩️  Fuel-specific miss — fell back to no-fuel key: {no_fuel_key}")
+    # Fallback 2: no-engine-no-fuel key (prewarm engine=None bucket always populated)
+    if not cached and engine_bucket is not None and no_fuel_key != no_engine_key:
+        cached = redis_client.get(no_engine_key)
+        if cached:
+            print(f"   ↩️  Engine-specific miss — fell back to engine=None key: {no_engine_key}")
     if cached:
         data = json.loads(cached)
         # Recalculate trade price with mileage-adjusted multiplier on cache hit

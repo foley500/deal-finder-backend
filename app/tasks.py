@@ -293,6 +293,7 @@ PREWARM_TARGETS = [
     ("Mercedes", "GLC",      [2015, 2016, 2017, 2018, 2019, 2020],          [20000, 40000, 60000, 80000]),
     ("Mercedes", "GLE",      [2015, 2016, 2017, 2018, 2019],                [20000, 40000, 60000, 80000, 100000]),
     ("Mercedes", "CLA",      [2013, 2014, 2015, 2016, 2017, 2018, 2019],    [20000, 40000, 60000, 80000]),
+    ("Mercedes", "CLS",      [2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019], [20000, 40000, 60000, 80000, 100000, 120000]),
     # Vans kept as Mercedes-Benz — they don't go through the car deal engine aliases
     ("Mercedes-Benz", "Sprinter", [2014, 2015, 2016, 2017, 2018],           [60000, 80000, 100000, 120000]),
     ("Mercedes-Benz", "Vito",     [2014, 2015, 2016, 2017, 2018],           [60000, 80000, 100000, 120000]),
@@ -1518,10 +1519,17 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                                 pass  # let it through for full evaluation
                             else:
                                 expected_price = valuation["market_price"]
-                                if rough_price > expected_price * 0.85:
+                                # Gate ceiling is driven entirely by the dealer's min_profit
+                                # setting — no hardcoded profit requirement.
+                                # With min_profit=0: skip only if asking > market + 5% buffer
+                                # With min_profit=500: skip if asking > market - 500 + 5% buffer
+                                min_profit_for_gate = filters.get("min_profit") or 0
+                                gate_ceil = (expected_price - min_profit_for_gate) * 1.05
+                                if rough_price > gate_ceil:
                                     print(
-                                        f"🚫 Gate skip: £{rough_price} too close to market "
-                                        f"(£{expected_price}) [{gate_confidence} confidence]"
+                                        f"🚫 Gate skip: £{rough_price} above gate ceiling "
+                                        f"£{round(gate_ceil)} (market £{expected_price}, "
+                                        f"min_profit £{min_profit_for_gate}) [{gate_confidence}]"
                                     )
                                     continue
 
