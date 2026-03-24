@@ -8,6 +8,7 @@ from PIL import Image
 from ultralytics import YOLO
 import easyocr
 import gc
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 gc.collect()
 
@@ -24,7 +25,8 @@ reader = easyocr.Reader(["en"], gpu=False)
 # ===============================
 MIN_YOLO_CONFIDENCE = 0.45  
 MIN_OCR_CONFIDENCE = 0.35
-MAX_IMAGES_PER_LISTING = 2
+MAX_IMAGES_PER_LISTING = 5
+OCR_PER_IMAGE_TIMEOUT = 15   # seconds — caps EasyOCR on CPU; avoids 3-min freezes
 BOX_PADDING_RATIO = 0.10
 BOX_PADDING_RIGHT_EXTRA = 0.08     # Extra right-side padding for angled plates
 
@@ -471,7 +473,18 @@ def extract_plate_from_images(image_urls: list[str]):
                 continue
 
             image = Image.open(io.BytesIO(response.content)).convert("RGB")
-            result = _run_ocr_on_image(image)
+
+            # Run OCR with a hard timeout so a single slow EasyOCR call on
+            # Render's CPU can't freeze the entire sweep for minutes.
+            _img_copy = image.copy()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_run_ocr_on_image, _img_copy)
+                try:
+                    result = future.result(timeout=OCR_PER_IMAGE_TIMEOUT)
+                except FuturesTimeoutError:
+                    print(f"⏱️ OCR timeout ({OCR_PER_IMAGE_TIMEOUT}s) — skipping image")
+                    result = None
+
             if result:
                 return result
 
