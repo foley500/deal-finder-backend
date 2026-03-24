@@ -24,7 +24,7 @@ reader = easyocr.Reader(["en"], gpu=False)
 # ===============================
 MIN_YOLO_CONFIDENCE = 0.45  
 MIN_OCR_CONFIDENCE = 0.35
-MAX_IMAGES_PER_LISTING = 5
+MAX_IMAGES_PER_LISTING = 2
 BOX_PADDING_RATIO = 0.10
 BOX_PADDING_RIGHT_EXTRA = 0.08     # Extra right-side padding for angled plates
 
