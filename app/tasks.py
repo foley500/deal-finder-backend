@@ -1525,17 +1525,20 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                             if gate_confidence != "high":
                                 pass  # let it through for full evaluation
                             else:
-                                expected_price = valuation["market_price"]
-                                # Gate ceiling is driven entirely by the dealer's min_profit
-                                # setting — no hardcoded profit requirement.
-                                # With min_profit=0: skip only if asking > market + 5% buffer
-                                # With min_profit=500: skip if asking > market - 500 + 5% buffer
+                                # Business model: buy private, sell retail.
+                                # Gate ceiling = retail market price + 5% buffer.
+                                # This allows all private listings at or below retail
+                                # value through — the offer calculator handles haggling
+                                # the actual buy price below asking.
+                                # Fall back to private market if retail not cached.
+                                price_retail_gate = valuation.get("price_retail")
+                                expected_price = price_retail_gate or valuation["market_price"]
                                 min_profit_for_gate = filters.get("min_profit") or 0
                                 gate_ceil = (expected_price - min_profit_for_gate) * 1.05
                                 if rough_price > gate_ceil:
                                     print(
                                         f"🚫 Gate skip: £{rough_price} above gate ceiling "
-                                        f"£{round(gate_ceil)} (market £{expected_price}, "
+                                        f"£{round(gate_ceil)} (retail £{expected_price}, "
                                         f"min_profit £{min_profit_for_gate}) [{gate_confidence}]"
                                     )
                                     continue

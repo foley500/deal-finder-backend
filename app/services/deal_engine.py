@@ -969,9 +969,14 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
         score_breakdown = {}
         confidence = assign_confidence(score)
 
-        # Filter on GROSS profit — costs are shown separately, not used as a gate
-        if settings.min_profit is not None and gross_profit < settings.min_profit:
-            print("❌ Filtered by gross profit:", gross_profit)
+        # Business model: buy private, sell retail.
+        # Filter on RETAIL gross profit — we list at forecourt/retail price, not private.
+        # Retail gross = retail_market - asking_price, which is always higher than
+        # private gross and correctly reflects the dealer's actual upside.
+        # Fall back to private gross only when no retail price is available.
+        profit_for_gate = profit_retail if profit_retail is not None else gross_profit
+        if settings.min_profit is not None and profit_for_gate < settings.min_profit:
+            print(f"❌ Filtered by profit (retail basis): £{profit_for_gate}")
             return None
 
         if settings.min_score is not None and score < settings.min_score:
