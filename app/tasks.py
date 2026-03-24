@@ -126,7 +126,7 @@ SCAN_QUERY_GROUPS = [
 
 SWEEP_ROTATION_KEY  = "sweep_rotation_idx"
 SWEEP_BATCH_SIZE    = 16  # makes per sweep run — 39 makes ÷ 16 = ~3 batches, all covered every 3 runs (~12 hrs)
-                          # 16 makes × 6 calls = 96 calls/run × 6 runs/day = 576 calls/day
+                          # 16 makes × 3 calls = 48 calls/run × 6 runs/day = 288 search calls/day
 # ==========================================
 # VAN SCAN QUERY GROUPS
 # Used by van sniper — rotated per run.
@@ -327,6 +327,7 @@ PREWARM_TARGETS = [
     ("Hyundai", "I10",    [2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024], [20000, 40000, 60000, 80000, 100000]),
     ("Hyundai", "I20",    [2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024], [20000, 40000, 60000, 80000, 100000]),
     ("Hyundai", "I30",    [2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024], [20000, 40000, 60000, 80000, 100000, 120000]),
+    ("Hyundai", "I40",    [2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019], [20000, 40000, 60000, 80000, 100000, 120000]),
     ("Hyundai", "Tucson", [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024], [20000, 40000, 60000, 80000]),
     ("Hyundai", "Ix35",   [2010, 2011, 2012, 2013, 2014, 2015, 2016],        [20000, 40000, 60000, 80000, 100000, 120000]),
 
@@ -403,6 +404,7 @@ PREWARM_TARGETS = [
     # ── VOLVO ─────────────────────────────────────────────────────────────
     ("Volvo", "V40",  [2013, 2014, 2015, 2016, 2017, 2018],                  [20000, 40000, 60000, 80000, 100000]),
     ("Volvo", "V60",  [2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018], [20000, 40000, 60000, 80000, 100000, 120000]),
+    ("Volvo", "V70",  [2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016], [20000, 40000, 60000, 80000, 100000, 120000, 140000]),
     ("Volvo", "C30",  [2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014],      [20000, 40000, 60000, 80000, 100000, 120000]),
     ("Volvo", "XC40", [2017, 2018, 2019, 2020],                              [20000, 40000, 60000]),
     ("Volvo", "XC60", [2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018], [20000, 40000, 60000, 80000, 100000, 120000]),
@@ -1020,7 +1022,7 @@ def scan_value_sweep(dealer_id: int):
     # Fix: rotate 16 makes per run. All 32 makes covered every 2 runs (~8 hours).
     # Value sweep is for STALE listings (offset 80-200), not new ones — the sniper
     # handles new listings every 60min. An 8hr sweep cycle is appropriate.
-    # API cost: 16 × 6 = 96 calls/run × 6 runs/day = 576 sweep calls/day.
+    # API cost: 16 × 3 = 48 calls/run × 6 runs/day = 288 sweep search calls/day.
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if redis_client.get(f"prewarm_running:{today}"):
         print("⏸️  Value sweep skipping — prewarm is running, yielding API budget")
@@ -1114,34 +1116,32 @@ def prewarm_van_valuation_cache():
 # ==========================================
 # Per-task budget allocations.
 #
-# HARD limits (prewarm tasks): enforced — task stops when its allocation is
-# exhausted, reserving the remaining daily budget for sniper and sweep.
-# This prevents a cold prewarm from burning the entire day's budget.
-#
-# SOFT limits (scan tasks): warning only — scan tasks are allowed to exceed
-# their allocation if the global budget has headroom.
+# HARD limits: enforced — task stops when its allocation is exhausted,
+# preventing any single task from burning the entire daily budget.
+# Both prewarm tasks and sweep tasks are hard-capped so snipers always
+# have budget remaining throughout the day.
 #
 # Budget maths (normal warm-cache day):
-#   Car prewarm:  ~700 calls  (skips already-cached buckets, hard cap 2500)
+#   Car prewarm:  ~700 calls  (skips already-cached buckets, hard cap 1200)
 #   Van prewarm:  ~100 calls  (hard cap 400)
-#   Car sniper:   ~2372 calls (39 makes × 48 runs × 1 search + ~500 expansions)
-#   Value sweep:  ~756 calls  (16 makes × 6 calls × 6 runs + ~180 expansions)
-#   Van tasks:    ~200 calls
-#   TOTAL:        ~4128 / 4800 budget  — ~672 headroom on a normal day
+#   Car sniper:   ~2000 calls (39 makes × 48 runs × 1 search + ~500 expansions)
+#   Value sweep:  ~468 calls  (16 makes × 3 calls × 6 runs + ~180 expansions) [2 offsets now]
+#   Van tasks:    ~400 calls
+#   TOTAL:        ~3668 / 4800 budget  — ~1132 headroom on a normal day
 #
-# Cold-prewarm day (after Redis flush): prewarm caps at 2500, leaving 2300
+# Cold-prewarm day (after Redis flush): prewarm caps at 1200, leaving 3600
 # for scans. Sniper searches (1872) complete; expansions may be cut short.
 BUDGET_ALLOCATIONS = {
-    "prewarm":     2500,   # Hard — cold run capped here; warm run uses ~700
-    "van_prewarm":  400,   # Hard — cold run capped here; warm run uses ~100
-    "sniper":      2500,   # Soft — 39 makes × 48 runs × 1 call = ~1,872 + expansions
+    "prewarm":     1200,   # Hard — warm run ~320 calls, cold capped here
+    "van_prewarm":  400,   # Hard — warm run ~100 calls, cold capped here
+    "sniper":      2500,   # Soft — 39 × 48 × 1 search = 1,872 + expansions
     "van_sniper":   700,   # Soft
-    "sweep":       1000,   # Soft — 16 makes × 6 calls × 6 runs = ~576 + expansions
-    "van_sweep":    700,   # Soft
+    "sweep":        600,   # Hard — 16 × 3 calls × 6 runs = 288 search + expansions
+    "van_sweep":    400,   # Hard
 }
 # Tasks whose allocation is a HARD stop (not just a warning).
 # These run once/day and must not starve the recurring scan tasks.
-HARD_BUDGET_TASKS = {"prewarm", "van_prewarm"}
+HARD_BUDGET_TASKS = {"prewarm", "van_prewarm", "sweep", "van_sweep"}
 TASK_BUDGET_KEY_PREFIX = "ebay_task_calls"
 
 def _check_budget(calls_needed: int = 1, task_name: str = None) -> bool:
@@ -1270,11 +1270,12 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                 if mode_name == "value_sweep":
                     budget_ok = True
                     # -------------------------------------------------------
-                    # Strategy A: price-ascending, offset 80 then 120
-                    # Lands in stale/overlooked cheap stock beyond page 1.
-                    # Offsets must be multiples of limit (40) per eBay API.
+                    # Strategy A: price-ascending, two deep offsets only.
+                    # Offsets 80 and 160 land in stale/overlooked cheap stock
+                    # beyond page 1 while halving search API calls vs the old
+                    # 5-offset approach.  Offsets must be multiples of 40.
                     # -------------------------------------------------------
-                    for offset in [40, 80, 120, 160, 200]:
+                    for offset in [80, 160]:
 
                         task_name = "van_sweep" if source_override == "ebay_vans" else "sweep"
                         if not _check_budget(1, task_name):
@@ -1499,7 +1500,20 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     }
 
                     for i, word in enumerate(title_words):
-                        if word.lower() in _GATE_MAKES:
+                        w = word.lower()
+                        # Two-word makes must be detected before the generic check
+                        # so the cache key matches what prewarm stores.
+                        if w == "land" and i + 1 < len(title_words) and title_words[i + 1].lower() == "rover":
+                            make = "Land Rover"
+                            if i + 2 < len(title_words):
+                                model = title_words[i + 2]
+                            break
+                        if w == "alfa" and i + 1 < len(title_words) and title_words[i + 1].lower() == "romeo":
+                            make = "Alfa Romeo"
+                            if i + 2 < len(title_words):
+                                model = title_words[i + 2]
+                            break
+                        if w in _GATE_MAKES:
                             make = word
                             if i + 1 < len(title_words):
                                 model = title_words[i + 1]
@@ -1539,6 +1553,17 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                                         f"min_profit £{min_profit_for_gate}) [{gate_confidence}]"
                                     )
                                     continue
+                        else:
+                            # No cached valuation for this make/model/year — skipping
+                            # to preserve expansion budget.  With cache_only=True in
+                            # deal_engine, a cache miss here guarantees the listing will
+                            # be skipped later anyway, so we avoid burning an expansion
+                            # call + 3-min OCR on a guaranteed miss.
+                            # Prewarm fills these keys at 07:10 UTC; models not in
+                            # PREWARM_TARGETS should be added there.
+                            mileage_display = f"{mileage}mi" if mileage else "?mi"
+                            print(f"⏭️  No prewarm cache for {make} {model} {year} {mileage_display} — skipping cold-cache listing")
+                            continue
 
                 except Exception as e:
                     print(f"Gate check failed: {e}")
