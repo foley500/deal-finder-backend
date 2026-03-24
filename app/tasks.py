@@ -126,7 +126,7 @@ SCAN_QUERY_GROUPS = [
 
 SWEEP_ROTATION_KEY  = "sweep_rotation_idx"
 SWEEP_BATCH_SIZE    = 16  # makes per sweep run — 39 makes ÷ 16 = ~3 batches, all covered every 3 runs (~12 hrs)
-                          # 16 makes × 3 calls = 48 calls/run × 6 runs/day = 288 search calls/day
+                          # 16 makes × 4 calls = 64 calls/run × 6 runs/day = 384 search calls/day
 # ==========================================
 # VAN SCAN QUERY GROUPS
 # Used by van sniper — rotated per run.
@@ -1022,7 +1022,7 @@ def scan_value_sweep(dealer_id: int):
     # Fix: rotate 16 makes per run. All 32 makes covered every 2 runs (~8 hours).
     # Value sweep is for STALE listings (offset 80-200), not new ones — the sniper
     # handles new listings every 60min. An 8hr sweep cycle is appropriate.
-    # API cost: 16 × 3 = 48 calls/run × 6 runs/day = 288 sweep search calls/day.
+    # API cost: 16 × 4 = 64 calls/run × 6 runs/day = 384 sweep search calls/day.
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if redis_client.get(f"prewarm_running:{today}"):
         print("⏸️  Value sweep skipping — prewarm is running, yielding API budget")
@@ -1125,7 +1125,7 @@ def prewarm_van_valuation_cache():
 #   Car prewarm:  ~700 calls  (skips already-cached buckets, hard cap 1200)
 #   Van prewarm:  ~100 calls  (hard cap 400)
 #   Car sniper:   ~2000 calls (39 makes × 48 runs × 1 search + ~500 expansions)
-#   Value sweep:  ~468 calls  (16 makes × 3 calls × 6 runs + ~180 expansions) [2 offsets now]
+#   Value sweep:  ~564 calls  (16 makes × 4 calls × 6 runs + ~180 expansions) [3 offsets]
 #   Van tasks:    ~400 calls
 #   TOTAL:        ~3668 / 4800 budget  — ~1132 headroom on a normal day
 #
@@ -1136,7 +1136,7 @@ BUDGET_ALLOCATIONS = {
     "van_prewarm":  400,   # Hard — warm run ~100 calls, cold capped here
     "sniper":      2500,   # Soft — 39 × 48 × 1 search = 1,872 + expansions
     "van_sniper":   700,   # Soft
-    "sweep":        600,   # Hard — 16 × 3 calls × 6 runs = 288 search + expansions
+    "sweep":        700,   # Hard — 16 × 4 calls × 6 runs = 384 search + expansions
     "van_sweep":    400,   # Hard
 }
 # Tasks whose allocation is a HARD stop (not just a warning).
@@ -1270,12 +1270,14 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                 if mode_name == "value_sweep":
                     budget_ok = True
                     # -------------------------------------------------------
-                    # Strategy A: price-ascending, two deep offsets only.
-                    # Offsets 80 and 160 land in stale/overlooked cheap stock
-                    # beyond page 1 while halving search API calls vs the old
-                    # 5-offset approach.  Offsets must be multiples of 40.
+                    # Strategy A: price-ascending, three offsets.
+                    # Offset 40 catches the cheapest stale stock (most likely
+                    # to be undervalued), 120 the mid-range, 200 the deep end.
+                    # Three calls vs the old five cuts search budget by 40%
+                    # while keeping coverage of the full cheap-price spectrum.
+                    # Offsets must be multiples of 40.
                     # -------------------------------------------------------
-                    for offset in [80, 160]:
+                    for offset in [40, 120, 200]:
 
                         task_name = "van_sweep" if source_override == "ebay_vans" else "sweep"
                         if not _check_budget(1, task_name):
