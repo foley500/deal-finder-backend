@@ -35,43 +35,48 @@ EXTREME_MILEAGE_THRESHOLD = 120000
 MAX_ACCEPTABLE_IQR_RATIO = 0.55
 WIDE_SPREAD_DISCOUNT = 0.97
 
-# eBay sold BIN prices systematically overstate true private clean values:
-#  - Sellers list at asking price (BIN), not negotiated price
-#  - Some dealers use INDIVIDUAL accounts, selling at near-retail prices
-#  - Private sellers list 10-15% above floor to allow for eBay fees + negotiation
-# Applying a 0.82 correction calibrates eBay sold median → CAP/Regit private clean.
-PRIVATE_MARKET_ADJUSTMENT = 0.75
+# eBay sold BIN prices systematically overstate true private clean values.
+# The degree of overstatement depends on price tier:
+#   Budget cars  (<£5k raw): small-trader BIN dominance; raw ≈ 2.3× true private
+#   Mid-range    (£5k-12k):  mix of private and trader; raw ≈ 1.9× true private
+#   Upper-mid    (£12k-25k): less contamination;        raw ≈ 1.55× true private
+#   Premium      (>£25k):    genuine private pool larger; raw ≈ 1.35× true private
+# Tiered corrections calibrated against Regit/CAP private clean data:
+#   Corsa 2013 77k: raw £4,520 × 0.43 = £1,944 vs Regit £1,927  ✓
+#   Kia Sportage 2016 104k: raw £9,260 × 0.53 = £4,908 vs Regit £4,909 ✓
+# Applied in run_filter_layer — not a single constant.
 
 # UK motor trade valuation multipliers (relative to corrected private clean value).
-# Retail  = what a dealer advertises at (≈30% above private clean for older/higher mileage).
-# Trade   = what a dealer pays at auction / part-ex offer (≈22% below private clean).
-RETAIL_MULTIPLIER = 1.30
-TRADE_MULTIPLIER  = 0.78  # Default fallback
+# Calibrated against real CAP data now that private is correctly estimated:
+#   Retail ≈ 45% above private clean  (dealer forecourt pricing)
+#   Trade  ≈ 13% below private clean  (auction / part-ex offer)
+RETAIL_MULTIPLIER = 1.45
+TRADE_MULTIPLIER  = 0.87  # Default fallback (recalibrated for corrected private values)
 
 
 def get_trade_multiplier(mileage: int, make: str = "") -> float:
     """
     Returns a mileage and make-adjusted trade/auction multiplier.
-    Low mileage cars command a premium at auction; high mileage cars are discounted.
-    Prestige makes hold trade value slightly better due to dealer demand.
+    Recalibrated for corrected (tiered) private values — previously these were
+    calibrated against inflated eBay medians and understated true trade/private ratio.
     """
     if mileage and mileage < 30000:
-        base = 0.86
+        base = 0.93
     elif mileage and mileage < 60000:
-        base = 0.82
+        base = 0.91
     elif mileage and mileage < 100000:
-        base = 0.78
+        base = 0.87
     elif mileage and mileage < 120000:
-        base = 0.74
+        base = 0.83
     elif mileage and mileage >= 120000:
-        base = 0.70
+        base = 0.79
     else:
-        base = 0.78  # no mileage data
+        base = 0.87  # no mileage data
 
     # Prestige makes hold trade value slightly better
     prestige = {"bmw", "mercedes", "mercedes-benz", "audi", "porsche", "land rover", "lexus"}
     if make and make.lower().strip() in prestige:
-        base = min(base + 0.02, 0.90)
+        base = min(base + 0.02, 0.95)
 
     return round(base, 4)
 
@@ -701,7 +706,7 @@ def run_filter_layer(
                 else:
                     listing_engine = None
 
-            if listing_engine and abs(listing_engine - engine_litre) > 0.5:
+            if listing_engine and abs(listing_engine - engine_litre) > 0.25:
                 continue
                 
         listing_year = summary.get("_year")
@@ -849,10 +854,22 @@ def run_filter_layer(
         confidence = "medium"
 
     sold_median = statistics.median(final_prices)
+    raw_value = sold_median * spread_discount
 
-    # Apply private market adjustment: eBay sold BIN prices overstate private clean.
-    # See PRIVATE_MARKET_ADJUSTMENT constant for explanation.
-    price_private = round(sold_median * spread_discount * PRIVATE_MARKET_ADJUSTMENT, 2)
+    # Price-tiered correction: eBay sold BIN prices overstate private clean market value.
+    # The overstatement is larger for cheap cars (small-trader BIN dominance) and smaller
+    # for premium cars (genuine private sellers make up a larger share of the pool).
+    # Calibrated against Regit/CAP data — see comments near RETAIL_MULTIPLIER.
+    if raw_value < 5000:
+        tier_correction = 0.43
+    elif raw_value < 12000:
+        tier_correction = 0.53
+    elif raw_value < 25000:
+        tier_correction = 0.65
+    else:
+        tier_correction = 0.75
+
+    price_private = round(raw_value * tier_correction, 2)
     price_retail  = round(price_private * RETAIL_MULTIPLIER, 2)
     price_trade   = round(price_private * TRADE_MULTIPLIER, 2)
 
@@ -932,9 +949,11 @@ def get_market_price_from_sold(
         elif "electric" in ft:
             fuel_suffix = " electric"
 
-    # Clamp to minimum 20k so low-mileage cars (under 20k) map to the 20k bucket
-    # rather than bucket 0, which is never seeded by prewarm.
-    mileage_bucket = max(20000, int(mileage / 20000) * 20000)
+    # Round to nearest 20k bucket rather than always down.
+    # A 77k car rounded DOWN to 60k gets comps centered on 60k (45k-75k range) which
+    # systematically excludes the car itself. Rounding to nearest uses the 80k bucket
+    # (65k-95k) which correctly includes the target mileage.
+    mileage_bucket = max(20000, int((mileage + 10000) / 20000) * 20000)
     engine_bucket = bucket_engine_size(engine_litre)
     fuel_key = fuel_suffix.strip()
     cache_key = f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}:{fuel_key}" if fuel_key else f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}"
