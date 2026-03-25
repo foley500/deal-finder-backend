@@ -46,37 +46,37 @@ WIDE_SPREAD_DISCOUNT = 0.97
 #   Kia Sportage 2016 104k: raw £9,260 × 0.53 = £4,908 vs Regit £4,909 ✓
 # Applied in run_filter_layer — not a single constant.
 
-# UK motor trade valuation multipliers (relative to corrected private clean value).
-# Calibrated against real CAP data now that private is correctly estimated:
-#   Retail ≈ 45% above private clean  (dealer forecourt pricing)
-#   Trade  ≈ 13% below private clean  (auction / part-ex offer)
-RETAIL_MULTIPLIER = 1.45
-TRADE_MULTIPLIER  = 0.87  # Default fallback (recalibrated for corrected private values)
+# UK motor trade valuation multipliers (relative to auction-derived private clean value).
+# Since private is now sourced from auction clearing prices (true market value):
+#   Retail ≈ 30% above private clean  (dealer forecourt = private + prep/warranty/margin)
+#   Trade  ≈ 20% below private clean  (dealer buying price at auction/part-ex)
+RETAIL_MULTIPLIER = 1.30
+TRADE_MULTIPLIER  = 0.80  # Default fallback
 
 
 def get_trade_multiplier(mileage: int, make: str = "") -> float:
     """
     Returns a mileage and make-adjusted trade/auction multiplier.
-    Recalibrated for corrected (tiered) private values — previously these were
-    calibrated against inflated eBay medians and understated true trade/private ratio.
+    Calibrated relative to auction-derived private clean values.
+    Lower mileage cars command a premium at auction; high mileage are discounted.
     """
     if mileage and mileage < 30000:
-        base = 0.93
+        base = 0.88
     elif mileage and mileage < 60000:
-        base = 0.91
+        base = 0.84
     elif mileage and mileage < 100000:
-        base = 0.87
+        base = 0.80
     elif mileage and mileage < 120000:
-        base = 0.83
+        base = 0.76
     elif mileage and mileage >= 120000:
-        base = 0.79
+        base = 0.72
     else:
-        base = 0.87  # no mileage data
+        base = 0.80  # no mileage data
 
     # Prestige makes hold trade value slightly better
     prestige = {"bmw", "mercedes", "mercedes-benz", "audi", "porsche", "land rover", "lexus"}
     if make and make.lower().strip() in prestige:
-        base = min(base + 0.02, 0.95)
+        base = min(base + 0.02, 0.90)
 
     return round(base, 4)
 
@@ -526,29 +526,37 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
                     pass
         return None
 
+    def _tag_item(item, seller_pool, sold_date):
+        """Tag a sold item with metadata needed for auction-aware weighting."""
+        item["_source_type"] = "sold"
+        item["_seller_pool"] = seller_pool
+        item["_sold_date"] = sold_date
+        # Auction completions are competitive bids = true market-clearing price.
+        # BIN (FIXED_PRICE) sales are asking prices paid without negotiation —
+        # systematically inflated by trader asking price premiums.
+        item["_is_auction"] = "AUCTION" in item.get("buyingOptions", [])
+
     # Pass 1: private sold listings — most accurate price signal
     for item in run_sold_search(",sellerAccountTypes:{INDIVIDUAL}", "sold_private"):
         item_id = item.get("itemId") or item.get("title", "")[:60]
         if item_id:
-            item["_source_type"] = "sold"
-            item["_seller_pool"] = "private"
+            _tag_item(item, "private", _parse_sold_date(item))
             item["_resolved_id"] = item_id
-            item["_sold_date"] = _parse_sold_date(item)
             combined_seen_ids.add(item_id)
             all_items.append(item)
-    print(f"📦 Private sold: {sum(1 for i in all_items if i['_seller_pool'] == 'private')}")
+    print(f"📦 Private sold: {sum(1 for i in all_items if i['_seller_pool'] == 'private')} "
+          f"({sum(1 for i in all_items if i.get('_is_auction'))} auction)")
 
     # Pass 2: all-seller sold listings — deduped, adds volume
     for item in run_sold_search("", "sold_all"):
         item_id = item.get("itemId") or item.get("title", "")[:60]
         if item_id and item_id not in combined_seen_ids:
-            item["_source_type"] = "sold"
-            item["_seller_pool"] = "all"
+            _tag_item(item, "all", _parse_sold_date(item))
             item["_resolved_id"] = item_id
-            item["_sold_date"] = _parse_sold_date(item)
             combined_seen_ids.add(item_id)
             all_items.append(item)
-    print(f"📦 Total blended sold: {len(all_items)}")
+    print(f"📦 Total blended sold: {len(all_items)} "
+          f"({sum(1 for i in all_items if i.get('_is_auction'))} auction total)")
 
     # Fallback: if zero results (very rare model), retry without category filter
     if not all_items:
@@ -556,8 +564,7 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
         for item in run_sold_search("", "sold_all_nocat", use_category=False):
             item_id = item.get("itemId") or item.get("title", "")[:60]
             if item_id and item_id not in combined_seen_ids:
-                item["_source_type"] = "sold"
-                item["_seller_pool"] = "all"
+                _tag_item(item, "all", None)
                 item["_resolved_id"] = item_id
                 combined_seen_ids.add(item_id)
                 all_items.append(item)
@@ -760,13 +767,39 @@ def run_filter_layer(
         weight = mileage_proximity_weight(listing_mileage, target_mileage, mileage_tolerance)
 
         if source_type == "sold":
-            # Private sold results are the most accurate comparables.
-            # Dealer-sold prices reflect retail, not trade/private values — downweight heavily.
+            # Auction-aware weighting — the core of accurate private valuation.
+            #
+            # AUCTION completions: bidders competed → price is true market clearing value.
+            #   Weight ×5. No price adjustment needed — this IS the private market price.
+            #
+            # BIN / FIXED_PRICE (private seller): asking price was paid without negotiation.
+            #   Seller set the price (often a small trader using an INDIVIDUAL account).
+            #   Apply 0.82 discount to approximate what the car would clear at auction.
+            #   Weight ×1.
+            #
+            # BIN / FIXED_PRICE (business seller): dealer retail pricing — not comparable
+            #   to private sale values at all. Excluded (weight 0).
+            #
+            # This replaces the old approach of weighting private ×3 vs all ×1, which
+            # failed because "private" sellers on eBay are mostly small traders at retail.
             seller_pool = summary.get("_seller_pool", "all")
-            pool_weight = 3 if seller_pool == "private" else 1
+            is_auction = summary.get("_is_auction", False)
+
+            if is_auction:
+                pool_weight = 5
+                # Auction price is already market-clearing — no adjustment
+            elif seller_pool == "private":
+                pool_weight = 1
+                # BIN asking price → discount to approximate auction clearing price
+                adjusted_price = adjusted_price * 0.82
+            else:
+                # Business BIN = dealer retail. Completely different market — exclude.
+                pool_weight = 0
+
+            if pool_weight == 0:
+                continue
+
             # Recency weight: recent sales (≤30 days) matter more than old ones.
-            # Markets shift — a diesel collapse or EV correction shows up immediately
-            # in recent sales but is masked when older data dominates.
             r_weight = recency_weight(summary.get("_sold_date"))
             total_weight = weight * pool_weight * r_weight
             sold_prices.extend([adjusted_price] * total_weight)
@@ -854,22 +887,12 @@ def run_filter_layer(
         confidence = "medium"
 
     sold_median = statistics.median(final_prices)
-    raw_value = sold_median * spread_discount
 
-    # Price-tiered correction: eBay sold BIN prices overstate private clean market value.
-    # The overstatement is larger for cheap cars (small-trader BIN dominance) and smaller
-    # for premium cars (genuine private sellers make up a larger share of the pool).
-    # Calibrated against Regit/CAP data — see comments near RETAIL_MULTIPLIER.
-    if raw_value < 5000:
-        tier_correction = 0.43
-    elif raw_value < 12000:
-        tier_correction = 0.53
-    elif raw_value < 25000:
-        tier_correction = 0.65
-    else:
-        tier_correction = 0.75
-
-    price_private = round(raw_value * tier_correction, 2)
+    # Auction-weighted pool median is already close to true private clean value
+    # (auction clearing prices ×5 weight dominate over discounted BIN at ×1).
+    # A small residual correction (0.95) accounts for any remaining optimism bias
+    # in the auction pool (e.g. sellers timing auctions for peak demand periods).
+    price_private = round(sold_median * spread_discount * 0.95, 2)
     price_retail  = round(price_private * RETAIL_MULTIPLIER, 2)
     price_trade   = round(price_private * TRADE_MULTIPLIER, 2)
 
