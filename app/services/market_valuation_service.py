@@ -35,11 +35,17 @@ EXTREME_MILEAGE_THRESHOLD = 120000
 MAX_ACCEPTABLE_IQR_RATIO = 0.55
 WIDE_SPREAD_DISCOUNT = 0.97
 
-# UK motor trade valuation multipliers (relative to eBay private sold median).
-# Private sold on eBay ≈ CAP Private Clean (same market: private seller → private buyer).
-# Retail  = what a dealer advertises at (≈20% above private clean).
+# eBay sold BIN prices systematically overstate true private clean values:
+#  - Sellers list at asking price (BIN), not negotiated price
+#  - Some dealers use INDIVIDUAL accounts, selling at near-retail prices
+#  - Private sellers list 10-15% above floor to allow for eBay fees + negotiation
+# Applying a 0.82 correction calibrates eBay sold median → CAP/Regit private clean.
+PRIVATE_MARKET_ADJUSTMENT = 0.82
+
+# UK motor trade valuation multipliers (relative to corrected private clean value).
+# Retail  = what a dealer advertises at (≈30% above private clean for older/higher mileage).
 # Trade   = what a dealer pays at auction / part-ex offer (≈22% below private clean).
-RETAIL_MULTIPLIER = 1.20
+RETAIL_MULTIPLIER = 1.30
 TRADE_MULTIPLIER  = 0.78  # Default fallback
 
 
@@ -844,7 +850,9 @@ def run_filter_layer(
 
     sold_median = statistics.median(final_prices)
 
-    price_private = round(sold_median * spread_discount, 2)
+    # Apply private market adjustment: eBay sold BIN prices overstate private clean.
+    # See PRIVATE_MARKET_ADJUSTMENT constant for explanation.
+    price_private = round(sold_median * spread_discount * PRIVATE_MARKET_ADJUSTMENT, 2)
     price_retail  = round(price_private * RETAIL_MULTIPLIER, 2)
     price_trade   = round(price_private * TRADE_MULTIPLIER, 2)
 
@@ -1021,7 +1029,9 @@ def get_market_price_from_sold(
     enriched_summaries = _pre_expand_details(all_summaries, budget_fn=budget_fn, prewarm_mode=False)
 
     for tolerance_config in [
-        {"year_tolerance": 2, "mileage_tolerance": l1_tolerance,         "source": "layer_1_strict",          "adjust_mileage": True},
+        # layer_1: ±1 year — same model year only, prevents newer/more-valuable comps
+        # from contaminating valuations (e.g. 2010 Range Rover inflating a 2008 valuation).
+        {"year_tolerance": 1, "mileage_tolerance": l1_tolerance,         "source": "layer_1_strict",          "adjust_mileage": True},
         {"year_tolerance": 2, "mileage_tolerance": l2_tolerance,         "source": "layer_2_relaxed_mileage", "adjust_mileage": True},
         {"year_tolerance": 3, "mileage_tolerance": l2_tolerance + 5000,  "source": "layer_3_relaxed_year",    "adjust_mileage": True},
         {"year_tolerance": 4, "mileage_tolerance": l2_tolerance + 15000, "source": "layer_4_wide",            "adjust_mileage": True},

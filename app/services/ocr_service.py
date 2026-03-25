@@ -14,19 +14,37 @@ gc.collect()
 
 
 # ===============================
-# LOAD MODELS ONCE
+# LAZY MODEL LOADING
 # ===============================
-model = YOLO("app/services/license_plate_detector.pt")
-reader = easyocr.Reader(["en"], gpu=False)
+# Models are loaded on first OCR call, NOT at module import time.
+# This prevents the API server (which imports deal_engine → ocr_service) from
+# loading 1.5GB of YOLO + EasyOCR models unnecessarily, which caused OOM on Render.
+_yolo_model = None
+_easyocr_reader = None
+
+def _get_yolo():
+    global _yolo_model
+    if _yolo_model is None:
+        _yolo_model = YOLO("app/services/license_plate_detector.pt")
+    return _yolo_model
+
+def _get_reader():
+    global _easyocr_reader
+    if _easyocr_reader is None:
+        _easyocr_reader = easyocr.Reader(["en"], gpu=False)
+    return _easyocr_reader
 
 
 # ===============================
 # CONFIG
 # ===============================
-MIN_YOLO_CONFIDENCE = 0.45  
+MIN_YOLO_CONFIDENCE = 0.45
 MIN_OCR_CONFIDENCE = 0.35
 MAX_IMAGES_PER_LISTING = 5
-OCR_PER_IMAGE_TIMEOUT = 15   # seconds — caps EasyOCR on CPU; avoids 3-min freezes
+# 90s gives EasyOCR enough time to complete on Render CPU (~5s YOLO + up to 60s EasyOCR
+# with early exit after first high-confidence plate). 15s was too short and caused all
+# OCR to silently fail, making every plate lookup return None.
+OCR_PER_IMAGE_TIMEOUT = 90
 BOX_PADDING_RATIO = 0.10
 BOX_PADDING_RIGHT_EXTRA = 0.08     # Extra right-side padding for angled plates
 
@@ -321,8 +339,9 @@ def _run_ocr_on_image(image: Image.Image, high_res: bool = False) -> str | None:
             imgsz = 640
 
         all_boxes = []
+        yolo = _get_yolo()
         for sz in ([imgsz, 1280] if high_res else [imgsz]):
-            r = model(img_np, imgsz=sz)
+            r = yolo(img_np, imgsz=sz)
             if r and len(r[0].boxes) > 0:
                 all_boxes.extend(r[0].boxes)
 
@@ -380,6 +399,7 @@ def _run_ocr_on_image(image: Image.Image, high_res: bool = False) -> str | None:
                     continue
 
             variants = preprocess_variants(plate_crop)
+            ocr = _get_reader()
 
             for variant in variants:
 
@@ -390,7 +410,7 @@ def _run_ocr_on_image(image: Image.Image, high_res: bool = False) -> str | None:
                     value=255
                 )
 
-                ocr_results = reader.readtext(
+                ocr_results = ocr.readtext(
                     variant,
                     allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
                     detail=1,
@@ -398,7 +418,6 @@ def _run_ocr_on_image(image: Image.Image, high_res: bool = False) -> str | None:
                     width_ths=0.7,
                     decoder="beamsearch"
                 )
-                
 
                 for (_, text, ocr_conf) in ocr_results:
                     if ocr_conf < MIN_OCR_CONFIDENCE:
@@ -421,10 +440,18 @@ def _run_ocr_on_image(image: Image.Image, high_res: bool = False) -> str | None:
                         if candidate_score > best_score:
                             best_score = candidate_score
                             best_plate = plate
+                            # Early exit: high-confidence valid plate found — no need
+                            # to run all remaining variants (saves 20-50s on CPU).
+                            if candidate_score >= 1.5:
+                                break
                     else:
                         if candidate_score > best_invalid_score:
                             best_invalid_score = candidate_score
                             best_invalid_plate = plate
+
+                # Propagate early exit to box loop
+                if best_plate and best_score >= 1.5:
+                    break
 
         if best_plate:
             print(f"✅ VALID UK PLATE: {best_plate} (score: {best_score:.3f})")
