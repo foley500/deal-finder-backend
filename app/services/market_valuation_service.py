@@ -40,7 +40,7 @@ WIDE_SPREAD_DISCOUNT = 0.97
 #  - Some dealers use INDIVIDUAL accounts, selling at near-retail prices
 #  - Private sellers list 10-15% above floor to allow for eBay fees + negotiation
 # Applying a 0.82 correction calibrates eBay sold median → CAP/Regit private clean.
-PRIVATE_MARKET_ADJUSTMENT = 0.82
+PRIVATE_MARKET_ADJUSTMENT = 0.75
 
 # UK motor trade valuation multipliers (relative to corrected private clean value).
 # Retail  = what a dealer advertises at (≈30% above private clean for older/higher mileage).
