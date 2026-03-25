@@ -35,11 +35,17 @@ EXTREME_MILEAGE_THRESHOLD = 120000
 MAX_ACCEPTABLE_IQR_RATIO = 0.55
 WIDE_SPREAD_DISCOUNT = 0.97
 
-# UK motor trade valuation multipliers (relative to eBay private sold median).
-# Private sold on eBay ≈ CAP Private Clean (same market: private seller → private buyer).
-# Retail  = what a dealer advertises at (≈20% above private clean).
+# eBay sold BIN prices systematically overstate true private clean values:
+#  - Sellers list at asking price (BIN), not negotiated price
+#  - Some dealers use INDIVIDUAL accounts, selling at near-retail prices
+#  - Private sellers list 10-15% above floor to allow for eBay fees + negotiation
+# Applying a 0.82 correction calibrates eBay sold median → CAP/Regit private clean.
+PRIVATE_MARKET_ADJUSTMENT = 0.75
+
+# UK motor trade valuation multipliers (relative to corrected private clean value).
+# Retail  = what a dealer advertises at (≈30% above private clean for older/higher mileage).
 # Trade   = what a dealer pays at auction / part-ex offer (≈22% below private clean).
-RETAIL_MULTIPLIER = 1.20
+RETAIL_MULTIPLIER = 1.30
 TRADE_MULTIPLIER  = 0.78  # Default fallback
 
 
@@ -264,6 +270,10 @@ def normalise_base_model(make: str, base_model: str, full_model: str = "") -> st
         # C-HR — hyphen makes first word "C-Hr", restore correct form
         if full_lower.startswith("c-hr") or full_lower.startswith("chr"):
             return "C-HR"
+        # RAV4 — titles split it as "RAV 4" making first word "Rav". Normalise to "Rav4"
+        # so it matches the prewarm key generated from ("Toyota", "RAV4", ...)
+        if model_lower in ("rav", "rav4") or full_lower.startswith("rav 4") or full_lower.startswith("rav4"):
+            return "Rav4"
 
     if make_lower == "hyundai":
         # Ioniq 5 and 6 are separate models, not variants of "Ioniq"
@@ -840,7 +850,9 @@ def run_filter_layer(
 
     sold_median = statistics.median(final_prices)
 
-    price_private = round(sold_median * spread_discount, 2)
+    # Apply private market adjustment: eBay sold BIN prices overstate private clean.
+    # See PRIVATE_MARKET_ADJUSTMENT constant for explanation.
+    price_private = round(sold_median * spread_discount * PRIVATE_MARKET_ADJUSTMENT, 2)
     price_retail  = round(price_private * RETAIL_MULTIPLIER, 2)
     price_trade   = round(price_private * TRADE_MULTIPLIER, 2)
 
@@ -926,8 +938,22 @@ def get_market_price_from_sold(
     engine_bucket = bucket_engine_size(engine_litre)
     fuel_key = fuel_suffix.strip()
     cache_key = f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}:{fuel_key}" if fuel_key else f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}"
+    # Prewarm stores keys without fuel type and also without engine bucket (None).
+    # Build fallback keys for progressive lookup: fuel+engine → no-fuel → no-engine.
+    no_fuel_key    = f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}"
+    no_engine_key  = f"sold_cache:{make}:{base_model}:None:{year}:{mileage_bucket}"
     print(f"   🔑 Cache key: {cache_key}")
     cached = redis_client.get(cache_key)
+    # Fallback 1: no-fuel key (prewarm stores generic keys without fuel type)
+    if not cached and fuel_key and cache_key != no_fuel_key:
+        cached = redis_client.get(no_fuel_key)
+        if cached:
+            print(f"   ↩️  Fuel-specific miss — fell back to no-fuel key: {no_fuel_key}")
+    # Fallback 2: no-engine-no-fuel key (prewarm engine=None bucket always populated)
+    if not cached and engine_bucket is not None and no_fuel_key != no_engine_key:
+        cached = redis_client.get(no_engine_key)
+        if cached:
+            print(f"   ↩️  Engine-specific miss — fell back to engine=None key: {no_engine_key}")
     if cached:
         data = json.loads(cached)
         # Recalculate trade price with mileage-adjusted multiplier on cache hit
@@ -1003,7 +1029,9 @@ def get_market_price_from_sold(
     enriched_summaries = _pre_expand_details(all_summaries, budget_fn=budget_fn, prewarm_mode=False)
 
     for tolerance_config in [
-        {"year_tolerance": 2, "mileage_tolerance": l1_tolerance,         "source": "layer_1_strict",          "adjust_mileage": True},
+        # layer_1: ±1 year — same model year only, prevents newer/more-valuable comps
+        # from contaminating valuations (e.g. 2010 Range Rover inflating a 2008 valuation).
+        {"year_tolerance": 1, "mileage_tolerance": l1_tolerance,         "source": "layer_1_strict",          "adjust_mileage": True},
         {"year_tolerance": 2, "mileage_tolerance": l2_tolerance,         "source": "layer_2_relaxed_mileage", "adjust_mileage": True},
         {"year_tolerance": 3, "mileage_tolerance": l2_tolerance + 5000,  "source": "layer_3_relaxed_year",    "adjust_mileage": True},
         {"year_tolerance": 4, "mileage_tolerance": l2_tolerance + 15000, "source": "layer_4_wide",            "adjust_mileage": True},
