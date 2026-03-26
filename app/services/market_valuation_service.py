@@ -889,22 +889,11 @@ def run_filter_layer(
     sold_median = statistics.median(final_prices)
     raw_private = sold_median * spread_discount
 
-    # Private value: apply a small correction for trader contamination in the
-    # sellerAccountTypes:{INDIVIDUAL} pool — some small traders list under personal accounts
-    # and price at near-retail. With conditions:{USED} removed, the raw pool is now a
-    # representative sample of real eBay private sales, so the correction is modest (~15-20%).
-    # Previous calibration (0.43-0.65) was against data from the broken conditions filter
-    # which returned an artificially inflated subset — those factors are no longer valid.
-    if raw_private < 3000:
-        tier_correction = 0.80
-    elif raw_private < 8000:
-        tier_correction = 0.82
-    elif raw_private < 20000:
-        tier_correction = 0.85
-    else:
-        tier_correction = 0.88
-
-    price_private = round(raw_private * tier_correction, 2)
+    # Private value: soldItems:true + sellerAccountTypes:{INDIVIDUAL} means these are
+    # actual completed private transactions — the median is the private market price.
+    # No correction factor applied. If Regit validation shows consistent over/under,
+    # a single flat multiplier can be introduced here.
+    price_private = round(raw_private, 2)
 
     # Retail value: private × RETAIL_MULTIPLIER (dealer forecourt ≈ 30% above private clean)
     price_retail = round(price_private * RETAIL_MULTIPLIER, 2)
