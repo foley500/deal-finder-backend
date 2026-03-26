@@ -748,7 +748,7 @@ def process_listing(raw_item: dict, dealer_id: int, source="ebay", filters=None,
                 listing_title=title,
                 listing_aspects=aspects,
                 fuel_type=vehicle_data.get("fuel_type") or aspects.get("Fuel Type"),
-                cache_only=True,   # Never burn eBay calls on live valuation during scans — prewarm fills cache
+                cache_only=False,  # Live fetch when cache misses — budget_fn guards spend
                 budget_fn=budget_fn,
             )
         else:

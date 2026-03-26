@@ -466,7 +466,7 @@ def get_sold_listings(query: str, limit: int = 100, budget_fn=None):
                 "q": query,
                 "limit": 50,
                 "offset": offset,
-                "filter": f"soldItems:true,conditions:{{USED}}{seller_filter}",
+                "filter": f"soldItems:true{seller_filter}",
                 "sort": "endingSoonest",
             }
 
@@ -792,10 +792,17 @@ def run_filter_layer(
                 auction_prices.extend([adjusted_price] * total_weight)
                 accepted_sold += 1
             elif seller_pool == "private":
+                # Private BIN — primary signal for private market value
                 total_weight = weight * r_weight
                 sold_prices.extend([adjusted_price] * total_weight)
                 accepted_sold += 1
-            # Business BIN → excluded (dealer retail ≠ private or trade market)
+            elif not private_only:
+                # Business BIN — only included in blended fallback (private_only=False).
+                # Excluded from private_only=True pass so private data dominates.
+                # Lower weight (÷3) and tiered correction handles the retail contamination.
+                total_weight = max(1, weight // 3) * r_weight
+                sold_prices.extend([adjusted_price] * total_weight)
+                accepted_sold += 1
             # Capture a sample of comparables for deal detail display
             if len(sample_comps) < 12:
                 _sold_dt = summary.get("_sold_date")

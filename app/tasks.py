@@ -766,12 +766,12 @@ def notify_deal(deal_id: int):
 # IMPORTANT: mileage buckets must be multiples of 20,000 to match
 # the cache key rounding in market_valuation_service.py.
 #
-# API budget: ~160 models × 2 calls = ~320 calls per cold prewarm.
-# With 5hr schedule and skip-if-cached (70% warm threshold), daily
-# refresh cost is typically ~80-120 calls.
+# API budget: ~160 models × up to 10 calls (5 pages private + 5 pages all) = ~320–1200 calls per cold prewarm.
+# With once-daily schedule and skip-if-cached (70% warm threshold), warm run cost is ~80–120 calls.
+# Van prewarm uses its own "van_prewarm" budget key (400 limit) — separate from car prewarm (1200 limit).
 # ==========================================
 @celery.task
-def prewarm_valuation_cache(targets_override=None):
+def prewarm_valuation_cache(targets_override=None, task_name="prewarm"):
     from app.services.market_valuation_service import (
         get_market_price_from_sold,
         get_sold_listings,
@@ -802,7 +802,11 @@ def prewarm_valuation_cache(targets_override=None):
     PREWARM_RUNNING_KEY = f"prewarm_running:{today}"
     redis_client.set(PREWARM_RUNNING_KEY, "1", ex=10800)  # 3hr max — auto-expires if prewarm crashes
 
-    print("🔥 Starting valuation cache prewarm...")
+    # Diagnostic: log budget state at start so we can detect if something consumed it early
+    task_budget_used = int(redis_client.get(f"{TASK_BUDGET_KEY_PREFIX}:{task_name}:{today}") or 0)
+    global_budget_used = int(redis_client.get(f"{DAILY_BUDGET_KEY}:{today}") or 0)
+    task_limit = BUDGET_ALLOCATIONS.get(task_name, 0)
+    print(f"🔥 Starting valuation cache prewarm [{task_name}]... budget: {task_budget_used}/{task_limit} task, {global_budget_used}/{DAILY_API_BUDGET} global")
 
     targets = targets_override if targets_override is not None else PREWARM_TARGETS
     for make, base_model, years, mileage_buckets in targets:
@@ -858,7 +862,7 @@ def prewarm_valuation_cache(targets_override=None):
         try:
             all_summaries = get_sold_listings(
                 query,
-                budget_fn=lambda n: _check_budget(n, "prewarm")
+                budget_fn=lambda n, tn=task_name: _check_budget(n, tn)
             )
             total_searches += 1
         except Exception as e:
@@ -874,7 +878,7 @@ def prewarm_valuation_cache(targets_override=None):
             try:
                 all_summaries = get_sold_listings(
                     query,
-                    budget_fn=lambda n: _check_budget(n, "prewarm")
+                    budget_fn=lambda n, tn=task_name: _check_budget(n, tn)
                 )
             except Exception as e:
                 print(f"❌ Retry failed for {query}: {e}")
@@ -889,7 +893,7 @@ def prewarm_valuation_cache(targets_override=None):
         try:
             enriched_summaries = _pre_expand_details(
                 all_summaries,
-                budget_fn=lambda n: _check_budget(n, "prewarm"),
+                budget_fn=lambda n, tn=task_name: _check_budget(n, tn),
                 prewarm_mode=True,   # Year-only expansion, capped at MAX_PREWARM_EXPANSIONS
             )
         except Exception as e:
@@ -1104,7 +1108,7 @@ def scan_van_sweep(dealer_id: int):
 # ==========================================
 @celery.task
 def prewarm_van_valuation_cache():
-    return prewarm_valuation_cache(targets_override=VAN_PREWARM_TARGETS)
+    return prewarm_valuation_cache(targets_override=VAN_PREWARM_TARGETS, task_name="van_prewarm")
 
 
 
@@ -1556,16 +1560,10 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                                     )
                                     continue
                         else:
-                            # No cached valuation for this make/model/year — skipping
-                            # to preserve expansion budget.  With cache_only=True in
-                            # deal_engine, a cache miss here guarantees the listing will
-                            # be skipped later anyway, so we avoid burning an expansion
-                            # call + 3-min OCR on a guaranteed miss.
-                            # Prewarm fills these keys at 07:10 UTC; models not in
-                            # PREWARM_TARGETS should be added there.
+                            # No cached valuation — gate cannot filter, let it through.
+                            # Deal engine will do a live valuation fetch.
                             mileage_display = f"{mileage}mi" if mileage else "?mi"
-                            print(f"⏭️  No prewarm cache for {make} {model} {year} {mileage_display} — skipping cold-cache listing")
-                            continue
+                            print(f"⚠️  No prewarm cache for {make} {model} {year} {mileage_display} — passing through for live valuation")
 
                 except Exception as e:
                     print(f"Gate check failed: {e}")

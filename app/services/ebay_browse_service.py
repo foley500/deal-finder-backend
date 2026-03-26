@@ -117,7 +117,7 @@ def search_ebay_browse(
         "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
     }
 
-    filter_str = f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},conditions:{{USED}},itemLocationCountry:GB"
+    filter_str = f"price:[{min_price}..{max_price}],buyingOptions:{{FIXED_PRICE}},itemLocationCountry:GB"
     if start_time_filter:
         filter_str += f",itemStartDate:[{start_time_filter}..]"
     if buyer_postcode and radius_miles:

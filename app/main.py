@@ -1029,18 +1029,28 @@ def run_value_sweep(dealer_id: int):
 
 
 @app.post("/admin/prewarm")
-def trigger_prewarm(flush: bool = False):
+def trigger_prewarm(flush: bool = False, reset_budget: bool = False):
     """
     Manually trigger the valuation prewarm.
     ?flush=true clears existing sold_cache:* keys first so entries built
     with broken data (e.g. old SELLER_DETAILS API bug) are rebuilt fresh.
+    ?reset_budget=true resets today's prewarm budget counters so a re-run
+    can proceed even if a previous run already consumed the daily allocation.
     """
+    from app.tasks import TASK_BUDGET_KEY_PREFIX, DAILY_BUDGET_KEY
+    from datetime import datetime, timezone
     if flush:
         keys = redis_client.keys("sold_cache:*")
         if keys:
             redis_client.delete(*keys)
+    if reset_budget:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        prewarm_key = f"{TASK_BUDGET_KEY_PREFIX}:prewarm:{today}"
+        van_prewarm_key = f"{TASK_BUDGET_KEY_PREFIX}:van_prewarm:{today}"
+        deleted = redis_client.delete(prewarm_key, van_prewarm_key)
+        print(f"🔄 Prewarm budget counters reset ({deleted} keys deleted)")
     prewarm_valuation_cache.delay()
-    return {"status": "prewarm queued", "cache_flushed": flush}
+    return {"status": "prewarm queued", "cache_flushed": flush, "budget_reset": reset_budget}
 
 
 @app.get("/create-test-dealer")
