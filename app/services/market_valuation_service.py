@@ -46,12 +46,14 @@ WIDE_SPREAD_DISCOUNT = 0.97
 #   Kia Sportage 2016 104k: raw £9,260 × 0.53 = £4,908 vs Regit £4,909 ✓
 # Applied in run_filter_layer — not a single constant.
 
-# UK motor trade valuation multipliers (relative to auction-derived private clean value).
-# Since private is now sourced from auction clearing prices (true market value):
-#   Retail ≈ 30% above private clean  (dealer forecourt = private + prep/warranty/margin)
-#   Trade  ≈ 20% below private clean  (dealer buying price at auction/part-ex)
-RETAIL_MULTIPLIER = 1.30
-TRADE_MULTIPLIER  = 0.80  # Default fallback
+# UK motor trade valuation multipliers relative to eBay private sold median.
+# Private is sourced from actual completed eBay private sales (soldItems:true +
+# sellerAccountTypes:{INDIVIDUAL}), which sit slightly below AutoTrader private
+# but are real market-clearing prices.
+#   Retail ≈ 35% above eBay private sold  (dealer forecourt prep/warranty/margin)
+#   Trade  ≈ mileage-adjusted via get_trade_multiplier() — 0.72–0.88× private
+RETAIL_MULTIPLIER = 1.35
+TRADE_MULTIPLIER  = 0.78  # Fallback for active-listing path only
 
 
 def get_trade_multiplier(mileage: int, make: str = "") -> float:
@@ -898,15 +900,13 @@ def run_filter_layer(
     # Retail value: private × RETAIL_MULTIPLIER (dealer forecourt ≈ 30% above private clean)
     price_retail = round(price_private * RETAIL_MULTIPLIER, 2)
 
-    # Trade value: auction clearing prices are the most accurate wholesale signal.
-    # When enough auction comps exist, use their median directly.
-    # Fallback to private × TRADE_MULTIPLIER when auction data is thin.
-    if len(auction_prices) >= 3:
-        auction_median = statistics.median(auction_prices)
-        price_trade = round(auction_median * spread_discount, 2)
-        print(f"   📦 Trade from {len(auction_prices)} auction comps: £{price_trade}")
-    else:
-        price_trade = round(price_private * TRADE_MULTIPLIER, 2)
+    # Trade value: mileage-tiered multiplier against private.
+    # eBay auction-format sold prices are consumer bids, not BCA/Manheim trade
+    # clearing prices, so we don't use auction comps here.
+    # get_trade_multiplier: 0.88 (<30k mi) → 0.72 (120k+ mi), +0.02 for prestige makes.
+    if auction_prices:
+        print(f"   📦 {len(auction_prices)} eBay auction comps found (not used for trade — consumer bids ≠ trade prices)")
+    price_trade = round(price_private * get_trade_multiplier(target_mileage), 2)
 
     print(f"   💰 Private: £{price_private} | Retail: £{price_retail} | Trade: £{price_trade} ({confidence} confidence, pool: {source_label})")
 
