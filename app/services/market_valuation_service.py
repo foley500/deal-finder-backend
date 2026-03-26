@@ -889,19 +889,20 @@ def run_filter_layer(
     sold_median = statistics.median(final_prices)
     raw_private = sold_median * spread_discount
 
-    # Private value: private BIN pool needs a correction for trader contamination.
-    # Many eBay INDIVIDUAL sellers are small traders pricing at near-retail rates.
-    # Tiered correction calibrated against Regit/CAP private clean data:
-    #   Corsa 2013 77k:  raw £4,520 × 0.43 = £1,944 vs Regit £1,927 ✓
-    #   Kia Sp. 2016 104k: raw £9,260 × 0.53 = £4,908 vs Regit £4,909 ✓
-    if raw_private < 5000:
-        tier_correction = 0.43
-    elif raw_private < 12000:
-        tier_correction = 0.53
-    elif raw_private < 25000:
-        tier_correction = 0.65
+    # Private value: apply a small correction for trader contamination in the
+    # sellerAccountTypes:{INDIVIDUAL} pool — some small traders list under personal accounts
+    # and price at near-retail. With conditions:{USED} removed, the raw pool is now a
+    # representative sample of real eBay private sales, so the correction is modest (~15-20%).
+    # Previous calibration (0.43-0.65) was against data from the broken conditions filter
+    # which returned an artificially inflated subset — those factors are no longer valid.
+    if raw_private < 3000:
+        tier_correction = 0.80
+    elif raw_private < 8000:
+        tier_correction = 0.82
+    elif raw_private < 20000:
+        tier_correction = 0.85
     else:
-        tier_correction = 0.75
+        tier_correction = 0.88
 
     price_private = round(raw_private * tier_correction, 2)
 
