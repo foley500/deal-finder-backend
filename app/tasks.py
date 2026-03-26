@@ -808,7 +808,9 @@ def prewarm_valuation_cache(targets_override=None, task_name="prewarm"):
     task_limit = BUDGET_ALLOCATIONS.get(task_name, 0)
     print(f"🔥 Starting valuation cache prewarm [{task_name}]... budget: {task_budget_used}/{task_limit} task, {global_budget_used}/{DAILY_API_BUDGET} global")
 
-    targets = targets_override if targets_override is not None else PREWARM_TARGETS
+    import random
+    targets = list(targets_override if targets_override is not None else PREWARM_TARGETS)
+    random.shuffle(targets)  # Random order each run — prevents budget shortfall from always skipping the same models
     for make, base_model, years, mileage_buckets in targets:
 
         make_title = make.strip().title()
