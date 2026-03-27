@@ -819,7 +819,6 @@ def run_filter_layer(
                     "url": summary.get("itemWebUrl", "") or "",
                     "seller_pool": summary.get("_seller_pool", ""),
                 })
-            accepted_sold += 1
 
     print(f"📊 FILTER DEBUG [{layer_name}{'|private_only' if private_only else ''}]:")
     print(f"   Sold accepted: {accepted_sold} ({len(sold_prices)} weighted entries)")
