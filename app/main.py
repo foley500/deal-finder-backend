@@ -30,6 +30,15 @@ from app.services.ebay_browse_service import search_ebay_browse
 
 Base.metadata.create_all(bind=engine)
 
+# Lightweight startup migration — add columns that may not exist on older deployments.
+with engine.connect() as _conn:
+    try:
+        _conn.execute(text("ALTER TABLE deals ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP"))
+        _conn.execute(text("UPDATE deals SET updated_at = created_at WHERE updated_at IS NULL"))
+        _conn.commit()
+    except Exception:
+        _conn.rollback()
+
 app = FastAPI()
 app.include_router(settings_router.router)
 app.add_middleware(
@@ -259,7 +268,7 @@ def all_deals(
     elif sort == "score_desc":
         query = query.order_by(Deal.score.desc())
     else:
-        query = query.order_by(Deal.created_at.desc())
+        query = query.order_by(Deal.updated_at.desc().nullslast())
 
     total_count = query.count()
     total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
@@ -586,7 +595,7 @@ def van_deals(
     elif sort == "score_desc":
         query = query.order_by(Deal.score.desc())
     else:
-        query = query.order_by(Deal.created_at.desc())
+        query = query.order_by(Deal.updated_at.desc().nullslast())
 
     total_count = query.count()
     total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)

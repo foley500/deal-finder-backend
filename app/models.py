@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, JSON, event
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
 
@@ -78,6 +78,7 @@ class Deal(Base):
     status = Column(String, default="new")
 
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     dealer = relationship("Dealer", back_populates="deals")
 

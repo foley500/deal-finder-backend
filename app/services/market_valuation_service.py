@@ -991,11 +991,14 @@ def get_market_price_from_sold(
     mileage_bucket = max(20000, int((mileage + 10000) / 20000) * 20000)
     engine_bucket = bucket_engine_size(engine_litre)
     fuel_key = fuel_suffix.strip()
-    cache_key = f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}:{fuel_key}" if fuel_key else f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}"
+    # Normalise make to lowercase so prewarm keys always match sniper/live lookup keys
+    # regardless of whether the source is DVSA (uppercase e.g. "BMW") or prewarm targets (e.g. "Bmw").
+    make_key = make.lower()
+    cache_key = f"sold_cache:{make_key}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}:{fuel_key}" if fuel_key else f"sold_cache:{make_key}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}"
     # Prewarm stores keys without fuel type and also without engine bucket (None).
     # Build fallback keys for progressive lookup: fuel+engine → no-fuel → no-engine.
-    no_fuel_key    = f"sold_cache:{make}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}"
-    no_engine_key  = f"sold_cache:{make}:{base_model}:None:{year}:{mileage_bucket}"
+    no_fuel_key    = f"sold_cache:{make_key}:{base_model}:{engine_bucket}:{year}:{mileage_bucket}"
+    no_engine_key  = f"sold_cache:{make_key}:{base_model}:None:{year}:{mileage_bucket}"
     print(f"   🔑 Cache key: {cache_key}")
     cached = redis_client.get(cache_key)
     # Fallback 1: no-fuel key (prewarm stores generic keys without fuel type)
