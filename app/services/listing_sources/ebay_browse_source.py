@@ -14,6 +14,7 @@ class EbayBrowseSource(ListingSource):
         offset=0,
         buyer_postcode=None,
         radius_miles=None,
+        start_time_filter=None,
         **kwargs
     ):
         return search_ebay_browse(
@@ -25,4 +26,5 @@ class EbayBrowseSource(ListingSource):
             offset=offset,
             buyer_postcode=buyer_postcode,
             radius_miles=radius_miles,
+            start_time_filter=start_time_filter,
         )

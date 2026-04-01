@@ -4,7 +4,7 @@ import redis
 import time
 import random
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from app.celery_app import celery
 from app.database import SessionLocal
 from app.models import Deal, Dealer, DealerSettings, ScanRun
@@ -1306,7 +1306,13 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                     # Three calls vs the old five cuts search budget by 40%
                     # while keeping coverage of the full cheap-price spectrum.
                     # Offsets must be multiples of 40.
+                    # 7-day lookback: targets listings the sniper missed
+                    # (posted overnight, at weekends, etc.) up to 1 week old.
+                    # Strategy B (bestMatch) has no time filter so it can also
+                    # catch price drops on older stock.
                     # -------------------------------------------------------
+                    since_7d = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
                     for offset in [40, 120, 200]:
 
                         task_name = "van_sweep" if source_override == "ebay_vans" else "sweep"
@@ -1324,6 +1330,7 @@ def run_scan(dealer_id: int, mode_name: str, listings_to_pull: int, keywords=Non
                             offset=offset,
                             buyer_postcode=buyer_postcode,
                             radius_miles=radius_miles,
+                            start_time_filter=since_7d,
                         )
 
                         items_by_query.setdefault(query, []).extend(page_items)
