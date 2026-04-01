@@ -241,8 +241,15 @@ def normalise_base_model(make: str, base_model: str, full_model: str = "") -> st
             return base_model
 
     if make_lower == "land rover":
-        # DVSA returns "RANGE ROVER", "RANGE ROVER SPORT", "RANGE ROVER EVOQUE" etc
-        # Taking only the first word gives "Range" — useless for eBay search
+        # DVSA: "RANGE ROVER EVOQUE", "RANGE ROVER SPORT", "RANGE ROVER VELAR", "RANGE ROVER"
+        # Must be checked most-specific-first — Evoque/Sport/Velar before base Range Rover.
+        # All get distinct eBay search pools; mixing would produce wildly wrong valuations.
+        if full_lower.startswith("range rover evoque"):
+            return "Range Rover Evoque"
+        if full_lower.startswith("range rover sport"):
+            return "Range Rover Sport"
+        if full_lower.startswith("range rover velar"):
+            return "Range Rover Velar"
         if full_lower.startswith("range rover"):
             return "Range Rover"
         if full_lower.startswith("discovery sport"):
@@ -252,7 +259,6 @@ def normalise_base_model(make: str, base_model: str, full_model: str = "") -> st
 
     if make_lower == "ford":
         # Ford Transit family — all are distinct vehicles with separate eBay pools.
-        # "TRANSIT CUSTOM" → "Transit" loses thousands of relevant comparables.
         if full_lower.startswith("transit custom"):
             return "Transit Custom"
         if full_lower.startswith("transit connect"):
@@ -263,6 +269,12 @@ def normalise_base_model(make: str, base_model: str, full_model: str = "") -> st
             return "Tourneo Custom"
         if full_lower.startswith("mustang mach"):
             return "Mustang Mach-E"
+        if full_lower.startswith("c-max") or full_lower.startswith("c max"):
+            return "C-Max"
+        if full_lower.startswith("b-max") or full_lower.startswith("b max"):
+            return "B-Max"
+        if full_lower.startswith("s-max") or full_lower.startswith("s max"):
+            return "S-Max"
 
     if make_lower == "toyota":
         # Yaris Cross and Proace family are distinct from base Yaris/Proace
@@ -278,31 +290,92 @@ def normalise_base_model(make: str, base_model: str, full_model: str = "") -> st
         if full_lower.startswith("c-hr") or full_lower.startswith("chr"):
             return "C-HR"
         # RAV4 — titles split it as "RAV 4" making first word "Rav". Normalise to "Rav4"
-        # so it matches the prewarm key generated from ("Toyota", "RAV4", ...)
         if model_lower in ("rav", "rav4") or full_lower.startswith("rav 4") or full_lower.startswith("rav4"):
             return "Rav4"
+        # Land Cruiser — "Land" alone gives useless results
+        if full_lower.startswith("land cruiser"):
+            return "Land Cruiser"
+        # GT86 — title() would give "Gt86", restore casing
+        if full_lower.startswith("gt86") or full_lower.startswith("gt 86"):
+            return "GT86"
 
     if make_lower == "hyundai":
-        # Ioniq 5 and 6 are separate models, not variants of "Ioniq"
+        # Ioniq numbered series are separate models from base Ioniq hybrid
         if full_lower.startswith("ioniq 5"):
             return "Ioniq 5"
         if full_lower.startswith("ioniq 6"):
             return "Ioniq 6"
         if full_lower.startswith("ioniq 9"):
             return "Ioniq 9"
+        # i-series — DVSA returns "I10", "I20", "I30", "IX35" etc; preserve casing for eBay
+        if re.match(r'^i[x]?\d', model_lower):
+            return base_model.upper()
 
     if make_lower in ["mg", "mg motor"]:
-        # MG model names are typically already single strings (MG ZS, MG HS etc)
-        # but DVSA may return "ZS", "HS", "MG5" etc. Ensure clean uppercase.
-        if model_lower in ["zs", "hs", "mg5", "mg4", "mg3", "zst", "zs ev"]:
+        # DVSA may return "ZS", "HS", "MG5" etc. Ensure clean uppercase for eBay.
+        if re.match(r'^(zs|hs|mg\d|zst|zs ev)$', model_lower):
             return base_model.upper()
 
     if make_lower == "volkswagen":
-        # DVSA sometimes prefixes VW commercial models differently
+        # VW ID series — DVSA returns "ID4", "ID 4", "ID.4" etc. Normalise to "ID.X".
+        id_match = re.match(r'^id[\. ]?(\d)', full_lower)
+        if id_match:
+            return f"ID.{id_match.group(1)}"
         if full_lower.startswith("caddy maxi"):
             return "Caddy Maxi"
         if full_lower.startswith("grand california"):
             return "Grand California"
+        if full_lower.startswith("t-roc") or full_lower.startswith("t roc"):
+            return "T-Roc"
+
+    if make_lower == "mitsubishi":
+        # Eclipse Cross is a separate model from the old Eclipse coupe
+        if full_lower.startswith("eclipse cross"):
+            return "Eclipse Cross"
+        if full_lower.startswith("l200"):
+            return "L200"
+        if full_lower.startswith("grandis"):
+            return "Grandis"
+
+    if make_lower == "suzuki":
+        # "Grand Vitara" — first word "Grand" alone gives wrong results
+        if full_lower.startswith("grand vitara"):
+            return "Grand Vitara"
+
+    if make_lower == "chrysler":
+        # "Grand Voyager" — first word "Grand" alone gives wrong results
+        if full_lower.startswith("grand voyager"):
+            return "Grand Voyager"
+
+    if make_lower == "tesla":
+        # DVSA: make=TESLA, model=MODEL 3 / MODEL S / MODEL X / MODEL Y etc.
+        # First word alone ("Model") is too vague — need "Model 3", "Model S" etc.
+        words = full_lower.split()
+        if len(words) >= 2 and words[0] == "model":
+            variant = words[1].upper() if len(words[1]) == 1 else words[1].title()
+            return f"Model {variant}"
+
+    if make_lower == "polestar":
+        # DVSA: make=POLESTAR, model=POLESTAR 2 PLUS EV FWD
+        # Strip redundant make prefix — return just the number ("2", "3", "4")
+        words = full_lower.split()
+        if words[0] == "polestar" and len(words) >= 2:
+            return words[1]  # "2", "3", "4", "6"
+        return base_model
+
+    if make_lower == "kia":
+        # EV6, e-Niro — ensure clean uppercase for eBay matching
+        if model_lower in ["ev6", "ev9"]:
+            return base_model.upper()
+
+    if make_lower == "mazda":
+        # "Mazda2", "Mazda3", "Mazda6" — DVSA returns "MAZDA2" etc; query "Mazda Mazda2" is
+        # slightly redundant but eBay handles it fine. CX family needs hyphen normalisation.
+        if full_lower.startswith("cx-") or full_lower.startswith("cx "):
+            # "CX-3", "CX-5", "CX-30", "CX-60" — restore eBay-standard "CX-N" format
+            num_match = re.search(r'cx[\- ](\d+)', full_lower)
+            if num_match:
+                return f"CX-{num_match.group(1)}"
 
     return base_model
 

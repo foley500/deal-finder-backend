@@ -31,7 +31,7 @@ def _get_yolo():
 def _get_reader():
     global _easyocr_reader
     if _easyocr_reader is None:
-        _easyocr_reader = easyocr.Reader(["en"], gpu=False)
+        _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
     return _easyocr_reader
 
 
