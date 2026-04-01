@@ -14,6 +14,23 @@ from app.services.pdf_service import generate_deal_pdf
 from app.services.telegram_service import send_telegram_document
 from app.services.ebay_browse_service import sniper_search, search_sniper_windows, search_sniper_recent, get_item_detail, _is_circuit_open
 from app.services.market_valuation_service import get_market_price_from_sold
+from celery.signals import worker_ready
+
+
+@worker_ready.connect
+def run_worker_migrations(sender, **kwargs):
+    """Run DB migrations at worker startup so the worker and web container stay in sync."""
+    from app.database import engine
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE deals ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP"))
+            conn.execute(text("UPDATE deals SET updated_at = created_at WHERE updated_at IS NULL"))
+            conn.commit()
+            print("✅ Worker migration: updated_at column ready")
+        except Exception as e:
+            conn.rollback()
+            print(f"⚠️  Worker migration skipped: {e}")
 
 
 # ==========================================
