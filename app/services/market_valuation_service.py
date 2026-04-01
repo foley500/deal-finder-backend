@@ -46,14 +46,22 @@ WIDE_SPREAD_DISCOUNT = 0.97
 #   Kia Sportage 2016 104k: raw £9,260 × 0.53 = £4,908 vs Regit £4,909 ✓
 # Applied in run_filter_layer — not a single constant.
 
-# UK motor trade valuation multipliers relative to eBay private sold median.
-# Private is sourced from actual completed eBay private sales (soldItems:true +
-# sellerAccountTypes:{INDIVIDUAL}), which sit slightly below AutoTrader private
-# but are real market-clearing prices.
-#   Retail ≈ 35% above eBay private sold  (dealer forecourt prep/warranty/margin)
-#   Trade  ≈ mileage-adjusted via get_trade_multiplier() — 0.72–0.88× private
-RETAIL_MULTIPLIER = 1.35
-TRADE_MULTIPLIER  = 0.78  # Fallback for active-listing path only
+# UK motor trade valuation multipliers.
+#
+# eBay private BIN sold prices (soldItems:true + sellerAccountTypes:{INDIVIDUAL})
+# are set by private sellers who benchmark against AutoTrader and dealer listings.
+# This means eBay private sold ≈ retail price, NOT true private clean.
+#
+# EBAY_PRIVATE_TO_CLEAN corrects the raw eBay sold median to true private clean
+# (what Regit/CAP call "private clean" — realistic private transaction price).
+# Validated: without correction, private clean ≈ Regit retail.
+# Correction = 1 / RETAIL_MULTIPLIER so that:
+#   price_private  = eBay sold / 1.35  ← aligns with Regit private clean
+#   price_retail   = price_private × 1.35 = eBay sold  ← aligns with Regit retail
+#   price_trade    = price_private × trade_multiplier
+RETAIL_MULTIPLIER        = 1.35
+EBAY_PRIVATE_TO_CLEAN    = 1.0 / RETAIL_MULTIPLIER   # ≈ 0.741
+TRADE_MULTIPLIER         = 0.78  # Fallback for active-listing path only
 
 
 def get_trade_multiplier(mileage: int, make: str = "") -> float:
@@ -971,13 +979,14 @@ def run_filter_layer(
     sold_median = statistics.median(final_prices)
     raw_private = sold_median * spread_discount
 
-    # Private value: soldItems:true + sellerAccountTypes:{INDIVIDUAL} means these are
-    # actual completed private transactions — the median is the private market price.
-    # No correction factor applied. If Regit validation shows consistent over/under,
-    # a single flat multiplier can be introduced here.
-    price_private = round(raw_private, 2)
+    # eBay private BIN sold prices sit at ~retail level (private sellers benchmark
+    # against AutoTrader/dealer listings when setting BIN prices).
+    # EBAY_PRIVATE_TO_CLEAN (÷1.35) converts to true private clean — validated
+    # against Regit: uncorrected eBay private ≈ Regit retail; after correction ≈ Regit private.
+    price_private = round(raw_private * EBAY_PRIVATE_TO_CLEAN, 2)
 
-    # Retail value: private × RETAIL_MULTIPLIER (dealer forecourt ≈ 30% above private clean)
+    # Retail value: private × RETAIL_MULTIPLIER → equals the raw eBay sold median,
+    # which is at dealer retail-equivalent level. This is the correct retail price.
     price_retail = round(price_private * RETAIL_MULTIPLIER, 2)
 
     # Trade value: mileage-tiered multiplier against private.
