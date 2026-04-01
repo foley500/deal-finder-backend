@@ -704,7 +704,8 @@ def run_filter_layer(
     layer_name="",
     private_only=False,
     base_model=None,
-    engine_litre=None
+    engine_litre=None,
+    min_sample=None,
 ):
     sold_prices   = []   # Private BIN → private market value
     auction_prices = []  # Auction completions → trade/wholesale value
@@ -910,12 +911,13 @@ def run_filter_layer(
     else:
         print("   No mileage data available")
 
-    if len(sold_prices) >= MIN_SAMPLE_SIZE:
+    threshold = min_sample if min_sample is not None else MIN_SAMPLE_SIZE
+    if len(sold_prices) >= threshold:
         final_prices = sold_prices
         source_label = "sold_only"
         print(f"   ✅ Using sold prices ({len(sold_prices)} weighted entries)")
     else:
-        print(f"❌ Failed — {len(sold_prices)} weighted entries (min required: {MIN_SAMPLE_SIZE})")
+        print(f"❌ Failed — {len(sold_prices)} weighted entries (min required: {threshold})")
         return None
 
     final_prices = sorted(final_prices)
@@ -1160,14 +1162,17 @@ def get_market_price_from_sold(
     for tolerance_config in [
         # layer_1: ±1 year — same model year only, prevents newer/more-valuable comps
         # from contaminating valuations (e.g. 2010 Range Rover inflating a 2008 valuation).
-        {"year_tolerance": 1, "mileage_tolerance": l1_tolerance,         "source": "layer_1_strict",          "adjust_mileage": True},
-        {"year_tolerance": 2, "mileage_tolerance": l2_tolerance,         "source": "layer_2_relaxed_mileage", "adjust_mileage": True},
-        {"year_tolerance": 3, "mileage_tolerance": l2_tolerance + 5000,  "source": "layer_3_relaxed_year",    "adjust_mileage": True},
-        {"year_tolerance": 4, "mileage_tolerance": l2_tolerance + 15000, "source": "layer_4_wide",            "adjust_mileage": True},
+        {"year_tolerance": 1, "mileage_tolerance": l1_tolerance,         "source": "layer_1_strict",          "adjust_mileage": True, "min_sample": MIN_SAMPLE_SIZE},
+        {"year_tolerance": 2, "mileage_tolerance": l2_tolerance,         "source": "layer_2_relaxed_mileage", "adjust_mileage": True, "min_sample": MIN_SAMPLE_SIZE},
+        {"year_tolerance": 3, "mileage_tolerance": l2_tolerance + 5000,  "source": "layer_3_relaxed_year",    "adjust_mileage": True, "min_sample": MIN_SAMPLE_SIZE},
+        # layer_4 is the last resort — accept 3 weighted entries for thin markets
+        # (e.g. EVs, niche makes) rather than dropping the listing entirely.
+        {"year_tolerance": 4, "mileage_tolerance": l2_tolerance + 15000, "source": "layer_4_wide",            "adjust_mileage": True, "min_sample": 3},
         # layer_5 (year_only, unlimited mileage) removed from live valuations —
         # it matches cars from completely different model years and inflates prices.
         # Prewarm still uses layers 1-4 only, so cache coverage is unaffected.
     ]:
+        min_s = tolerance_config["min_sample"]
         # Try private-sold-only first — no dealer retail contamination
         result = run_filter_layer(
             enriched_summaries,
@@ -1180,6 +1185,7 @@ def get_market_price_from_sold(
             adjust_mileage=tolerance_config["adjust_mileage"],
             layer_name=tolerance_config["source"],
             private_only=True,
+            min_sample=min_s,
         )
 
         # Fall back to blended (private + dealer) only if private pool is too thin
@@ -1194,6 +1200,7 @@ def get_market_price_from_sold(
                 mileage_tolerance=tolerance_config["mileage_tolerance"],
                 adjust_mileage=tolerance_config["adjust_mileage"],
                 layer_name=f"{tolerance_config['source']}+blended",
+                min_sample=min_s,
             )
 
         if result:

@@ -139,6 +139,7 @@ SCAN_QUERY_GROUPS = [
     "Chrysler",    # 300C/Grand Voyager — niche but misunderstood values
     "DS",          # DS3/DS4/DS5/DS7 — registered as own brand from 2015+
     "Infiniti",    # Q30/QX30 — low volume but frequently mispriced
+    "Polestar",    # Polestar 2 — popular EV, frequently mispriced by sellers
 ]
 
 SWEEP_ROTATION_KEY  = "sweep_rotation_idx"
@@ -615,6 +616,11 @@ PREWARM_TARGETS = [
     # ── RENAULT (ADDITIONAL) ──────────────────────────────────────────────
     ("Renault", "Scenic",  [2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016], [20000, 40000, 60000, 80000, 100000, 120000]),
     ("Renault", "Twingo",  [2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018], [20000, 40000, 60000, 80000]),
+
+    # ── POLESTAR ──────────────────────────────────────────────────────────
+    # Popular EV, frequently mispriced by private sellers unfamiliar with values.
+    # DVSA returns make=POLESTAR model=POLESTAR 2 PLUS EV FWD — normalised to "2".
+    ("Polestar", "Polestar 2", [2020, 2021, 2022, 2023, 2024],               [20000, 40000, 60000, 80000]),
 ]
 
 
