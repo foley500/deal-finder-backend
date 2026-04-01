@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import requests
 import base64
+from collections import Counter
 from PIL import Image
 from ultralytics import YOLO
 import easyocr
@@ -493,10 +494,23 @@ def _run_ocr_on_image(image: Image.Image, high_res: bool = False) -> str | None:
 # ENTRY POINT 1 — list of URLs (eBay engine)
 # ===============================
 def extract_plate_from_images(image_urls: list[str]):
+    """
+    Reads all images (up to MAX_IMAGES_PER_LISTING) and votes on the result.
+
+    Single-image early exit misses one-character OCR errors: if image 1 reads
+    "FE15TKU" (one char wrong but valid format), it returns immediately.
+    Voting across multiple images catches this — if images 1,3,4 all read
+    "FE15TKV" and only image 2 reads "FE15TKU", the consensus wins.
+
+    Fast path: as soon as the same plate has been seen twice, return it.
+    Slow path: process all images and take the most-common reading.
+    """
     print("🔎 Starting OCR for listing with", len(image_urls), "images")
 
     if not image_urls:
         return None
+
+    plates_found = []
 
     for image_url in image_urls[:MAX_IMAGES_PER_LISTING]:
         image = None
@@ -507,8 +521,6 @@ def extract_plate_from_images(image_urls: list[str]):
 
             image = Image.open(io.BytesIO(response.content)).convert("RGB")
 
-            # Run OCR with a hard timeout so a single slow EasyOCR call on
-            # Render's CPU can't freeze the entire sweep for minutes.
             _img_copy = image.copy()
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_run_ocr_on_image, _img_copy)
@@ -519,7 +531,11 @@ def extract_plate_from_images(image_urls: list[str]):
                     result = None
 
             if result:
-                return result
+                plates_found.append(result)
+                # Fast path: same plate seen twice → confident, stop early
+                if plates_found.count(result) >= 2:
+                    print(f"✅ Consensus plate (2× confirmed): {result}")
+                    return result
 
         except Exception as e:
             print("OCR URL exception:", e)
@@ -528,8 +544,14 @@ def extract_plate_from_images(image_urls: list[str]):
                 del image
             gc.collect()
 
-    print("❌ No valid plate found across listing images")
-    return None
+    if not plates_found:
+        print("❌ No valid plate found across listing images")
+        return None
+
+    # Vote: most-seen plate wins. Tie-break: last seen (later images sometimes sharper).
+    winner, count = Counter(plates_found).most_common(1)[0]
+    print(f"✅ Voted plate: {winner} ({count}/{len(plates_found)} images agreed)")
+    return winner
 
 
 # ===============================
