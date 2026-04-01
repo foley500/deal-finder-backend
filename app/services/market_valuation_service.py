@@ -29,7 +29,7 @@ MAX_ENRICHED_TARGET = 80    # Stop once 80 items have full year data
 
 MILEAGE_BLOCK_SIZE = 5000
 MILEAGE_BLOCK_RATE = 0.010
-MAX_LINEAR_BLOCKS = 8
+MAX_LINEAR_BLOCKS = 14  # 14 blocks × 1% = 14% max adjustment (covers ±70k mile difference)
 EXTREME_MILEAGE_THRESHOLD = 120000
 
 MAX_ACCEPTABLE_IQR_RATIO = 0.55
@@ -384,6 +384,10 @@ def calculate_mileage_adjustment(base_price: float, listing_mileage: int, target
     """
     Adjusts a comparable listing's price to what it would be worth at the target mileage.
 
+    Logic: "what would this comp sell for if it had the target mileage?"
+      - Comp has MORE miles than target → at target's lower mileage it would be worth MORE → ADD
+      - Comp has FEWER miles than target → at target's higher mileage it would be worth LESS → SUBTRACT
+
     Only the linear mileage differential is applied here.
     The extreme mileage penalty (for when the TARGET car itself is extreme) is applied
     once at the final result level — applying it per-comparable would double-count it
@@ -396,9 +400,11 @@ def calculate_mileage_adjustment(base_price: float, listing_mileage: int, target
     linear_adjustment = base_price * MILEAGE_BLOCK_RATE * blocks
 
     if mileage_diff > 0:
-        return base_price - linear_adjustment
-    else:
+        # Comp has MORE miles than target → worth MORE at target's lower mileage
         return base_price + linear_adjustment
+    else:
+        # Comp has FEWER miles than target → worth LESS at target's higher mileage
+        return base_price - linear_adjustment
 
 
 def recency_weight(sold_date) -> int:
@@ -1278,7 +1284,7 @@ def _active_listing_fallback(
         return None
 
     prices = []
-    year_tol = 3
+    year_tol = 2  # Tighter than before (was 3) — avoids mixing different model generations
 
     for item in active_summaries:
         title = item.get("title", "").lower()

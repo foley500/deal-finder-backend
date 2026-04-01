@@ -128,6 +128,12 @@ def generate_fuzzy_variants(plate: str) -> list[str]:
         "Z": ["2"], "2": ["Z"],
         "A": ["4"], "4": ["A"],
         "E": ["6"],
+        # U↔V — visually similar on angled/dirty plates, very common UK plate OCR error
+        "U": ["V"], "V": ["U"],
+        # D↔0 — rounded letter vs digit, common at low resolution
+        "D": ["0"],
+        # N↔M/H — similar vertical stroke counts, common at small crop sizes
+        "N": ["M", "H"],
     }
 
     variants = set()
